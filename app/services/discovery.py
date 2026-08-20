@@ -59,7 +59,23 @@ PREFIX_SWITCH = date(2026, 1, 8)
 STRIKE_STEP = 2.5
 STRIKE_FLOOR = 100.0        # below this no index option has ever listed
 STRIKE_CEIL = 1000.0        # at/above this the strike code stops being computable
-MISS_LIMIT = 5              # consecutive empty replies that end a walk
+
+# How far in-the-money to keep. Deep ITM options barely trade and their value
+# is nearly all intrinsic, so the ladder is only carried a few steps past the
+# money; the out-of-the-money side is mapped in full.
+ITM_STEPS = 5
+
+# Offsets (in index points) tried outward from the money before bisecting, to
+# bracket the far OTM edge. Doubling rather than stepping because the ladder
+# runs hundreds of points wide and its width scales with the index level.
+BRACKET_OFFSETS = (25.0, 50.0, 100.0, 200.0, 400.0)
+
+# Steps probed past a converged edge before accepting it. A contract that
+# listed but never traded answers empty, indistinguishable from one that never
+# listed, so a lone silent strike would otherwise cut the ladder short --
+# observed on 5 of 325 strikes in a sample. Re-probing past the edge turns
+# that into a gap to step over rather than a wall.
+EDGE_CONFIRM_STEPS = 3
 
 
 def _side_prefix(is_call: bool, mat_date: date) -> str:
@@ -107,106 +123,142 @@ def _fetch_bars(short_code: str, start: date, end: date) -> list[dict[str, Any]]
     return [b for b in (payload.get("output2") or []) if b.get("stck_bsop_date")]
 
 
-def _existing_codes(session: Session, job_id: str) -> set[str]:
-    """short_codes already collected for this maturity. Discovery is resumable
-    at contract granularity: a re-run skips these instead of re-asking, which
-    matters because a full backfill is tens of thousands of paced requests."""
-    rows = session.exec(
-        text("SELECT DISTINCT short_code FROM kis_futopt_daily WHERE job_id = :j"),
-        params={"j": job_id},
-    ).all()
-    return {r[0] for r in rows}
+
+def _snap(strike: float) -> float:
+    """Round onto the 2.5 ladder every index option strike sits on."""
+    return round(strike / STRIKE_STEP) * STRIKE_STEP
 
 
-def _walk_strikes(atm: float) -> Iterable[float]:
-    """Strike ladder outward from the money: at-the-money, then alternating up
-    and down. Interleaved rather than one side at a time so a maturity that is
-    cut short still ends up with the most useful contracts."""
-    yield atm
-    offset = STRIKE_STEP
-    while True:
-        up, down = atm + offset, atm - offset
-        stop = True
-        if up < STRIKE_CEIL:
-            yield up
-            stop = False
-        if down >= STRIKE_FLOOR:
-            yield down
-            stop = False
-        if stop:
-            return
-        offset += STRIKE_STEP
+def _listed(prod_type: str, mat_scd: str, mat_date: date, front_date: date | None,
+            strike: float, is_call: bool) -> bool:
+    if not (STRIKE_FLOOR <= strike < STRIKE_CEIL):
+        return False
+    code = build_short_code(prod_type, mat_scd, mat_date, strike, is_call)
+    start = front_date or (mat_date - timedelta(days=60))
+    return bool(_fetch_bars(code, start, mat_date))
+
+
+def find_otm_edge(prod_type: str, mat_scd: str, mat_date: date, front_date: date | None,
+                  atm: float, is_call: bool) -> tuple[float, int]:
+    """Outermost listed strike on the out-of-the-money side, and how many
+    probes it took.
+
+    Bracket by doubling offsets until one comes back empty, bisect the bracket
+    down to a single ladder step, then step past the result a few times in
+    case the edge was really a silent strike. Bisection rather than a walk
+    because the ladder is uniform: once the edge is known every strike inside
+    it follows arithmetically, so only the boundary has to be asked about.
+
+    Direction follows moneyness -- OTM is above the money for a call, below it
+    for a put."""
+    sign = 1.0 if is_call else -1.0
+    probe = lambda k: _listed(prod_type, mat_scd, mat_date, front_date, k, is_call)
+    calls = 0
+
+    lo = atm                      # known listed (or the money itself)
+    hi = None                     # first offset that came back empty
+    for offset in BRACKET_OFFSETS:
+        candidate = _snap(atm + sign * offset)
+        calls += 1
+        if probe(candidate):
+            lo = candidate
+        else:
+            hi = candidate
+            break
+    if hi is None:
+        hi = _snap(atm + sign * (BRACKET_OFFSETS[-1] + STRIKE_STEP))
+
+    while abs(hi - lo) > STRIKE_STEP:
+        mid = _snap((lo + hi) / 2)
+        if mid in (lo, hi):
+            break
+        calls += 1
+        if probe(mid):
+            lo = mid
+        else:
+            hi = mid
+
+    edge = lo
+    for step in range(1, EDGE_CONFIRM_STEPS + 1):
+        candidate = _snap(edge + sign * STRIKE_STEP * step)
+        calls += 1
+        if probe(candidate):
+            edge = candidate
+            # A silent strike hid a live one past it: re-open the search from here.
+            for extra in range(1, EDGE_CONFIRM_STEPS + 1):
+                nxt = _snap(edge + sign * STRIKE_STEP * extra)
+                calls += 1
+                if probe(nxt):
+                    edge = nxt
+    return edge, calls
+
+
+def _strike_range(lo: float, hi: float) -> list[float]:
+    out, k = [], lo
+    while k <= hi + 1e-9:
+        out.append(round(k, 1))
+        k += STRIKE_STEP
+    return out
 
 
 def discover_maturity(session: Session, prod_type: str, mat_code: str, mat_scd: str,
-                      mat_date: date, front_date: date | None, atm: float) -> dict[str, int]:
-    """Probe one maturity's strike ladder, saving every contract that answers.
+                      mat_date: date, front_date: date | None, atm: float,
+                      mirror_to: Iterable[str] = ()) -> dict[str, int]:
+    """Map one maturity's strike ladder and record the contracts on it.
 
-    Returns {'probed': n, 'found': n, 'bars': n, 'skipped': n}."""
-    job_id = f"BACKFILL_{prod_type}_{mat_code}"
-    start = front_date or (mat_date - timedelta(days=60))
-    done = _existing_codes(session, job_id)
-    stats = {"probed": 0, "found": 0, "bars": 0, "skipped": 0}
+    Only the two OTM edges are asked about; everything between them is derived,
+    since the ladder is a uniform 2.5 grid. That also recovers contracts a
+    per-strike probe would miss -- one that listed but never traded answers
+    empty and would look non-existent.
 
-    for is_call in (True, False):
-        misses = 0
-        for strike in _walk_strikes(atm):
-            if misses >= MISS_LIMIT:
-                break
-            code = build_short_code(prod_type, mat_scd, mat_date, strike, is_call)
-            if code in done:
-                stats["skipped"] += 1
-                misses = 0
-                continue
-            stats["probed"] += 1
-            bars = _fetch_bars(code, start, mat_date)
-            if not bars:
-                misses += 1
-                continue
-            misses = 0
-            stats["found"] += 1
-            stats["bars"] += len(bars)
-            session.add(MstFuopt(
-                short_code=code, prod_nm=f"{prod_type} {mat_code} {strike}",
-                prod_type=prod_type, call_put_cd="CALL" if is_call else "PUT",
-                ul_code="2001", ul_nm="KOSPI200", cont_mult=250000.0,
-                mat_code=mat_code, mat_date=mat_date, front_date=front_date,
-                strike_prc=strike, description=ORIGIN, updated_at=None,
-            ))
-            for bar in bars:
-                session.add(KisFutoptDaily(
-                    api_id=API_ID, job_id=job_id, short_code=code,
-                    stck_bsop_date=bar["stck_bsop_date"],
-                    futs_prpr=_num(bar.get("futs_prpr")), futs_oprc=_num(bar.get("futs_oprc")),
-                    futs_hgpr=_num(bar.get("futs_hgpr")), futs_lwpr=_num(bar.get("futs_lwpr")),
-                    acml_vol=_int(bar.get("acml_vol")), acml_tr_pbmn=_int(bar.get("acml_tr_pbmn")),
-                    mod_yn=bar.get("mod_yn"),
+    ``mirror_to`` copies the resulting strikes to other products that share
+    this expiry calendar and ladder (mini against the monthly), sparing a
+    second identical search."""
+    call_edge, c1 = find_otm_edge(prod_type, mat_scd, mat_date, front_date, atm, True)
+    put_edge, c2 = find_otm_edge(prod_type, mat_scd, mat_date, front_date, atm, False)
+
+    itm_span = STRIKE_STEP * ITM_STEPS
+    calls = _strike_range(max(put_edge, _snap(atm - itm_span)), call_edge)
+    puts = _strike_range(put_edge, min(call_edge, _snap(atm + itm_span)))
+
+    existing = {r[0] for r in session.exec(
+        text("SELECT short_code FROM mst_fuopt WHERE prod_type = :p AND mat_code = :m"),
+        params={"p": prod_type, "m": mat_code}).all()}
+
+    added = 0
+    for target in (prod_type, *mirror_to):
+        for is_call, strikes in ((True, calls), (False, puts)):
+            for strike in strikes:
+                code = build_short_code(target, mat_scd, mat_date, strike, is_call)
+                if code in existing:
+                    continue
+                existing.add(code)
+                session.add(MstFuopt(
+                    short_code=code, prod_nm=f"{target} {mat_code} {strike}",
+                    prod_type=target, call_put_cd="CALL" if is_call else "PUT",
+                    ul_code="2001", ul_nm="KOSPI200", cont_mult=250000.0,
+                    mat_code=mat_code, mat_date=mat_date, front_date=front_date,
+                    strike_prc=strike, description=ORIGIN, updated_at=None,
                 ))
-            session.commit()
-    return stats
+                added += 1
+    session.commit()
+    return {"probed": c1 + c2, "call_edge": call_edge, "put_edge": put_edge,
+            "contracts": added, "calls": len(calls), "puts": len(puts)}
 
 
-def _num(v: Any) -> float | None:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
+MIRROR = {"K2I": ("MKI",)}   # mini shares the monthly calendar and the same ladder
 
 
-def _int(v: Any) -> int | None:
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return None
-
-
-def discover_period(session: Session, period: str) -> dict[str, dict[str, int]]:
+def discover_period(session: Session, period: str) -> dict[str, dict[str, Any]]:
     """Backfill every maturity settling in ``period`` ("2019" or "2019-10").
 
-    Scoped by period because a full backfill is hours of paced requests --
-    small, restartable chunks keep a failure from costing the whole run, and
-    the natural chunk is the maturity, since a strike ladder only makes sense
-    relative to where the index sat when that contract settled."""
+    Scoped by period because a strike ladder is only meaningful relative to
+    where the index sat when that contract settled, and because small
+    restartable chunks keep one failure from costing a whole run.
+
+    MKI is excluded from the scan and filled by mirroring K2I -- the two share
+    an expiry calendar and a ladder, so searching both would double the cost
+    for an identical answer."""
     like = f"{period}%" if len(period) == 4 else f"{period[:4]}-{period[5:7]}%"
     rows = session.exec(text("""
         SELECT m.prod_type, m.mat_code, m.mat_scd, m.mat_date, m.prev_mat_date,
@@ -217,20 +269,21 @@ def discover_period(session: Session, period: str) -> dict[str, dict[str, int]]:
           FROM meta_maturity m
          WHERE m.mat_scd IS NOT NULL AND m.mat_date IS NOT NULL
            AND TO_CHAR(m.mat_date, 'YYYY-MM') LIKE :p
+           AND m.prod_type <> 'MKI'
          ORDER BY m.mat_date, m.prod_type"""), params={"p": like}).all()
 
-    results: dict[str, dict[str, int]] = {}
+    results: dict[str, dict[str, Any]] = {}
     for prod_type, mat_code, mat_scd, mat_date, front_date, ref in rows:
         key = f"{prod_type} {mat_code}"
         if ref is None:
             logger.warning("{}: no index close before {}, skipped", key, mat_date)
             continue
-        atm = round(float(ref) / STRIKE_STEP) * STRIKE_STEP
-        stats = discover_maturity(session, prod_type, mat_code, mat_scd,
-                                  mat_date.date() if hasattr(mat_date, "date") else mat_date,
-                                  front_date.date() if hasattr(front_date, "date") else front_date,
-                                  atm)
+        stats = discover_maturity(
+            session, prod_type, mat_code, mat_scd,
+            mat_date.date() if hasattr(mat_date, "date") else mat_date,
+            front_date.date() if hasattr(front_date, "date") else front_date,
+            _snap(float(ref)), mirror_to=MIRROR.get(prod_type, ()))
         results[key] = stats
-        logger.info("{}: atm={} probed={} found={} bars={} skipped={}",
-                    key, atm, stats["probed"], stats["found"], stats["bars"], stats["skipped"])
+        logger.info("{}: probed={} edges {}..{} contracts={}",
+                    key, stats["probed"], stats["put_edge"], stats["call_edge"], stats["contracts"])
     return results

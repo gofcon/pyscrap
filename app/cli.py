@@ -89,12 +89,11 @@ def discover_contracts_cmd(
     with Session(engine, expire_on_commit=False) as session:
         results = discover_period(session, period)
 
-    found = sum(r["found"] for r in results.values())
-    bars = sum(r["bars"] for r in results.values())
     probed = sum(r["probed"] for r in results.values())
-    typer.echo(f"{period}: {len(results)} maturities, {probed} probed, {found} contracts, {bars} bars")
+    contracts = sum(r["contracts"] for r in results.values())
+    typer.echo(f"{period}: {len(results)} maturities, {probed} probes, {contracts} contracts")
     for key, st in results.items():
-        typer.echo(f"  {key} -> found {st['found']}, bars {st['bars']}, skipped {st['skipped']}")
+        typer.echo(f"  {key} -> {st['put_edge']}..{st['call_edge']}, {st['contracts']} contracts ({st['probed']} probes)")
 
 
 @app.command("sync-mst-fuopt")
