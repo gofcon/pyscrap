@@ -92,6 +92,13 @@ def build_short_code(prod_type: str, mat_scd: str, mat_date: date,
     # meaningless for them. Checking the strike rather than a separate flag
     # keeps the two facts that distinguish a future -- no side, no strike --
     # from being able to disagree.
+    if strike is not None and not (STRIKE_FLOOR <= strike < STRIKE_CEIL):
+        # Above 1000 KIS stops encoding the strike and assigns a listing-order
+        # code instead, so there is nothing to build from. Refusing here keeps
+        # a 4-digit strike from silently producing a 10-character code that
+        # looks plausible and matches nothing.
+        raise ValueError(f"strike {strike} outside the computable range "
+                         f"[{STRIKE_FLOOR}, {STRIKE_CEIL})")
     side = "A" if strike is None else _side_prefix(is_call, mat_date)
     head = f"{side}{PRODUCT_CODE[prod_type]}{mat_scd}"
     return head if strike is None else f"{head}{int(strike):03d}"
@@ -194,7 +201,10 @@ def find_otm_edge(prod_type: str, mat_scd: str, mat_date: date, front_date: date
 
 
 def _strike_range(lo: float, hi: float) -> list[float]:
-    out, k = [], lo
+    """Ladder rungs from lo to hi, clipped to the range whose strike code is
+    computable -- anything at or above STRIKE_CEIL has no derivable code."""
+    out, k = [], max(lo, STRIKE_FLOOR)
+    hi = min(hi, STRIKE_CEIL - STRIKE_STEP)
     while k <= hi + 1e-9:
         out.append(round(k, 1))
         k += STRIKE_STEP
@@ -284,6 +294,13 @@ def discover_period(session: Session, period: str) -> dict[str, dict[str, Any]]:
         key = f"{prod_type} {mat_code}"
         if ref is None:
             logger.warning("{}: no index close before {}, skipped", key, mat_date)
+            continue
+        if float(ref) >= STRIKE_CEIL:
+            # Every strike worth having would sit above the computable range,
+            # so probing can only fail. Maturities this rich are recent enough
+            # to be covered by the master files anyway.
+            logger.warning("{}: index {} at/above {}, strike codes not derivable, skipped",
+                           key, ref, STRIKE_CEIL)
             continue
         stats = discover_maturity(
             session, prod_type, mat_code, mat_scd,

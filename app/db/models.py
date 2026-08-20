@@ -493,15 +493,19 @@ class KisIndexDaily(SQLModel, table=True):
     own this one -- it has a job_id, so save_mode and the export path work
     normally -- while stock_index_his stays reference data maintained DB-side.
 
-    The endpoint takes one index code, hardcoded to 2001 (KOSPI200) on the
-    ApiMst row, so rows here carry no index identifier of their own; the
-    procedure supplies the mv_id when it merges."""
+    ``short_code`` carries the index the row belongs to, stamped from the
+    job's own FID_INPUT_ISCD parameter (see ApiMst.key_params_list) because
+    the response itself does not repeat it -- output2 is a bare series. That
+    is what lets one table hold more than one index, and what the procedure
+    maps to mv_id on the way into stock_index_his."""
 
     __tablename__ = "kis_index_daily"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
     api_id: str = Field(index=True, max_length=150)
     job_id: str = Field(index=True, max_length=150)
+
+    short_code: Optional[str] = Field(default=None, index=True, max_length=20)  # 지수 코드 (FID_INPUT_ISCD)
 
     stck_bsop_date: str = Field(index=True, max_length=8)      # 영업일자
     bstp_nmix_prpr: Optional[float] = Field(default=None)      # 종가
