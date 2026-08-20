@@ -35,6 +35,7 @@ from datetime import date, timedelta
 from typing import Any, Iterable
 
 from loguru import logger
+from tenacity import retry, stop_after_attempt, wait_exponential
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -111,11 +112,22 @@ def build_short_code(prod_type: str, mat_scd: str, mat_date: date,
     return head if strike is None else f"{head}{int(strike):03d}"
 
 
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=1, max=15), reraise=True)
 def _fetch_bars(short_code: str, start: date, end: date) -> list[dict[str, Any]]:
     """Daily bars for one contract, or [] if it never listed. The endpoint
     answers for delisted codes -- that is what makes discovery possible -- and
     reports a non-existent one as an empty output2 rather than an error, so an
-    empty result is the 'no such contract' signal."""
+    empty result is the 'no such contract' signal.
+
+    Which is exactly why a failed call must not reach the caller as []. A
+    rate-limit rejection comes back as HTTP 500 carrying rt_cd=1/EGW00201, and
+    reading only output2 turns it into 'no such contract' -- silently, and at
+    the worst moment, since the search spends its requests probing the edge of
+    the ladder. One such rejection there ends the walk early and truncates the
+    maturity: found once as K2I 202504, whose calls stopped at 387.5 when
+    contracts ran to 470. So rt_cd is checked and a bad reply retried; if it
+    still fails the run stops rather than recording a shorter ladder than the
+    one that existed."""
     api_url = (
         "${KIS_PROD}/uapi/domestic-futureoption/v1/quotations/inquire-daily-fuopchartprice"
         f"?fid_cond_mrkt_div_code=O&fid_input_iscd={short_code}"
@@ -133,7 +145,12 @@ def _fetch_bars(short_code: str, start: date, end: date) -> list[dict[str, Any]]
     hdr = _json.loads(headers)
     hdr["tr_id"] = "FHKIF03020100"
     _pace_host(url)
-    payload = get_http_client().get(url, headers=hdr).json()
+    response = get_http_client().get(url, headers=hdr)
+    payload = response.json()
+    if payload.get("rt_cd") != "0":
+        raise RuntimeError(f"{short_code}: HTTP {response.status_code} "
+                           f"rt_cd={payload.get('rt_cd')} {payload.get('msg_cd')} "
+                           f"{str(payload.get('msg1'))[:60]}")
     return [b for b in (payload.get("output2") or []) if b.get("stck_bsop_date")]
 
 
