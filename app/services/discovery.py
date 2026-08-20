@@ -221,12 +221,19 @@ def discover_maturity(session: Session, prod_type: str, mat_code: str, mat_scd: 
     calls = _strike_range(max(put_edge, _snap(atm - itm_span)), call_edge)
     puts = _strike_range(put_edge, min(call_edge, _snap(atm + itm_span)))
 
+    # Covers the mirror targets too, not just prod_type: their rows are written
+    # here as well, so leaving them out of the seen-set lets a re-run collide on
+    # the primary key instead of skipping what it already produced.
+    targets = (prod_type, *mirror_to)
+    placeholders = ", ".join(f":p{i}" for i in range(len(targets)))
+    params: dict[str, Any] = {f"p{i}": t for i, t in enumerate(targets)}
+    params["m"] = mat_code
     existing = {r[0] for r in session.exec(
-        text("SELECT short_code FROM mst_fuopt WHERE prod_type = :p AND mat_code = :m"),
-        params={"p": prod_type, "m": mat_code}).all()}
+        text(f"SELECT short_code FROM mst_fuopt WHERE prod_type IN ({placeholders}) AND mat_code = :m"),
+        params=params).all()}
 
     added = 0
-    for target in (prod_type, *mirror_to):
+    for target in targets:
         for is_call, strikes in ((True, calls), (False, puts)):
             for strike in strikes:
                 code = build_short_code(target, mat_scd, mat_date, strike, is_call)
