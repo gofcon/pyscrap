@@ -37,8 +37,14 @@ from app.services.job_builder import (
 )
 
 
-def _log(session: Session, job_id: str, status: str, error_message: str | None = None) -> ApiJobLog:
-    """Append one execution-history row for a job. Never updates existing rows."""
+def _log(session: Session, job_id: str, status: str, error_message: str | None = None,
+         commit: bool = True) -> ApiJobLog:
+    """Append one execution-history row for a job. Never updates existing rows.
+
+    ``commit=False`` just stages the row, leaving the commit to the caller --
+    used by the success path in run_job, which has an ApiJob update and a
+    batch of result rows to persist in the same transaction anyway (one
+    ~32ms round-trip instead of three)."""
     log = ApiJobLog(
         job_id=job_id,
         status=status,
@@ -52,7 +58,8 @@ def _log(session: Session, job_id: str, status: str, error_message: str | None =
         executed_at=datetime.now(timezone.utc),
     )
     session.add(log)
-    session.commit()
+    if commit:
+        session.commit()
     return log
 
 
@@ -65,8 +72,11 @@ def _clear_previous_results(session: Session, api: ApiMst, job_id: str) -> None:
     instead, or every execution would wipe out the history it's building."""
     for table_name in set((api.output_tables_json or {}).values()):
         model_cls = TABLE_REGISTRY.get(table_name)
-        if model_cls is None or "job_id" not in model_cls.model_fields:
+        if model_cls is None:
             continue
+        # No job_id check needed: TABLE_REGISTRY only admits models that have
+        # one -- that's what defines a result table (see
+        # app.services.export._discover_table_registry).
         # model_cls is only known to be *some* SQLModel subclass here, not
         # specifically one with a job_id column (that's what the
         # model_fields check above already verified at runtime -- a type
@@ -142,11 +152,22 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         # of run_cycle: see app.services.export.finalize_pending_exports,
         # meant to run once as the last step of the day's batch, after every
         # cycle's jobs have already executed.
+        # One commit for everything this job produced: the result rows staged
+        # by run_and_save, the ApiJob update above, and the SUCCESS log entry.
         session.add(job)
+        _log(session, job.job_id, "SUCCESS", commit=False)
         session.commit()
-        _log(session, job.job_id, "SUCCESS")
     except Exception as exc:  # noqa: BLE001 - persisted for later inspection
         logger.exception("{}: job {} failed", job.api_id, job.job_id)
+        # Discard whatever the failed job already added to the session before
+        # it raised (run_and_save stages rows selector by selector and leaves
+        # committing to us). Without this, _log's own commit below would push
+        # that half-saved state to the DB alongside the FAILED marker, and any
+        # later job reusing this session inherits the dirty state -- harmless
+        # when a cycle held one job, but a cycle now runs hundreds of them in
+        # a single session, so one failure would otherwise spread down the
+        # rest of the run.
+        session.rollback()
         _log(session, job.job_id, "FAILED", error_message=str(exc)[:4000])
 
     return job

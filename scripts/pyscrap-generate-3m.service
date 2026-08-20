@@ -1,0 +1,25 @@
+[Unit]
+Description=pyscrap 3-Minute Shard Job Generation (once daily)
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+# Ordered: refresh the curated master first, then generate against it.
+# Multiple ExecStart= lines on a Type=oneshot service run sequentially, and
+# the unit stops at the first one that fails -- so a failed sync won't let
+# job generation fan out over a stale contract list.
+#
+# All of this must run *after* the raw master (fo_idx_code_mst) has been
+# reloaded by the daily_start cycle: sync_mst_fuopt reads it, and the shards'
+# db macro selects from what that sync produces, so generating first would
+# use yesterday's contract list and miss the front-month roll.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/sync_mst_fuopt.sh
+# generate-only for both shards, in one process each so the two stay in step.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_a generate-only
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_b generate-only
+
+[Install]
+WantedBy=multi-user.target

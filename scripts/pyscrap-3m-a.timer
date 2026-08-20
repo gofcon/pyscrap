@@ -1,0 +1,28 @@
+[Unit]
+Description=Timer for pyscrap 3-Minute Cycle Execution -- shard A (account #1)
+
+[Timer]
+# Every 3 minutes, aligned to the clock (:00, :03, ... :57) -- must match
+# app.services.job_builder._floor_datetime's "3m" bucket, so a snapshot's
+# trade_at lines up with the tick that produced it. Both shards fire on the
+# same instants on purpose: they split one logical cycle across two KIS
+# accounts (each has its own per-account rate limit), so they run in
+# parallel and their rows share a trade_at.
+# Restricted to trading hours 08:42-16:45 (multiple OnCalendar= lines are
+# additive in systemd): 08:42/45/.../57, then every 3 min through
+# 09:00-15:57, then 16:00 through 16:45. Starts at 08:42 rather than 08:40
+# because 40 isn't a multiple of 3 and would floor to a bucket no other tick
+# lands on.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
+OnCalendar=Mon..Fri *-*-* 08:42..57/3:00
+OnCalendar=Mon..Fri *-*-* 09..15:0/3:00
+OnCalendar=Mon..Fri *-*-* 16:0..45/3:00
+# systemd defaults AccuracySec to 1min, which lets a timer fire up to a full
+# minute late -- enough to push a tick into the next 3-minute bucket and give
+# two shards different trade_at values for the same tick. 1s pins it.
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

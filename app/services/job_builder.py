@@ -72,7 +72,7 @@ import hashlib
 import itertools
 import re
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, cast
 
 from loguru import logger
@@ -95,6 +95,23 @@ def _run_query_rows(session: Session, query: str) -> list[tuple]:
     # app.services.execution._clear_previous_results.
     result = session.exec(cast(Any, text(query)))
     return [tuple(row) for row in result]
+
+
+# Every source scraped here is Korean-market data, so both kinds of
+# generated timestamp (RESERVED_NOW_KEY capture stamps and the _DATE_KEYWORDS
+# below) have to be anchored to KST rather than to whatever the host happens
+# to be set to -- an Oracle Cloud instance defaults to UTC, which would put a
+# "5m" snapshot's trade_at 9 hours off the tick that produced it, and would
+# make a "today" resolved during the 08:35 pre-open job land on the *previous*
+# date (08:35 KST = 23:35 UTC the day before). A fixed offset rather than
+# zoneinfo("Asia/Seoul"): KST has been a constant UTC+9 with no DST since
+# 1988, and zoneinfo needs a tzdata database that isn't present everywhere
+# this runs (verified missing on the Windows dev machine).
+KST = timezone(timedelta(hours=9))
+
+
+def _now_kst() -> datetime:
+    return datetime.now(KST)
 
 
 def _add_months(d: date, months: int) -> date:
@@ -124,7 +141,16 @@ def _last_bday(d: date) -> date:
 # free-form values like "daily"/"once"; those simply don't match this pattern
 # and _floor_datetime leaves the timestamp unaligned (no-op), so they're
 # unaffected.
-_CYCLE_RE = re.compile(r"^(\d+)([mhdw])$")
+#
+# An optional "_<shard>" suffix ("3m_a", "3m_b", ...) is accepted and ignored
+# for flooring purposes. Splitting one logical cycle across several cycle
+# values is how a workload gets divided over per-account rate limits: each
+# shard is scanned (run_cycle) and scheduled (its own systemd timer) on its
+# own, but they all fire at the same wall-clock tick, so their snapshots have
+# to floor to the *same* bucket -- which is exactly what dropping the suffix
+# here gets. Without it "3m_a" wouldn't match at all and every shard would
+# stamp its own raw wall-clock time instead.
+_CYCLE_RE = re.compile(r"^(\d+)([mhdw])(?:_\w+)?$")
 
 
 def _floor_datetime(dt: datetime, execution_cycle: str | None) -> datetime:
@@ -157,7 +183,7 @@ def _floor_datetime(dt: datetime, execution_cycle: str | None) -> datetime:
         epoch = date(1970, 1, 1)
         offset = (day_start.date() - epoch).days
         floored_offset = offset - (offset % n)
-        return datetime.combine(epoch + timedelta(days=floored_offset), dt.min.time())
+        return datetime.combine(epoch + timedelta(days=floored_offset), dt.min.time(), dt.tzinfo)
     if unit == "w":
         day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
         monday = day_start - timedelta(days=day_start.weekday())
@@ -166,7 +192,7 @@ def _floor_datetime(dt: datetime, execution_cycle: str | None) -> datetime:
         epoch_monday = date(1970, 1, 5)  # first Monday on/after the epoch
         offset_weeks = (monday.date() - epoch_monday).days // 7
         floored_weeks = offset_weeks - (offset_weeks % n)
-        return datetime.combine(epoch_monday + timedelta(weeks=floored_weeks), dt.min.time())
+        return datetime.combine(epoch_monday + timedelta(weeks=floored_weeks), dt.min.time(), dt.tzinfo)
     return dt
 
 
@@ -189,7 +215,7 @@ def _resolve_date(keyword: str, fmt: str | None = None) -> str:
         raise ValueError(
             f"Unknown date keyword '{keyword}', expected one of {sorted(_DATE_KEYWORDS)}"
         ) from None
-    return resolver(date.today()).strftime(fmt or default_fmt)
+    return resolver(_now_kst().date()).strftime(fmt or default_fmt)
 
 
 # Reserved key_params_list entry (see module docstring): resolved once
@@ -203,7 +229,7 @@ def resolve_now(execution_cycle: str | None = None, fmt: str = "%Y%m%d%H%M%S") -
     execution_cycle's bucket (see _floor_datetime) so repeated executions of
     the same scheduled job produce timestamps that line up with each other
     instead of drifting on scheduler jitter."""
-    return _floor_datetime(datetime.now(), execution_cycle).strftime(fmt)
+    return _floor_datetime(_now_kst(), execution_cycle).strftime(fmt)
 
 
 def is_repeated_api(api: ApiMst) -> bool:

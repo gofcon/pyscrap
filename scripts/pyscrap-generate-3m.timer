@@ -1,0 +1,13 @@
+[Unit]
+Description=Timer for pyscrap 3-Minute Shard Job Generation
+
+[Timer]
+# 08:38 -- after daily_start (08:35, which refreshes the KIS token and the
+# fo_idx_code_mst instrument master) and before the first 3m tick (08:42).
+# Mon..Fri only -- same scope as the other pyscrap timers.
+OnCalendar=Mon..Fri *-*-* 08:38:00
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

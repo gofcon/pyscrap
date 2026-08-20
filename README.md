@@ -20,6 +20,25 @@ python -m app.cli run-cycle 5m         # execute whatever's currently pending
 python -m app.cli finalize-exports     # CSV -> Parquet -> upload, once as the day's last step
 ```
 
+### Sharded cycles (rate-limited high-frequency polling)
+
+A KIS rate limit is per-account, so the 3-minute futures/options snapshot
+poll (1,753 instruments: front-month index calls/puts, both weekly series,
+index futures) is split across two accounts. Each half is its own
+`execution_cycle` -- `3m_a` (account #1) and `3m_b` (account #2) -- with its
+own timer, firing on the same instants. `_floor_datetime` ignores the
+`_<shard>` suffix, so both halves stamp the same `trade_at`.
+
+```bash
+python -m app.cli generate-jobs 3m_a   # once a day, after fo_idx_code_mst refreshes
+python -m app.cli run-cycle 3m_a       # every tick (scripts/run_cycle.sh 3m_a run-only)
+```
+
+Measured on this workload: ~155ms per job, ~136s per 876-job shard, against
+a 180s tick. The pacing floor (`REQUEST_MIN_INTERVAL_SEC`, 150ms) is the
+binding constraint -- adding concurrency does not help, since the API itself
+answers in ~24ms. Adding *accounts* is what raises throughput.
+
 ## Run -- API
 
 ```bash

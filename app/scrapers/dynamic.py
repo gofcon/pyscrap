@@ -14,10 +14,12 @@ This module only covers fetch + parse. What happens to the parsed records
 
 from __future__ import annotations
 
+import atexit
 import csv
 import io
 import os
 import re
+import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -50,6 +52,68 @@ _PAGE_DELAY_SEC = float(os.environ.get("PAGE_DELAY_SEC", "0.3"))
 # '&page_no=:PAGE') -- no separate config field needed, same as any other
 # ':KEY' placeholder except this one is driven by the fetch loop, not params_json.
 _PAGE_PARAM = "PAGE"
+
+# Minimum seconds between two requests to the *same host*, enforced
+# process-wide by _pace_host (see fetch). Distinct from _PAGE_DELAY_SEC,
+# which only spaces the pages within one paginated fetch -- this spans every
+# job the process runs, which is what a per-account rate limit actually
+# measures. Sized against KIS, measured live: ~8 req/s is where it starts
+# rejecting with EGW00201 ("초당 거래건수를 초과하였습니다", returned as HTTP
+# 500), so 0.15s (6.7 req/s) keeps ~15% margin under that while staying
+# inside KIS's own documented 100~150ms guidance. Per-host rather than
+# global so one site's limit doesn't throttle every other site a process
+# happens to scrape in the same run.
+_REQUEST_MIN_INTERVAL_SEC = float(os.environ.get("REQUEST_MIN_INTERVAL_SEC", "0.15"))
+
+# One httpx.Client shared by every DynamicApiScraper in the process. A new
+# client per request (what this replaced) meant a fresh TLS handshake every
+# time: measured live against KIS, 287ms per request of which only ~24ms was
+# the actual response -- i.e. ~92% of each request was handshake. Keeping one
+# client alive across jobs removes that entirely. A scraper instance is built
+# fresh per ApiJob (see app.services.execution.run_job), so the pool has to
+# live at module level, not on the instance, to survive across jobs.
+# httpx.Client is thread-safe.
+_client: httpx.Client | None = None
+_client_lock = threading.Lock()
+
+# Per-host timestamp of the next free request slot (monotonic clock).
+_pace_lock = threading.Lock()
+_next_slot_at: dict[str, float] = {}
+
+
+def get_http_client() -> httpx.Client:
+    """The process-wide connection-pooled client (see _client)."""
+    global _client
+    with _client_lock:
+        if _client is None or _client.is_closed:
+            _client = httpx.Client(timeout=30, follow_redirects=True)
+            atexit.register(close_http_client)
+        return _client
+
+
+def close_http_client() -> None:
+    """Release the shared pool. Registered with atexit, so neither entrypoint
+    (one-shot CLI process, long-running API app) needs to call it by hand."""
+    global _client
+    with _client_lock:
+        if _client is not None and not _client.is_closed:
+            _client.close()
+        _client = None
+
+
+def _pace_host(url: str) -> None:
+    """Block until this host's next request slot is due, so a whole cycle's
+    worth of jobs can't burst past the site's rate limit. Reserves the slot
+    while holding the lock and only *then* sleeps, so concurrent callers each
+    get their own slot instead of all waking on the same one."""
+    if _REQUEST_MIN_INTERVAL_SEC <= 0:
+        return
+    host = httpx.URL(url).host or ""
+    with _pace_lock:
+        now = time.monotonic()
+        slot = max(now, _next_slot_at.get(host, 0.0))
+        _next_slot_at[host] = slot + _REQUEST_MIN_INTERVAL_SEC
+    time.sleep(max(0.0, slot - time.monotonic()))
 
 
 def _normalize_xml_selector(selector: str) -> str:
@@ -240,10 +304,12 @@ class DynamicApiScraper:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     def fetch(self) -> httpx.Response:
         request_kwargs = self.build_request()
-        with httpx.Client(timeout=30, follow_redirects=True) as client:
-            response = client.request(**request_kwargs)
-            response.raise_for_status()
-            return response
+        # Paced *inside* the retry, so a retried attempt (e.g. after a rate-
+        # limit rejection) takes its own slot rather than firing immediately.
+        _pace_host(request_kwargs["url"])
+        response = get_http_client().request(**request_kwargs)
+        response.raise_for_status()
+        return response
 
     def is_paginated(self) -> bool:
         # api_url/payload_xml use :TOKEN string substitution, so a literal
@@ -505,7 +571,12 @@ class DynamicApiScraper:
             if typed_rows:
                 append_csv_rows(table_name, job_id, typed_rows)
 
-        session.commit()
+        # Deliberately no commit here -- the caller owns the transaction (see
+        # app.services.execution.run_job, which folds these rows, the ApiJob
+        # update and the ApiJobLog entry into a single commit). Each commit is
+        # a full round-trip to Oracle ADB, measured at ~32ms; committing here
+        # as well made three per job, which at hundreds of jobs per cycle cost
+        # more than the HTTP requests themselves (~24ms each).
 
         for table_name, count in counts.items():
             logger.info("{}: saved {} record(s) into {}", self.api.api_id, count, table_name)
