@@ -50,6 +50,13 @@ ORIGIN = "reconstructed by probe (no master file)"
 
 PRODUCT_CODE = {"K2I": "01", "MKI": "05", "WKI": "09", "WKM": "AF"}
 
+# Contract multiplier in KRW. A property of the product, not of the maturity
+# it settles on, which matters where MIRROR copies a search across products:
+# mini shares K2I's calendar and strike ladder but trades at a fifth of its
+# multiplier, so copying the number along with the strikes would misstate
+# every mini contract's notional.
+CONT_MULT = {"K2I": 250000.0, "MKI": 50000.0, "WKI": 250000.0, "WKM": 250000.0}
+
 # First maturity on the post-renumbering scheme (2026-01 expiry). At and after
 # this date a call is 'B' and a put 'C'; before it, '2' and '3'. Verified
 # against the endpoint across 2019-2026: the old prefixes stop answering
@@ -253,7 +260,7 @@ def discover_maturity(session: Session, prod_type: str, mat_code: str, mat_scd: 
                 session.add(MstFuopt(
                     short_code=code, prod_nm=f"{target} {mat_code} {strike}",
                     prod_type=target, call_put_cd="CALL" if is_call else "PUT",
-                    ul_code="2001", ul_nm="KOSPI200", cont_mult=250000.0,
+                    ul_code="2001", ul_nm="KOSPI200", cont_mult=CONT_MULT[target],
                     mat_code=mat_code, mat_date=mat_date, front_date=front_date,
                     strike_prc=strike, description=ORIGIN, updated_at=None,
                 ))
