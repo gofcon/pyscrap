@@ -1,6 +1,6 @@
 .env
 .idea/
-orascrap.egg-info/
+pyscrap.egg-info/
 data/
 tests/
 scripts/

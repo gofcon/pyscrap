@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =================================================================
-# orascrap Finalize Exports Script
+# pyscrap Finalize Exports Script
 # This script is intended to be called by systemd services.
 # Usage: ./finalize_exports.sh
 #
@@ -13,7 +13,7 @@
 
 # 1. 설정
 # 서비스 파일의 WorkingDirectory와 일치해야 함
-PROJECT_DIR="/home/opc/orascrap"
+PROJECT_DIR="/home/opc/pyscrap"
 
 # 2. 프로젝트 디렉토리로 이동
 cd "$PROJECT_DIR" || {

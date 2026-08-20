@@ -29,7 +29,7 @@ def setup_logging() -> None:
 
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.add(
-        _LOG_DIR / "orascrap.log",
+        _LOG_DIR / "pyscrap.log",
         level=settings.log_level,
         rotation="00:00",  # roll over to a new file at midnight
         retention="30 days",  # delete rotated files older than this

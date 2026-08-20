@@ -1,5 +1,5 @@
 [Unit]
-Description=Timer for Main Scraper Finalize Exports
+Description=Timer for pyscrap Finalize Exports
 
 [Timer]
 # Run at 18:10 -- after daily_end (18:00, see main-daily-end.timer) and

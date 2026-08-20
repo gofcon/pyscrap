@@ -21,7 +21,7 @@ from app.logging_config import setup_logging
 
 setup_logging()
 
-app = FastAPI(title="orascrap")
+app = FastAPI(title="pyscrap")
 
 app.include_router(health.router)
 

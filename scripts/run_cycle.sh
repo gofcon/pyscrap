@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =================================================================
-# orascrap Run Cycle Script
+# pyscrap Run Cycle Script
 # This script is intended to be called by systemd services.
 # Usage: ./run_cycle.sh <execution_cycle>   e.g. daily, 5m, 1h
 #
@@ -14,7 +14,7 @@
 
 # 1. 설정
 # 서비스 파일의 WorkingDirectory와 일치해야 함
-PROJECT_DIR="/home/opc/orascrap"
+PROJECT_DIR="/home/opc/pyscrap"
 CYCLE=$1
 
 # 인자 확인

@@ -1,5 +1,5 @@
 [Unit]
-Description=Timer for Main Scraper 5-Minute Cycle Execution
+Description=Timer for pyscrap 5-Minute Cycle Execution
 
 [Timer]
 # Run every 5 minutes, aligned to the clock (00, 05, 10, ... 55) -- matches

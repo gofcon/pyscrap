@@ -1,5 +1,5 @@
 [Unit]
-Description=Timer for Main Scraper Daily-End Execution
+Description=Timer for pyscrap Daily-End Execution
 
 [Timer]
 # Run at 18:00 -- after market close, for jobs that need the

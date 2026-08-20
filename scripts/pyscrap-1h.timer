@@ -1,5 +1,5 @@
 [Unit]
-Description=Timer for Main Scraper Hourly Cycle Execution
+Description=Timer for pyscrap Hourly Cycle Execution
 
 [Timer]
 # Run on the hour -- matches _floor_datetime's "1h" bucket alignment, so a

@@ -1,4 +1,4 @@
-# orascrap
+# pyscrap
 
 Oracle DB + SQLModel 기반 스크래퍼 프로젝트.
 

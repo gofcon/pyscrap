@@ -1,5 +1,5 @@
 [project]
-name = "orascrap"
+name = "pyscrap"
 version = "0.1.0"
 description = "Oracle DB scraper using SQLModel"
 requires-python = ">=3.13"

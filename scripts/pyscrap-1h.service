@@ -1,14 +1,14 @@
 [Unit]
-Description=Main Scraper 5-Minute Cycle Execution
+Description=pyscrap Hourly Cycle Execution
 After=network.target
 
 [Service]
 Type=oneshot
 User=opc
 Group=opc
-WorkingDirectory=/home/opc/orascrap
+WorkingDirectory=/home/opc/pyscrap
 # ExecStart calls the wrapper script with cycle argument
-ExecStart=/bin/bash /home/opc/orascrap/scripts/run_cycle.sh 5m
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 1h
 
 [Install]
 WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 [Unit]
-Description=Timer for Main Scraper Daily-Start Execution
+Description=Timer for pyscrap Daily-Start Execution
 
 [Timer]
 # Run at 08:35 -- before market open, for prep/reference jobs (KIS token

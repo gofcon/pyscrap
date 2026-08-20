@@ -11,7 +11,7 @@ app = typer.Typer()
 
 @app.callback()
 def main():
-    """orascrap batch entrypoints (run from systemd timers/services)."""
+    """pyscrap batch entrypoints (run from systemd timers/services)."""
 
 
 @app.command("generate-jobs")
