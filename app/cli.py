@@ -96,6 +96,36 @@ def discover_contracts_cmd(
         typer.echo(f"  {key} -> {st['put_edge']}..{st['call_edge']}, {st['contracts']} contracts ({st['probed']} probes)")
 
 
+def _call_procedure(name: str) -> int:
+    """Run a DB-side sync procedure and return the row count it reports.
+
+    callproc rather than exec_driver_sql: these procedures report progress
+    through an OUT parameter, which needs a real bind variable. The raw handle
+    is fetched per call rather than held across the commit, which invalidates
+    it. They deliberately don't commit themselves, so that a caller can group
+    one with other work; here there is none, so commit right after."""
+    with Session(engine) as session:
+        with session.connection().connection.cursor() as cursor:
+            count = cursor.var(oracledb.NUMBER)
+            cursor.callproc(name, [count])
+            result = int(count.getvalue())
+        session.commit()
+    return result
+
+
+@app.command("sync-index-his")
+def sync_index_his_cmd():
+    """Fold scraped index bars (kis_index_daily) into the stock_index_his
+    series, via sp_stock_index_his_sync.
+
+    Separate step because stock_index_his is reference data, not a scrape
+    target: it has no job_id, so the engine cannot write it directly (see
+    app.services.export._discover_table_registry). The procedure also fills
+    the day-over-day columns the endpoint doesn't return."""
+    setup_logging()
+    typer.echo(f"stock_index_his: {_call_procedure('sp_stock_index_his_sync')} row(s) merged")
+
+
 @app.command("sync-mst-fuopt")
 def sync_mst_fuopt_cmd():
     """Fold any newly-listed contracts from fo_idx_code_mst into mst_fuopt, by
@@ -111,21 +141,7 @@ def sync_mst_fuopt_cmd():
     after the daily_start cycle and before any job generation that selects
     from mst_fuopt."""
     setup_logging()
-
-    with Session(engine) as session:
-        # callproc rather than exec_driver_sql: the procedure reports its
-        # insert count through an OUT parameter, which needs a real bind
-        # variable. The raw handle is fetched here rather than held across
-        # the commit below -- committing invalidates it.
-        with session.connection().connection.cursor() as cursor:
-            inserted = cursor.var(oracledb.NUMBER)
-            cursor.callproc("sp_mst_fuopt_sync", [inserted])
-            count = int(inserted.getvalue())
-        # The procedure deliberately doesn't commit itself, so that a caller
-        # can group it with other work; here there is none, so commit now.
-        session.commit()
-
-    typer.echo(f"mst_fuopt: {count} new contract(s)")
+    typer.echo(f"mst_fuopt: {_call_procedure('sp_mst_fuopt_sync')} new contract(s)")
 
 
 @app.command("finalize-exports")

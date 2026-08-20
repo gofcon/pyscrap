@@ -479,3 +479,38 @@ class KisFutoptDaily(SQLModel, table=True):
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KisIndexDaily(SQLModel, table=True):
+    """Typed output table for KIS_INDEX_DAILY's ``output2`` -- one row per
+    index per trading day, field names kept as KIS's own for the same
+    1:1-traceability reason as the other kis_* tables.
+
+    Raw landing table rather than the series anyone queries: a procedure folds
+    it into stock_index_his, which is keyed (trade_date, mv_id) and carries the
+    derived columns the source does not supply (the endpoint returns OHLC and
+    volume but no day-over-day change). Keeping the two apart lets the engine
+    own this one -- it has a job_id, so save_mode and the export path work
+    normally -- while stock_index_his stays reference data maintained DB-side.
+
+    The endpoint takes one index code, hardcoded to 2001 (KOSPI200) on the
+    ApiMst row, so rows here carry no index identifier of their own; the
+    procedure supplies the mv_id when it merges."""
+
+    __tablename__ = "kis_index_daily"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(index=True, max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    stck_bsop_date: str = Field(index=True, max_length=8)      # 영업일자
+    bstp_nmix_prpr: Optional[float] = Field(default=None)      # 종가
+    bstp_nmix_oprc: Optional[float] = Field(default=None)      # 시가
+    bstp_nmix_hgpr: Optional[float] = Field(default=None)      # 고가
+    bstp_nmix_lwpr: Optional[float] = Field(default=None)      # 저가
+    acml_vol: Optional[int] = Field(default=None)              # 누적거래량
+    acml_tr_pbmn: Optional[int] = Field(default=None)          # 누적거래대금
+    mod_yn: Optional[str] = Field(default=None, max_length=1)  # 수정지수 반영 여부
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
