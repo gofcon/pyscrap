@@ -4,3 +4,12 @@ pyscrap.egg-info/
 data/
 tests/
 scripts/
+
+# wallet/ is excluded from git (.gitignore -- never publish it, it's mTLS
+# cert material) but MUST reach the FastAPI Cloud deploy bundle (see
+# app/db/engine.py's wallet connection). The deploy CLI is .gitignore-aware
+# (rignore/the Rust "ignore" crate), so once this became a real git repo,
+# .gitignore's "wallet/" line started silently excluding it here too --
+# negate it explicitly so it's re-included despite that.
+!wallet/
+!wallet/**
