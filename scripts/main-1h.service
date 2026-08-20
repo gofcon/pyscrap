@@ -1,0 +1,14 @@
+[Unit]
+Description=Main Scraper Hourly Cycle Execution
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/orascrap
+# ExecStart calls the wrapper script with cycle argument
+ExecStart=/bin/bash /home/opc/orascrap/scripts/run_cycle.sh 1h
+
+[Install]
+WantedBy=multi-user.target

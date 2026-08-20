@@ -1,0 +1,22 @@
+# Secrets -- never commit
+.env
+wallet/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Runtime data (local CSV buffer / logs -- see app.logging_config / app.services.export)
+data/
+
+# IDE
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

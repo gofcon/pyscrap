@@ -1,0 +1,15 @@
+[Unit]
+Description=Timer for Main Scraper Finalize Exports
+
+[Timer]
+# Run at 18:10 -- after daily_end (18:00, see main-daily-end.timer) and
+# after the trading-hours 5m/1h windows (which end by 16:45), so every
+# cycle's jobs for the day have already run before this sweeps up whatever
+# CSVs are left pending.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
+OnCalendar=Mon..Fri *-*-* 18:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Timer for Main Scraper 5-Minute Cycle Execution
+
+[Timer]
+# Run every 5 minutes, aligned to the clock (00, 05, 10, ... 55) -- matches
+# app.services.job_builder._floor_datetime's "5m" bucket alignment, so a
+# snapshot's trade_at lines up with the tick that produced it.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
+# Restricted to trading hours 08:40-16:45 (multiple OnCalendar= lines are
+# additive in systemd, not overriding -- these three together carve out
+# exactly that window at 5-minute steps): 08:40/45/50/55, then every 5 min
+# through 09:00-15:55, then 16:00 through 16:45.
+OnCalendar=Mon..Fri *-*-* 08:40..59/5:00
+OnCalendar=Mon..Fri *-*-* 09..15:0/5:00
+OnCalendar=Mon..Fri *-*-* 16:0..45/5:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

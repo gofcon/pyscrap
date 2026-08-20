@@ -1,0 +1,17 @@
+[Unit]
+Description=Timer for Main Scraper Daily-Start Execution
+
+[Timer]
+# Run at 08:35 -- before market open, for prep/reference jobs (KIS token
+# refresh, futures/options master code list) that later same-day jobs
+# depend on. Deliberately 5 min before the 5m timer's first trading-hours
+# tick (08:40, see main-5m.timer) -- daily_start and that first tick would
+# otherwise both fire at 08:40 with no ordering guarantee between them, and
+# the 5m job needs a fresh KIS_ACCESS_TOKEN to already be in .env by then.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
+OnCalendar=Mon..Fri *-*-* 08:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

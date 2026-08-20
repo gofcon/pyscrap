@@ -1,0 +1,15 @@
+[Unit]
+Description=Main Scraper Finalize Exports (18:10, end of day's batch)
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/orascrap
+# app.services.export.finalize_pending_exports -- CSV -> Parquet -> upload
+# for whatever's still pending on disk, from any job (one-shot or repeated).
+ExecStart=/bin/bash /home/opc/orascrap/scripts/finalize_exports.sh
+
+[Install]
+WantedBy=multi-user.target

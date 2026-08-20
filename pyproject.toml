@@ -1,0 +1,32 @@
+[project]
+name = "orascrap"
+version = "0.1.0"
+description = "Oracle DB scraper using SQLModel"
+requires-python = ">=3.13"
+dependencies = [
+    "sqlmodel>=0.0.22",
+    "oracledb>=2.4.1",
+    "alembic>=1.14.0",
+    "pydantic-settings>=2.6.1",
+    "httpx>=0.28.0",
+    "beautifulsoup4>=4.12.3",
+    "tenacity>=9.0.0",
+    "loguru>=0.7.2",
+    "typer>=0.15.1",
+    "pyarrow>=17.0.0",
+    "boto3>=1.34.0",
+    "fastapi[standard]>=0.115.0",
+    "requests>=2.32.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.fastapi]
+# `fastapi run`'s auto-detection only looks at a fixed set of root-level
+# paths (main.py, app.py, api.py, app/main.py, ...) -- our actual app lives
+# one level deeper, at app/api/main.py, which none of those match. Pinning
+# the dotted import path here (verified working: `fastapi run` accepts it
+# directly, no root-level shim file needed) is what FastAPI Cloud's deploy
+# actually uses to start the app.
+entrypoint = "app.api.main:app"

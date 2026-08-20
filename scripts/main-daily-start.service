@@ -1,0 +1,14 @@
+[Unit]
+Description=Main Scraper Daily-Start Execution (08:35)
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/orascrap
+# ExecStart calls the wrapper script with cycle argument
+ExecStart=/bin/bash /home/opc/orascrap/scripts/run_cycle.sh daily_start
+
+[Install]
+WantedBy=multi-user.target

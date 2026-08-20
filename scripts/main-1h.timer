@@ -1,0 +1,15 @@
+[Unit]
+Description=Timer for Main Scraper Hourly Cycle Execution
+
+[Timer]
+# Run on the hour -- matches _floor_datetime's "1h" bucket alignment, so a
+# snapshot's trade_at lines up with the tick that produced it.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
+# Restricted to on-the-hour marks that fall within trading hours 08:40-16:45,
+# i.e. 09:00 through 16:00 (08:00 is before open, 17:00 is after close).
+OnCalendar=Mon..Fri *-*-* 09..16:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

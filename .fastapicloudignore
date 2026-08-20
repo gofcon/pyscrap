@@ -1,0 +1,6 @@
+.env
+.idea/
+orascrap.egg-info/
+data/
+tests/
+scripts/
