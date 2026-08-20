@@ -43,6 +43,10 @@ from app.object_storage import bucket_name, get_client as get_object_storage_cli
 # -- excluded from the auto-discovery below. Deliberately small and stable:
 # these four are fixed by the engine's own design, unlike result tables,
 # which grow every time a new scraper's typed output table is added.
+#
+# Note this exclusion is still needed alongside the job_id rule in
+# _discover_table_registry: api_job is keyed *by* job_id and api_job_log
+# references it, so both would otherwise qualify as result tables.
 _BOOKKEEPING_TABLES = {"api_mst", "api_job_builder", "api_job", "api_job_log"}
 
 
@@ -61,13 +65,24 @@ def _discover_table_registry() -> dict[str, type[SQLModel]]:
     Auto-discovered (via each class's __tablename__) instead of a
     hand-maintained dict, so adding a new result table (e.g. a future
     KisFutoptPrice) to models.py is the *only* step needed -- there's no
-    second place to remember to register it."""
+    second place to remember to register it.
+
+    A ``job_id`` column is what marks a model as one of these: it is the
+    column every write path here depends on (run_and_save stamps it,
+    _clear_previous_results deletes by it, the Parquet key is derived from
+    it), so a table without one cannot be a scrape target in the first
+    place. models.py also holds reference tables -- expiry calendars,
+    instrument masters, daily index series -- that are keyed on their own
+    data and maintained DB-side by procedures rather than by this engine;
+    requiring job_id keeps those out, so pointing an output_tables_json at
+    one fails loudly in run_and_save ("unknown target table") instead of
+    half-working."""
     registry: dict[str, type[SQLModel]] = {}
     for obj in vars(_models).values():
         if not (inspect.isclass(obj) and issubclass(obj, SQLModel) and obj is not SQLModel):
             continue
         table_name = getattr(obj, "__tablename__", None)
-        if table_name and table_name not in _BOOKKEEPING_TABLES:
+        if table_name and table_name not in _BOOKKEEPING_TABLES and "job_id" in obj.model_fields:
             registry[table_name] = obj
     return registry
 

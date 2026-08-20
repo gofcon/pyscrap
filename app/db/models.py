@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Identity, Integer, func
+from sqlalchemy import CheckConstraint, Column, Date, DateTime, Identity, Integer, String, func
 from sqlmodel import Field, SQLModel
 
 from app.db.types import JSONText, OracleBoolean, XMLText
@@ -13,6 +13,7 @@ from app.db.types import JSONText, OracleBoolean, XMLText
 
 
 # tags: List[str] = Field(default_factory=list, sa_type=JSON)
+
 
 class ApiMst(SQLModel, table=True):
     __tablename__ = "api_mst"
@@ -292,6 +293,189 @@ class KisFutoptChart(SQLModel, table=True):
     futs_lwpr: Optional[float] = Field(default=None)         # 저가
     cntg_vol: Optional[int] = Field(default=None)            # 체결거래량
     acml_tr_pbmn: Optional[int] = Field(default=None)        # 누적거래대금
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class StockIndexHis(SQLModel, table=True):
+    """Daily OHLC/volume history for a stock index, one row per index per
+    trading day -- ``mv_id`` names which index (KOSPI200, KOSDAQ150, ...), so
+    a single table covers all of them rather than one table per index.
+
+    Unlike KisFutoptChart/KisFutoptPrice, whose date/time fields are kept as
+    strings (fixed format, no DB-side date math needed), ``trade_date`` here
+    is a real DATE: a history table's whole purpose is range queries
+    (BETWEEN, last N sessions, joins against other daily series), and doing
+    those against a YYYYMMDD string means either a TO_DATE on every row or
+    lexicographic comparisons that quietly break the moment a format changes.
+    Converting the source's own YYYYMMDD text is the loading procedure's job
+    (TO_DATE(..., 'YYYYMMDD')) -- note mst_fuopt.mat_date is that raw text
+    form, so joining the two needs the conversion spelled out.
+
+    Keyed on its own data rather than on an id/api_id/job_id trio, because
+    this is not a scrape target: it is maintained DB-side by procedures. The
+    absence of job_id is what states that -- it keeps the table out of
+    TABLE_REGISTRY (see app.services.export._discover_table_registry), so an
+    output_tables_json pointed here fails loudly instead of half-working.
+    The natural key is also what keeps a settled daily series from
+    double-counting: re-inserting a stored (date, index) collides rather
+    than duplicating."""
+
+    __tablename__ = "stock_index_his"
+
+    # Composite natural key (trade_date, mv_id): one row per index per
+    # session. primary_key goes on the Column rather than on Field() --
+    # SQLModel rejects primary_key=True and sa_column= together, and a real
+    # DATE column needs the sa_column form. Neither may be Optional: a
+    # primary key column is NOT NULL by definition.
+    trade_date: date = Field(sa_column=Column(Date, primary_key=True))
+    # Index identifier, e.g. the KRX index code the row belongs to. Indexed
+    # separately from the primary key because every read of this table is
+    # "this index, over this date range" -- mv_id is the key's *trailing*
+    # column, which the PK index alone can't serve a lookup on.
+    mv_id: str = Field(sa_column=Column(String(20), primary_key=True, index=True))
+
+    close_price: Optional[float] = Field(default=None)      # 종가
+    price_change: Optional[float] = Field(default=None)           # 전일대비
+    change_rate: Optional[float] = Field(default=None)      # 전일대비율(%)
+    open_price: Optional[float] = Field(default=None)       # 시가
+    high_price: Optional[float] = Field(default=None)       # 고가
+    low_price: Optional[float] = Field(default=None)        # 저가
+    volume: Optional[int] = Field(default=None)             # 거래량
+    trading_value: Optional[int] = Field(default=None)      # 거래대금
+    listed_market_cap: Optional[float] = Field(default=None)  # 상장시가총액
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class MetaMaturity(SQLModel, table=True):
+    """Contract expiry calendar: one row per maturity of one product type.
+
+    Reference data rather than scraped output, so unlike the result tables it
+    carries no api_id/job_id/id -- (prod_type, mat_code) is the natural key
+    the source already provides, and a row's identity is that pair, not the
+    run that happened to write it. Populated DB-side by a procedure; having
+    no job_id is what keeps it out of TABLE_REGISTRY and therefore out of the
+    scraping engine's reach (see
+    app.services.export._discover_table_registry).
+
+    ``mat_code`` alone is NOT unique, which is why ``prod_type`` leads the
+    key: the weekly series reuse each other's codes, so e.g. "2308W1" names a
+    Thursday-expiring contract and a Monday-expiring one that mature four
+    days apart (verified against the source master -- 99 codes collide that
+    way). Sharing ``prod_type``'s name and width with MstFuopt is deliberate:
+    the two join on it.
+
+    ``prev_mat_date`` sitting alongside ``mat_date`` is what makes a maturity
+    row self-contained: "the period this contract covers" is answerable from
+    one row, with no self-join or window function against the rest of the
+    calendar."""
+
+    __tablename__ = "meta_maturity"
+
+    # Leads the composite primary key -- declaration order is the key's
+    # column order, and "every maturity of this product type" is the lookup
+    # this table exists to serve.
+    prod_type: str = Field(primary_key=True, max_length=20)
+    mat_code: str = Field(primary_key=True, max_length=20)
+    mat_date: Optional[date] = Field(default=None, sa_column=Column(Date, index=True))
+    prev_mat_date: Optional[date] = Field(default=None, sa_column=Column(Date))
+    mat_scd: Optional[str] = Field(default=None, index=True, max_length=20)  # 만기단축코드 ( 'E3' , 'E4')
+    description: Optional[str] = Field(default=None, max_length=100)
+    updated_at: Optional[datetime] = Field(default=None,
+                                           sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class MstFuopt(SQLModel, table=True):
+    """Curated futures/options instrument master -- the list of contracts
+    actually worth polling, as opposed to FoIdxCodeMst, which is the raw
+    exchange master file reloaded verbatim every morning.
+
+    Reference data like MetaMaturity -- derived DB-side by a procedure, not
+    written by the scraping engine, and kept out of TABLE_REGISTRY by having
+    no job_id (see app.services.export._discover_table_registry). So no
+    id/api_id/job_id: ``short_cd`` is the natural key, and it is the same
+    code FoIdxCodeMst.short_code and KisFutoptPrice.short_code use, so this
+    table joins straight to both.
+    ``is_active`` is what makes it a *filter* rather than a copy -- a contract
+    drops out of polling by being flipped to 'N' here, which is also how a
+    matured contract stops being polled without deleting the history that
+    references it.
+
+    Note the deliberate width difference from FoIdxCodeMst.short_code
+    (VARCHAR2(20)): 10 is enough for every KIS code seen so far (9 chars,
+    e.g. 'B01609335'), and this column being the narrower of the two means an
+    over-long code fails here on insert rather than silently becoming a row
+    that never matches anything."""
+
+    __tablename__ = "mst_fuopt"
+
+    short_code: str = Field(primary_key=True, max_length=10)
+    prod_nm: str = Field(max_length=100)                                  # 종목명
+    prod_type: str = Field(max_length=20)                                 # 상품구분 (지수월물, 위클리목, 위클리월, 지수미니)
+    call_put_cd :str = Field(max_length=20)                               # 콜/풋/선물구분 (  CALL/PUT/FUT )
+
+    ul_code: Optional[str] = Field(default=None, index=True, max_length=20)  # 기초자산 코드
+    ul_nm: Optional[str] = Field(default=None, max_length=100)            # 기초자산명
+    cont_mult: float = Field()                                            # 거래승수
+    mat_code: Optional[str] = Field(default=None, max_length=20)          # 만기코드
+
+    # Kept as text (YYYYMMDD), matching the string date columns on
+    # KisFutoptChart/KisFutoptPrice rather than the real DATE on MetaMaturity
+    # /StockIndexHis. Worth knowing when joining: meta_maturity.mat_date is a
+    # DATE, so `mst_fuopt.mat_date = meta_maturity.mat_date` will not compare
+    # -- one side needs TO_DATE(m.mat_date, 'YYYYMMDD') (or TO_CHAR on the
+    # other) for that join to work.
+    mat_date: Optional[date] = Field(default=None, sa_column=Column(Date, index=True))          # 만기일자
+    front_date: Optional[date] = Field(default=None, sa_column=Column(Date, index=True))        # 근월물 시작일자
+    strike_prc: Optional[float] = Field(default=None)                     # 행사가
+
+    description: Optional[str] = Field(default=None, max_length=100)
+    # NOT NULL with no server-side default, so every writer must set it
+    # explicitly -- unlike every other updated_at in this module, which the
+    # DB fills and maintains on its own (server_default/onupdate). Text
+    # (YYYYMMDDHH24MISS) rather than DateTime, per this table's own DDL.
+    updated_at: Optional[datetime] = Field(default=None,
+                                           sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KisFutoptDaily(SQLModel, table=True):
+    """Typed output table for KIS_FUTOPT_DAILY's ``output2`` -- one row per
+    trading day per contract (daily OHLC/volume), field names kept as KIS's
+    own for the same 1:1-traceability reason as KisFutoptChart.
+
+    Distinct from KisFutoptChart despite the overlapping columns: that one is
+    intraday, keyed by (date, time), and is written by a snapshot poll during
+    market hours. This is end-of-day history, keyed by date alone, and is
+    fetched in bulk for a contract that may well have expired already -- the
+    endpoint answers for delisted short_codes, which is the whole point (KIS
+    only publishes *currently listed* instruments in the master file, so past
+    contracts have to be queried by a code reconstructed from the maturity
+    calendar rather than looked up).
+
+    Note the response caps ``output2`` at 100 rows per call, and the API pages
+    by date window (fid_input_date_1/2) rather than by page number -- so the
+    engine's ``:PAGE`` pagination does not apply; a long history has to be
+    fetched as successive date-range jobs."""
+
+    __tablename__ = "kis_futopt_daily"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(index=True, max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    short_code: Optional[str] = Field(default=None, index=True, max_length=20)
+
+    stck_bsop_date: str = Field(index=True, max_length=8)    # 영업일자
+    futs_prpr: Optional[float] = Field(default=None)         # 종가
+    futs_oprc: Optional[float] = Field(default=None)         # 시가
+    futs_hgpr: Optional[float] = Field(default=None)         # 고가
+    futs_lwpr: Optional[float] = Field(default=None)         # 저가
+    acml_vol: Optional[int] = Field(default=None)            # 누적거래량
+    acml_tr_pbmn: Optional[int] = Field(default=None)        # 누적거래대금
+    mod_yn: Optional[str] = Field(default=None, max_length=1)  # 수정주가 반영 여부
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
