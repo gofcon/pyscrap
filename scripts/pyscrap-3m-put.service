@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap 3-Minute Cycle Execution -- shard A (account #1)
+Description=pyscrap 3-Minute Cycle Execution -- puts (account #2)
 After=network.target
 
 [Service]
@@ -9,7 +9,7 @@ Group=opc
 WorkingDirectory=/home/opc/pyscrap
 # run-only: the 3m shards' job set is static and is generated once a day by
 # pyscrap-generate-3m.service -- see run_cycle.sh's header for why.
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_a run-only
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_put run-only
 
 [Install]
 WantedBy=multi-user.target

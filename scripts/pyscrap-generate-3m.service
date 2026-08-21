@@ -18,8 +18,8 @@ WorkingDirectory=/home/opc/pyscrap
 # use yesterday's contract list and miss the front-month roll.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/sync_mst_fuopt.sh
 # generate-only for both shards, in one process each so the two stay in step.
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_a generate-only
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_b generate-only
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_call generate-only
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_put generate-only
 
 [Install]
 WantedBy=multi-user.target
