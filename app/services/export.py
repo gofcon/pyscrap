@@ -18,6 +18,14 @@ instead of accumulating history. Buffering to CSV and finalizing on a
 separate schedule (e.g. once a day) fixes that: run_job appends to the
 CSV every run, and finalize_export is called later to turn the day's
 accumulated CSV into one real Parquet batch.
+
+Not every scrape is rows, though. Some endpoints answer with a document --
+a PDF, an image, an archive -- that is the result rather than something to
+parse into records. Those are staged in the same local directory (see
+stage_file) and finalized in the same pass, just down a different branch:
+a .csv becomes Parquet, anything else is uploaded byte-for-byte. Sharing the
+staging area is what keeps the two kinds on one schedule and one retry story,
+so a document left behind by a crashed run gets swept up exactly like a CSV.
 """
 
 from __future__ import annotations
@@ -111,6 +119,35 @@ def append_csv_rows(table_name: str, job_id: str, rows: list[dict[str, Any]]) ->
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def stage_file(group: str, filename: str, content: bytes) -> Path:
+    """Write a downloaded document to the local staging area and return its
+    path.
+
+    ``group`` plays the part table_name plays for rows: it becomes the first
+    segment of the object key, so related documents land together in the
+    bucket the same way a table's Parquet files do. Written whole rather than
+    appended -- unlike a CSV, a document has no partial state worth
+    accumulating; a re-run replaces it."""
+    path = _LOCAL_EXPORT_DIR / group / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def upload_file(path: Path, delete_local: bool = True) -> str:
+    """Upload one staged document unchanged and remove the local copy.
+
+    The object key mirrors the staged layout ({group}/{filename}), the same
+    convention _write_parquet follows, so a bucket listing reads the same way
+    for documents as for exported tables."""
+    key = f"{path.parent.name}/{path.name}"
+    get_object_storage_client().put_object(Bucket=bucket_name(), Key=key, Body=path.read_bytes())
+    logger.info("uploaded {} bytes to oci://{}/{}", path.stat().st_size, bucket_name(), key)
+    if delete_local:
+        path.unlink()
+    return key
 
 
 def _unwrap_optional(annotation: Any) -> Any:
@@ -209,19 +246,25 @@ def finalize_pending_exports() -> dict[str, str]:
     that schedule is fixed and known ahead of time, there's no need for
     this app to detect "time to finalize" itself.
 
-    Returns {job_id: uploaded_object_key}."""
+    Returns {stem: uploaded_object_key} -- the stem being the job_id for a
+    buffered CSV, or the document's own name for a staged file."""
     results: dict[str, str] = {}
     if not _LOCAL_EXPORT_DIR.exists():
         return results
 
-    for table_dir in _LOCAL_EXPORT_DIR.iterdir():
-        if not table_dir.is_dir():
+    for group_dir in _LOCAL_EXPORT_DIR.iterdir():
+        if not group_dir.is_dir():
             continue
-        for csv_file in table_dir.glob("*.csv"):
-            job_id = csv_file.stem
-            key = finalize_export(csv_file)
+        for staged in sorted(group_dir.iterdir()):
+            if not staged.is_file():
+                continue
+            # Extension decides the branch: buffered rows get converted, a
+            # downloaded document is already in its final form and only needs
+            # moving. Both leave the staging area, so the directory is the
+            # queue and an empty one means nothing is pending.
+            key = finalize_export(staged) if staged.suffix == ".csv" else upload_file(staged)
             if key:
-                results[job_id] = key
-                logger.info("finalize_pending_exports: {} -> {}", job_id, key)
+                results[staged.stem] = key
+                logger.info("finalize_pending_exports: {} -> {}", staged.name, key)
 
     return results

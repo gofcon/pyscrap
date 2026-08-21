@@ -47,6 +47,11 @@ class ApiMst(SQLModel, table=True):
     # text file (e.g. KRX/KIS .mst master files).
     # 'delimited' -> response body itself is delimited text, no zip (a plain
     # .csv/.txt download).
+    # 'binary' -> the response is a document (PDF, image, archive) that is
+    # itself the result: it's staged to disk whole and only described in the
+    # result table, with response_parse_json = {"group": "...", "name":
+    # ":KEY.pdf"} naming where it lands. See DynamicApiScraper._stage_binary
+    # and app.services.export.stage_file/upload_file.
     # Both share response_parse_json = {"encoding": "...", "delimiter": "...",
     # "fields": ["col1", ...] (or omit + "has_header": true to read column
     # names from the file's own first line), "inner_file": "..." (zip_delimited

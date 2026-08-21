@@ -32,7 +32,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.auth_config import persist_env_var, resolve_env_placeholders
 from app.db.models import ApiMst
-from app.services.export import TABLE_REGISTRY, append_csv_rows
+from app.services.export import TABLE_REGISTRY, append_csv_rows, stage_file
 
 # payload_type is stored verbatim as the httpx request kwarg name, so each
 # ApiMst row picks its own transport mechanism purely via data -- no code
@@ -384,6 +384,15 @@ class DynamicApiScraper:
         if not mapping and not self.api.persist_env_json:
             raise ValueError(f"{self.api.api_id}: output_tables_json is empty")
 
+        if self.api.response_type == "binary":
+            # The document *is* the result -- nothing to extract from it. It
+            # goes to the staging area whole and what comes back is a single
+            # record describing it, so the rest of the pipeline (job logging,
+            # save_mode, the result table) works unchanged; only the bytes
+            # take a different route. See app.services.export.stage_file.
+            staged = self._stage_binary(response)
+            return {selector: staged for selector in mapping}
+
         if self.api.response_type in ("zip_delimited", "delimited"):
             # Binary/plain-text response, not XML/JSON -- response.text may
             # be garbage (zip) or just isn't XML/JSON, so this must be
@@ -413,6 +422,65 @@ class DynamicApiScraper:
         self._apply_merge_fields(data, per_selector)
         self._persist_env_fields(data)
         return per_selector
+
+    def _stage_binary(self, response: httpx.Response) -> list[dict[str, Any]]:
+        """Save a downloaded document and describe it, one record per file.
+
+        ``response_parse_json`` supplies the layout:
+        {"group": "dart_docs", "name": ":RCEPT_NO.pdf"} -- ``name`` goes
+        through the same ':KEY' substitution as the url and payload, so a
+        document is named from the job's own parameters rather than from
+        whatever the server happened to call it. Falling back to the job's
+        params keeps a misconfigured row from silently overwriting one file
+        over and over.
+
+        The returned record is metadata only; the bytes are already on disk.
+        Deliberately not the file content -- a result table is the wrong place
+        for a multi-megabyte blob, and the object store is where the pipeline
+        already puts large artifacts."""
+        config = self.api.response_parse_json or {}
+        group = config.get("group") or self.api.api_id.lower()
+        name = self._substitute_placeholders(config.get("name") or "")
+        if not name or ":" in name:
+            # No usable template: fall back to something unique per job rather
+            # than a fixed name every run would clobber.
+            suffix = config.get("suffix", "")
+            name = "_".join(str(v) for v in self.params.values()) or self.api.api_id
+            name = f"{name}{suffix}"
+        # "unzip": true stores the archive's contents instead of the archive.
+        # Worth it when the payload is a single document that is more useful
+        # readable than packed -- DART wraps one XML per disclosure, and an
+        # unpacked XML can be read straight from the bucket. Costs space
+        # (that XML is ~8x its zipped size), so it stays opt-in.
+        if config.get("unzip") and response.content[:2] == b"PK":
+            records = []
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                for info in archive.infolist():
+                    if info.is_dir():
+                        continue
+                    body = archive.read(info)
+                    stage_file(group, info.filename, body)
+                    records.append(self._describe(group, info.filename, len(body), None))
+            logger.info("{}: staged {} file(s) from archive {}",
+                        self.api.api_id, len(records), name)
+            return records
+
+        path = stage_file(group, name, response.content)
+        logger.info("{}: staged {} ({} bytes)", self.api.api_id, path, len(response.content))
+        return [self._describe(group, name, len(response.content),
+                               response.headers.get("content-type"))]
+
+    @staticmethod
+    def _describe(group: str, name: str, size: int, content_type: str | None) -> dict[str, Any]:
+        """Metadata record for one staged file -- what the result table gets in
+        place of the bytes, and enough to locate the object afterwards."""
+        return {
+            "group": group,
+            "file_name": name,
+            "object_key": f"{group}/{name}",
+            "byte_size": size,
+            "content_type": content_type,
+        }
 
     def _parse_zip_delimited(self, response: httpx.Response) -> list[dict[str, Any]]:
         """response_type='zip_delimited': unzip response.content in-memory,
