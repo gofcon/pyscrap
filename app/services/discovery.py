@@ -170,7 +170,7 @@ def _listed(prod_type: str, mat_scd: str, mat_date: date, front_date: date | Non
 
 
 def find_otm_edge(prod_type: str, mat_scd: str, mat_date: date, front_date: date | None,
-                  atm: float, is_call: bool) -> tuple[float, int]:
+                  atm: float, is_call: bool) -> tuple[float | None, int]:
     """Outermost listed strike on the out-of-the-money side, and how many
     probes it took.
 
@@ -184,9 +184,20 @@ def find_otm_edge(prod_type: str, mat_scd: str, mat_date: date, front_date: date
     for a put."""
     sign = 1.0 if is_call else -1.0
     probe = lambda k: _listed(prod_type, mat_scd, mat_date, front_date, k, is_call)
-    calls = 0
+    calls = 1
 
-    lo = atm                      # known listed (or the money itself)
+    # The at-the-money strike is the one rung certain to exist on any ladder
+    # that exists at all -- so if it does not answer, the maturity has no
+    # tradable contracts and there is no ladder to bound. Checking it rather
+    # than assuming it matters because the bracket starts from here: taken on
+    # faith, a maturity that never listed still yields the money itself as a
+    # one-rung ladder, inventing a contract nothing can trade. Seen on the
+    # two year-end weeklies whose scheduled expiry was pulled forward and
+    # which were then never listed.
+    if not probe(atm):
+        return None, calls
+
+    lo = atm                      # confirmed listed
     hi = None                     # first offset that came back empty
     for offset in BRACKET_OFFSETS:
         candidate = _snap(atm + sign * offset)
@@ -250,6 +261,9 @@ def discover_maturity(session: Session, prod_type: str, mat_code: str, mat_scd: 
     second identical search."""
     call_edge, c1 = find_otm_edge(prod_type, mat_scd, mat_date, front_date, atm, True)
     put_edge, c2 = find_otm_edge(prod_type, mat_scd, mat_date, front_date, atm, False)
+    if call_edge is None or put_edge is None:
+        return {"probed": c1 + c2, "call_edge": None, "put_edge": None,
+                "contracts": 0, "calls": 0, "puts": 0}
 
     itm_span = STRIKE_STEP * ITM_STEPS
     calls = _strike_range(max(put_edge, _snap(atm - itm_span)), call_edge)

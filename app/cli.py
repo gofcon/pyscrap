@@ -93,7 +93,8 @@ def discover_contracts_cmd(
     contracts = sum(r["contracts"] for r in results.values())
     typer.echo(f"{period}: {len(results)} maturities, {probed} probes, {contracts} contracts")
     for key, st in results.items():
-        typer.echo(f"  {key} -> {st['put_edge']}..{st['call_edge']}, {st['contracts']} contracts ({st['probed']} probes)")
+        span = "not listed" if st["call_edge"] is None else f"{st['put_edge']}..{st['call_edge']}"
+        typer.echo(f"  {key} -> {span}, {st['contracts']} contracts ({st['probed']} probes)")
 
 
 def _call_procedure(name: str) -> int:
