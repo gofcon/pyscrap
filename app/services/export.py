@@ -1,8 +1,16 @@
 """Turns scraped rows into Parquet objects in OCI Object Storage.
 
-One Parquet object per job, uploaded as {table_name}/{job_id}.parquet, so an
-Oracle external table can point a wildcard file_uri_list at table_name/* and
-pick up every job's file as one logical table without merging files by hand.
+One Parquet object per job per day, uploaded as
+{table_name}/{date}/{job_id}.parquet, so an Oracle external table can point a
+wildcard file_uri_list at table_name/* and read the whole history as one
+logical table without merging files by hand.
+
+The date segment is what lets history accumulate. An earlier layout keyed
+objects by job_id alone, and since a repeated job keeps its id for the life of
+the instrument, each day's export overwrote the previous day's object -- the
+bucket only ever held the most recent run. Dating the key also gives a reader
+something to prune on: a query for one day touches one prefix instead of the
+whole table.
 
 Rows aren't sent to Parquet the moment they're parsed, though -- they're
 buffered locally as CSV first (append_csv_rows), and only turned into a
@@ -180,7 +188,8 @@ def _cast_csv_row(row: dict[str, str], model_cls: type[SQLModel] | None) -> dict
     return casted
 
 
-def _write_parquet(table_name: str, job_id: str, rows: list[dict[str, Any]]) -> str | None:
+def _write_parquet(table_name: str, stamp: str, job_id: str,
+                   rows: list[dict[str, Any]]) -> str | None:
     if not rows:
         return None
 
@@ -188,7 +197,7 @@ def _write_parquet(table_name: str, job_id: str, rows: list[dict[str, Any]]) -> 
     pq.write_table(pa.Table.from_pylist(rows), buf)
     buf.seek(0)
 
-    key = f"{table_name}/{job_id}.parquet"
+    key = f"{table_name}/{stamp}/{job_id}.parquet"
     get_object_storage_client().put_object(Bucket=bucket_name(), Key=key, Body=buf.getvalue())
     # job_id alone (not api_id) identifies the upload in this log line --
     # _build_job_id always prefixes job_id with its api_id (see
@@ -197,17 +206,18 @@ def _write_parquet(table_name: str, job_id: str, rows: list[dict[str, Any]]) -> 
     return key
 
 
-def finalize_export(csv_path: Path, delete_csv: bool = True) -> str | None:
+def finalize_export(csv_path: Path, stamp: str, delete_csv: bool = True) -> str | None:
     """Convert one locally-buffered CSV file into a Parquet object and
-    upload it (overwriting any previous version at that key), then remove
-    the local CSV. No-op (returns None) if ``csv_path`` doesn't exist.
+    upload it, then remove the local CSV. No-op (returns None) if
+    ``csv_path`` doesn't exist.
 
-    ``table_name``/``job_id`` (needed for the model lookup and the
-    Parquet's S3 key) are derived from the path itself -- it's always
+    ``table_name``/``job_id`` (needed for the model lookup and the Parquet's
+    key) are derived from the path itself -- it's always
     ``{table_name}/{job_id}.csv`` (see ``_csv_path``/``append_csv_rows``) --
     since the file's own location on disk is already the single source of
     truth for both; the caller doesn't need to separately track or re-pass
-    them alongside the path."""
+    them. ``stamp`` is the only thing the path cannot supply: which day's
+    collection this buffer holds."""
     if not csv_path.exists():
         return None
 
@@ -218,14 +228,14 @@ def finalize_export(csv_path: Path, delete_csv: bool = True) -> str | None:
     with csv_path.open("r", newline="", encoding="utf-8") as f:
         rows = [_cast_csv_row(row, model_cls) for row in csv.DictReader(f)]
 
-    key = _write_parquet(table_name, job_id, rows)
+    key = _write_parquet(table_name, stamp, job_id, rows)
 
     if delete_csv:
         csv_path.unlink()
     return key
 
 
-def finalize_pending_exports() -> dict[str, str]:
+def finalize_pending_exports(stamp: str | None = None) -> dict[str, str]:
     """Finalize every CSV currently sitting in the local export directory
     (see append_csv_rows / _LOCAL_EXPORT_DIR) -- i.e. whatever's actually
     still pending, read directly off the filesystem. No DB query at all:
@@ -246,8 +256,17 @@ def finalize_pending_exports() -> dict[str, str]:
     that schedule is fixed and known ahead of time, there's no need for
     this app to detect "time to finalize" itself.
 
+    ``stamp`` names the day the export covers and becomes the key's date
+    segment; it defaults to today in KST -- the market's own day rather than
+    the host's, for the same reason capture timestamps are (see
+    app.services.job_builder). Pass it only to re-file an export under a
+    different day.
+
     Returns {stem: uploaded_object_key} -- the stem being the job_id for a
     buffered CSV, or the document's own name for a staged file."""
+    from app.services.job_builder import _now_kst
+
+    stamp = stamp or _now_kst().strftime("%Y%m%d")
     results: dict[str, str] = {}
     if not _LOCAL_EXPORT_DIR.exists():
         return results
@@ -262,7 +281,8 @@ def finalize_pending_exports() -> dict[str, str]:
             # downloaded document is already in its final form and only needs
             # moving. Both leave the staging area, so the directory is the
             # queue and an empty one means nothing is pending.
-            key = finalize_export(staged) if staged.suffix == ".csv" else upload_file(staged)
+            key = (finalize_export(staged, stamp) if staged.suffix == ".csv"
+                   else upload_file(staged))
             if key:
                 results[staged.stem] = key
                 logger.info("finalize_pending_exports: {} -> {}", staged.name, key)
