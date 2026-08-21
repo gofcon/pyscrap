@@ -17,6 +17,7 @@ from __future__ import annotations
 import atexit
 import csv
 import io
+import json
 import os
 import re
 import threading
@@ -52,6 +53,10 @@ _PAGE_DELAY_SEC = float(os.environ.get("PAGE_DELAY_SEC", "0.3"))
 # '&page_no=:PAGE') -- no separate config field needed, same as any other
 # ':KEY' placeholder except this one is driven by the fetch loop, not params_json.
 _PAGE_PARAM = "PAGE"
+
+# Matches a bare ':PAGE' token -- the marker that means page-number paging
+# when an ApiMst row predates pagination_json.
+PAGE_MARKER_RE = r"(?<!\w):" + _PAGE_PARAM + r"(?!\w)"
 
 # Minimum seconds between two requests to the *same host*, enforced
 # process-wide by _pace_host (see fetch). Distinct from _PAGE_DELAY_SEC,
@@ -114,6 +119,18 @@ def _pace_host(url: str) -> None:
         slot = max(now, _next_slot_at.get(host, 0.0))
         _next_slot_at[host] = slot + _REQUEST_MIN_INTERVAL_SEC
     time.sleep(max(0.0, slot - time.monotonic()))
+
+
+def _response_body(response: httpx.Response) -> Any:
+    """The reply as data for continuation lookups, or {} when it isn't JSON.
+
+    Continuation values live in the body for some APIs and in headers for
+    others; only the body needs decoding, and a reply that isn't JSON simply
+    has none to offer rather than being an error here."""
+    try:
+        return response.json()
+    except Exception:
+        return {}
 
 
 def _normalize_xml_selector(selector: str) -> str:
@@ -311,61 +328,157 @@ class DynamicApiScraper:
         response.raise_for_status()
         return response
 
-    def is_paginated(self) -> bool:
+    # ---- continuation ----------------------------------------------------
+
+    def _pagination_spec(self) -> dict[str, Any] | None:
+        """How this API says "there is more", or None if one request is all.
+
+        An explicit ``pagination_json`` wins. Otherwise a ':PAGE' marker in
+        the url/payload still means page-number paging, so rows written
+        before that column existed keep working untouched."""
+        if self.api.pagination_json:
+            return self.api.pagination_json
         # api_url/payload_xml use :TOKEN string substitution, so a literal
         # ':PAGE' anywhere in them is the marker. payload_json instead uses
-        # key-overlay substitution (see build_request) -- a ':PAGE' *value*
-        # there wouldn't actually get substituted (only a key literally
-        # named 'PAGE' gets overlaid by self.params['PAGE'] during
-        # fetch_all_pages), so a 'PAGE' *key* is that mechanism's own marker.
+        # key-overlay substitution (see build_request), so there a 'PAGE'
+        # *key* is that mechanism's own marker.
         template = (self.api.api_url or "") + (self.api.payload_xml or "")
-        if re.search(rf"(?<!\w):{_PAGE_PARAM}(?!\w)", template):
+        if re.search(PAGE_MARKER_RE, template) or _PAGE_PARAM in (self.api.payload_json or {}):
+            return {"mode": "page", "param": _PAGE_PARAM}
+        return None
+
+    def is_paginated(self) -> bool:
+        return self._pagination_spec() is not None
+
+    @staticmethod
+    def _extract_path(data: Any, path: str) -> list[Any]:
+        """Values at a dotted path, always as a list.
+
+        A '[]' suffix steps into a list and keeps going for every element, so
+        "output2[].stck_cntg_hour" collects one timestamp per bar. A missing
+        segment yields nothing rather than raising -- a continuation field
+        being absent is how several APIs say "that was the last page"."""
+        current: list[Any] = [data]
+        for segment in path.split("."):
+            explode = segment.endswith("[]")
+            key = segment[:-2] if explode else segment
+            nxt: list[Any] = []
+            for item in current:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get(key)
+                if value is None:
+                    continue
+                nxt.extend(value if explode and isinstance(value, list) else [value])
+            current = nxt
+        return current
+
+    def _read_source(self, source: str, response: httpx.Response, body: Any) -> Any:
+        """One continuation value, from a response header or the body.
+
+        Headers are addressed as "header:<name>" because that is where a good
+        few APIs keep continuation state -- KIS returns tr_cont and
+        ctx_area_* there -- leaving a plain string to mean a body path."""
+        if source.startswith("header:"):
+            return response.headers.get(source[len("header:"):])
+        values = self._extract_path(body, source)
+        return values[0] if values else None
+
+    def _advance(self, spec: dict[str, Any], response: httpx.Response,
+                 body: Any, record_count: int) -> bool:
+        """Set up the next request, or return False when the result is done."""
+        mode = spec.get("mode", "page")
+
+        if mode == "page":
+            param = spec.get("param", _PAGE_PARAM)
+            self.params[param] = int(self.params.get(param, 0)) + 1
             return True
-        return _PAGE_PARAM in (self.api.payload_json or {})
 
-    def fetch_all_pages(
-        self,
-        start_page: int = 1,
-        max_pages: int = 100,
-        delay: float | None = None,
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Repeatedly fetch pages by incrementing ``params[:PAGE]``, merging
-        every page's records per selector. Stops when:
-        - a page comes back with zero records for every selector (most APIs
-          on an out-of-range page), or
-        - a page's content is identical to the immediately preceding page --
-          some APIs (e.g. DART) clamp an out-of-range page_no to the last
-          valid page instead of returning empty, so without this check the
-          loop would otherwise run to ``max_pages`` re-saving the same last
-          page's records over and over,
-        - or ``max_pages`` is hit (safety net against a selector that never
-          goes empty/repeats, e.g. one that's misconfigured).
+        if mode == "cursor":
+            # A full reply suggests more remains; a short one means the series
+            # ran out. Without this an API that keeps answering from the same
+            # anchor would run to max_pages.
+            minimum = spec.get("min_records")
+            if minimum is not None and record_count < int(minimum):
+                return False
+            values = self._extract_path(body, spec["from"])
+            if not values:
+                return False
+            cursor = min(values) if spec.get("pick", "min") == "min" else max(values)
+            param = spec["param"]
+            if self.params.get(param) == cursor:
+                # The anchor did not move; following it again would re-fetch
+                # the same window forever.
+                return False
+            self.params[param] = cursor
+            return True
 
-        ``delay`` (seconds between page fetches) defaults to ``PAGE_DELAY_SEC``
-        in ``.env`` (see ``_PAGE_DELAY_SEC``) when not explicitly passed;
-        pass it explicitly only to override that for a single call."""
+        if mode == "token":
+            condition = spec.get("continue_when") or {}
+            if condition:
+                actual = self._read_source(condition["source"], response, body)
+                if actual not in condition.get("in", []):
+                    return False
+            for param, source in (spec.get("params") or {}).items():
+                value = self._read_source(source, response, body)
+                if value is None:
+                    return False
+                self.params[param] = value
+            return True
+
+        raise ValueError(f"{self.api.api_id}: unknown pagination mode {mode!r}")
+
+    def fetch_all_pages(self, delay: float | None = None) -> dict[str, list[dict[str, Any]]]:
+        """Keep requesting until the result is complete, merging every reply.
+
+        Stops on whichever comes first: a reply with no records, a reply
+        identical to the one before (some APIs clamp an out-of-range request
+        to the last valid page rather than answering empty, and would
+        otherwise be re-saved forever), the mode's own signal that nothing
+        remains, or ``max_pages`` as a backstop for a stop condition that
+        never fires.
+
+        ``delay`` (seconds between requests) defaults to ``PAGE_DELAY_SEC``;
+        it is politeness layered on the per-host rate pacing in fetch()."""
+        spec = self._pagination_spec() or {}
         delay = _PAGE_DELAY_SEC if delay is None else delay
-        all_records: dict[str, list[dict[str, Any]]] = {}
-        previous_page: dict[str, list[dict[str, Any]]] | None = None
+        max_pages = int(spec.get("max_pages", 100))
+        if spec.get("mode", "page") == "page":
+            self.params[spec.get("param", _PAGE_PARAM)] = int(spec.get("start", 1))
 
-        for page in range(start_page, start_page + max_pages):
-            self.params[_PAGE_PARAM] = page
+        all_records: dict[str, list[dict[str, Any]]] = {}
+        seen: dict[str, set[str]] = {}
+        previous: dict[str, list[dict[str, Any]]] | None = None
+
+        for attempt in range(1, max_pages + 1):
             response = self.fetch()
             per_selector = self.parse(response)
-
             count = sum(len(r) for r in per_selector.values())
-            logger.info("{}: page {} -> {} record(s)", self.api.api_id, page, count)
+            logger.info("{}: request {} -> {} record(s)", self.api.api_id, attempt, count)
 
             if count == 0:
                 break
-            if per_selector == previous_page:
-                logger.info("{}: page {} repeats the previous page, stopping", self.api.api_id, page)
+            if per_selector == previous:
+                logger.info("{}: request {} repeats the previous reply, stopping",
+                            self.api.api_id, attempt)
                 break
 
+            # Deduplicated on the way in: a cursor anchored on a value taken
+            # from the last reply re-includes the record that value came from,
+            # so overlap at the seam is normal rather than a fault.
             for selector, records in per_selector.items():
-                all_records.setdefault(selector, []).extend(records)
-            previous_page = per_selector
+                bucket = all_records.setdefault(selector, [])
+                known = seen.setdefault(selector, set())
+                for record in records:
+                    fingerprint = json.dumps(record, sort_keys=True, default=str)
+                    if fingerprint in known:
+                        continue
+                    known.add(fingerprint)
+                    bucket.append(record)
+            previous = per_selector
 
+            if not self._advance(spec, response, _response_body(response), count):
+                break
             time.sleep(delay)
 
         return all_records

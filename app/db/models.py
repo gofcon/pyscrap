@@ -87,6 +87,32 @@ class ApiMst(SQLModel, table=True):
     # app.services.job_builder's module docstring for the full format
     # (including the reserved "NOW" entry) and normalize_key_param.
     key_params_list: Optional[list] = Field(default=None, sa_type=JSONText)
+
+    # How to keep asking for the rest of a truncated result, when one request
+    # doesn't return everything. Three shapes, because APIs disagree on how to
+    # say "there is more" (see app.scrapers.dynamic.fetch_all_pages):
+    #
+    #   {"mode": "page", "param": "PAGE", "start": 1}
+    #       A page number the client increments. NULL with a ':PAGE' marker in
+    #       api_url/payload means exactly this, so older rows keep working.
+    #
+    #   {"mode": "cursor", "param": "HHMM", "from": "output2[].stck_cntg_hour",
+    #    "pick": "min", "min_records": 99}
+    #       No page number -- the next request is anchored on a value read out
+    #       of the answer just received (the oldest bar's timestamp, an id,
+    #       ...). "min_records" is the truncation tell: a short reply means the
+    #       series ran out, so stop.
+    #
+    #   {"mode": "token", "params": {"CTX_FK": "header:ctx_area_fk100"},
+    #    "continue_when": {"source": "header:tr_cont", "in": ["F", "M"]}}
+    #       An opaque continuation key handed back to be echoed, plus a flag
+    #       saying whether more remains -- KIS's tr_cont/ctx_area_* pairing.
+    #       Sources read "header:<name>" or a dotted body path.
+    #
+    # "max_pages" caps every mode as a safety net against a stop condition
+    # that never fires.
+    pagination_json: Optional[dict] = Field(default=None, sa_type=JSONText)
+
     description: Optional[str] = Field(default=None, max_length=100)
     updated_at: Optional[datetime] = Field(default=None,
         sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
