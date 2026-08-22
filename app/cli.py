@@ -5,7 +5,7 @@ from sqlmodel import Session
 from app.db.engine import engine
 from app.logging_config import setup_logging
 from app.services.discovery import discover_period
-from app.services.execution import generate_jobs, run_cycle
+from app.services.execution import generate_jobs, generate_jobs_for_builder, run_cycle
 from app.services.export import finalize_pending_exports
 
 app = typer.Typer()
@@ -41,6 +41,28 @@ def generate_jobs_cmd(
     typer.echo(f"{execution_cycle}: generated {len(job_ids)} new job(s)")
     for job_id in job_ids:
         typer.echo(f"  {job_id}")
+
+
+@app.command("generate-builder")
+def generate_builder_cmd(
+    build_id: str = typer.Argument(..., help="ApiJobBuilder.build_id to generate jobs for"),
+):
+    """Generate one specific builder's jobs by id, regardless of its
+    execution_cycle or is_active (see
+    app.services.execution.generate_jobs_for_builder).
+
+    generate-jobs is scoped to a cycle and only looks at *active* builders,
+    which is right for the scheduled path but wrong for a builder that exists
+    to be run by hand -- a backfill left inactive so no timer can start it
+    would silently generate nothing. This addresses the builder directly, so
+    "inactive" keeps meaning "not scheduled" rather than "not runnable"."""
+    setup_logging()
+
+    with Session(engine) as session:
+        created = generate_jobs_for_builder(session, build_id)
+        job_ids = [job.job_id for job in created]
+
+    typer.echo(f"{build_id}: generated {len(job_ids)} new job(s)")
 
 
 @app.command("run-cycle")
