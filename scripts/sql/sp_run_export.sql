@@ -1,11 +1,10 @@
 CREATE OR REPLACE PROCEDURE sp_run_export (
   p_from  IN  VARCHAR2 DEFAULT NULL,   -- 시작 영업일 (YYYYMMDD, 기본: KST 오늘)
-  p_to    IN  VARCHAR2 DEFAULT NULL,   -- 종료 영업일 (기본: p_from 과 같은 날)
-  p_rows  OUT NUMBER                   -- 내보낸 행 수 합계
+  p_to    IN  VARCHAR2 DEFAULT NULL    -- 종료 영업일 (기본: p_from 과 같은 날)
 ) AS
--- 하루치를 통째로 Parquet 로 내보낸다. 맨 아래 호출 목록이 이 프로시저의
--- 전부이고, 대상이 늘면 거기에 한 줄을 더하면 된다. 배치가 알아야 할 것을
--- "어느 테이블을 어떤 순서로" 에서 "언제" 로 줄이는 것이 목적이다.
+-- 하루치를 통째로 Parquet 로 내보낸다. 아래 호출 목록이 이 프로시저의
+-- 전부이고, 대상이 늘면 같은 형식으로 한 줄을 더하면 된다. 배치가 알아야 할
+-- 것을 "어느 테이블을 어떤 순서로" 에서 "언제" 로 줄이는 것이 목적이다.
 --
 -- 목록을 테이블 이름 배열로 두지 않은 이유: 내보낼 것이 테이블만은 아니다.
 -- 뷰나 조인, 집계처럼 SELECT 로만 표현되는 대상은 p_query 로 넘겨야 하는데,
@@ -18,6 +17,11 @@ CREATE OR REPLACE PROCEDURE sp_run_export (
 -- 무엇을 남길 값어치가 있는가는 스키마에서 읽어낼 수 있는 성질이 아니라서
 -- 판단을 적어 둔다.
 --
+-- 합계를 돌려주지 않는다. 대상마다 몇 건인지는 sp_export_parquet 가 직접
+-- 한 줄씩 남기므로(배치 로그에 그대로 나온다), 여기서 다시 더하려면 호출
+-- 아래마다 누적 한 줄이 따라붙어야 하고 그 줄은 언젠가 빠진다. 합계 하나는
+-- 어차피 "다섯 중 하나가 0건" 을 감춘다.
+--
 -- 순서는 수집 주기가 짧은 것부터다. 실패하면 그 자리에서 멈추므로, 앞의
 -- 것이 먼저 나가 있는 편이 낫다. 멈춰도 되는 이유는 sp_export_parquet 가
 -- 프리픽스를 비우고 다시 쓰기 때문 -- 고친 뒤 같은 날짜로 다시 부르면 이미
@@ -29,41 +33,20 @@ CREATE OR REPLACE PROCEDURE sp_run_export (
   -- 날짜를 내보낸다. 수집 시각도 KST 로 찍으므로(app.services.job_builder)
   -- 여기서도 시장의 하루를 쓴다.
   v_from  VARCHAR2(8) := NVL(p_from, TO_CHAR(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul', 'YYYYMMDD'));
-  v_rows  NUMBER;
-
-  -- sp_export_parquet 와 같은 이름의 인자를 받는 얇은 껍데기. 날짜와 누적은
-  -- 대상마다 같으므로 여기서 한 번만 처리하고, 호출부에는 그 대상만의 정보인
-  -- p_name 과 p_query 만 남긴다. 합계를 더하는 줄을 대상마다 따라 적게 하면
-  -- 언젠가 빠뜨리고, 그때 배치는 조용히 적은 숫자를 보고한다.
-  PROCEDURE export (p_name IN VARCHAR2, p_query IN CLOB DEFAULT NULL) IS
-  BEGIN
-    sp_export_parquet(p_name  => p_name,
-                      p_from  => v_from,
-                      p_to    => p_to,
-                      p_query => p_query,
-                      p_rows  => v_rows);
-    p_rows := p_rows + v_rows;
-    -- 합계만 돌려주면 "여러 대상 중 하나가 0건" 을 알 수 없다. 3분 주기가
-    -- 죽은 날이 정확히 그 모양이라, 배치 로그에 대상별로 남긴다.
-    DBMS_OUTPUT.PUT_LINE(RPAD(p_name, 20) || TO_CHAR(v_rows, 'FM999,999,999') || ' rows');
-  END;
-
+  n       NUMBER;
 BEGIN
-  p_rows := 0;
-
   -- 결과 테이블: 날짜 컬럼이 sp_export_parquet 에 매핑돼 있어 이름만 주면 된다.
-  export(p_name => 'kis_futopt_price');   -- 3분 스냅샷
-  export(p_name => 'kis_futopt_chart');   -- 1분봉
-  export(p_name => 'kis_futopt_daily');   -- 일봉
-  export(p_name => 'kis_index_daily');    -- 지수 일봉
+  sp_export_parquet(p_name => 'kis_futopt_price', p_from => v_from, p_to => p_to, p_rows => n);
+  sp_export_parquet(p_name => 'kis_futopt_chart', p_from => v_from, p_to => p_to, p_rows => n);
+  sp_export_parquet(p_name => 'kis_futopt_daily', p_from => v_from, p_to => p_to, p_rows => n);
+  sp_export_parquet(p_name => 'kis_index_daily',  p_from => v_from, p_to => p_to, p_rows => n);
 
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면
   -- 경로와 내용이 어긋나고, 재실행 시 프리픽스 단위 정리도 어긋난다.
-  export(p_name  => 'v_k2i_atm',
-         p_query => 'SELECT * FROM v_k2i_atm WHERE trade_date = TO_DATE(:DAY,''YYYYMMDD'')');
-
-  -- 대상 추가는 위와 같은 형식으로 한 줄:
-  --   export(p_name => '<테이블>');
-  --   export(p_name => '<프리픽스>', p_query => '<SELECT ... :DAY ...>');
+  sp_export_parquet(p_name  => 'v_k2i_atm',
+                    p_from  => v_from,
+                    p_to    => p_to,
+                    p_query => 'SELECT * FROM v_k2i_atm WHERE trade_date = TO_DATE(:DAY,''YYYYMMDD'')',
+                    p_rows  => n);
 END;

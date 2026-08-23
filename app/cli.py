@@ -12,10 +12,9 @@ from app.services.export import finalize_pending_exports, purge_csv_buffers
 
 app = typer.Typer()
 
-# DBMS_OUTPUT is drained in one round trip, so this caps what a single
-# procedure call can report back. The procedures here write a line per step,
-# never per row.
-_MAX_OUTPUT_LINES = 200
+# How many DBMS_OUTPUT lines to fetch per round trip. Not a limit on what a
+# procedure may write -- the buffer is read until it is empty.
+_OUTPUT_BATCH_LINES = 200
 
 
 @app.callback()
@@ -126,33 +125,51 @@ def discover_contracts_cmd(
         typer.echo(f"  {key} -> {span}, {st['contracts']} contracts ({st['probed']} probes)")
 
 
-def _call_procedure(name: str, *args: object) -> int:
-    """Run a DB-side procedure and return the count it reports.
+def _log_procedure_output(cursor, name: str) -> None:
+    """Log whatever the procedure wrote to DBMS_OUTPUT.
 
-    callproc rather than exec_driver_sql: these procedures report progress
-    through an OUT parameter, which needs a real bind variable. The raw handle
-    is fetched per call rather than held across the commit, which invalidates
-    it. They deliberately don't commit themselves, so that a caller can group
-    one with other work; here there is none, so commit right after.
+    Read in batches until a short one comes back, since the buffer holds more
+    than one batch: sp_run_export over a month of days writes a line per
+    target per day, and stopping at the first batch would drop the tail
+    without any sign that it had."""
+    while True:
+        lines = cursor.arrayvar(str, _OUTPUT_BATCH_LINES)
+        written = cursor.var(int)
+        written.setvalue(0, _OUTPUT_BATCH_LINES)
+        cursor.callproc("dbms_output.get_lines", [lines, written])
 
-    ``args`` are the IN parameters, and the OUT count is appended after them --
-    which is why these procedures all take it last (see
-    scripts/sql/sp_export_parquet.sql). Any DBMS_OUTPUT the procedure wrote is
-    logged: a single total hides which of several steps did nothing, and that
-    is what a broken cycle looks like from here."""
+        count = written.getvalue()
+        for line in lines.getvalue()[:count]:
+            logger.info("{}: {}", name, line)
+        if count < _OUTPUT_BATCH_LINES:
+            return
+
+
+def _call_procedure(name: str, *args: object, out_count: bool = True) -> int | None:
+    """Run a DB-side procedure, logging its output and returning its count.
+
+    callproc rather than exec_driver_sql: these procedures report through an
+    OUT parameter, which needs a real bind variable. The raw handle is fetched
+    per call rather than held across the commit, which invalidates it. They
+    deliberately don't commit themselves, so that a caller can group one with
+    other work; here there is none, so commit right after.
+
+    ``args`` are the IN parameters and the OUT count is appended after them,
+    which is why the procedures that report one take it last (see
+    scripts/sql/sp_export_parquet.sql). ``out_count=False`` for a procedure
+    that reports through DBMS_OUTPUT instead -- sp_run_export leaves the
+    per-target counts to the procedure it calls rather than summing them,
+    which is also what keeps this file out of the way when a target is added
+    to it."""
     with Session(engine) as session:
         with session.connection().connection.cursor() as cursor:
             cursor.callproc("dbms_output.enable", [None])
-            count = cursor.var(oracledb.NUMBER)
-            cursor.callproc(name, [*args, count])
-            result = int(count.getvalue())
 
-            lines = cursor.arrayvar(str, _MAX_OUTPUT_LINES)
-            written = cursor.var(int)
-            written.setvalue(0, _MAX_OUTPUT_LINES)
-            cursor.callproc("dbms_output.get_lines", [lines, written])
-            for line in lines.getvalue()[: written.getvalue()]:
-                logger.info("{}: {}", name, line)
+            count = cursor.var(oracledb.NUMBER) if out_count else None
+            cursor.callproc(name, [*args, count] if out_count else list(args))
+            result = int(count.getvalue()) if out_count else None
+
+            _log_procedure_output(cursor, name)
         session.commit()
     return result
 
@@ -235,13 +252,12 @@ def run_export_cmd(
     """Export a day's collected rows to object storage as Parquet, by calling
     sp_run_export (see scripts/sql/).
 
-    What gets exported is not decided here. sp_run_export holds the list of
-    targets and calls sp_export_parquet for each; this command passes a date
-    and reports what came back. Adding a table or a view to the export is a
-    change to that procedure alone -- nothing here names a target, so this
-    file does not move when the export grows. The per-target counts printed
-    below come from the procedure's own output for the same reason: a new
-    target appears in the log without being taught to Python.
+    What gets exported is not decided here. sp_run_export is a list of
+    sp_export_parquet calls, one per target; this command passes a date and
+    logs what the database reports back. Adding a table or a view to the
+    export is a change to that procedure alone -- nothing here names a target
+    or counts one, so this file does not move when the export grows, and a
+    new target shows up in the batch log without being taught to Python.
 
     The work happens in the database too: DBMS_CLOUD.EXPORT_DATA writes the
     objects directly, so no rows travel through this process and nothing
@@ -256,8 +272,8 @@ def run_export_cmd(
 
     span = day or "today (KST)"
     typer.echo(f"exporting {span}{f' .. {to}' if to else ''}")
-    total = _call_procedure("sp_run_export", day, to)
-    typer.echo(f"exported {total:,} row(s)")
+    _call_procedure("sp_run_export", day, to, out_count=False)
+    typer.echo("export complete")
 
 
 if __name__ == "__main__":

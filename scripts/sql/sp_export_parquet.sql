@@ -38,6 +38,12 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 -- 자리를 채워야 해서 호출이 지저분해진다. 뒤로 보내면 명명 표기로
 -- p_rows => n 만 주고 나머지는 생략할 수 있다.
 --
+-- 날짜별로 DBMS_OUTPUT 한 줄을 남긴다. 자기가 무엇을 몇 건 내보냈는지는
+-- 이 프로시저만 아는 사실이라, 호출한 쪽이 OUT 을 받아 다시 적게 하면
+-- 부르는 자리마다 같은 줄이 따라붙고 언젠가 하나가 빠진다. 0 건인 날도
+-- 남긴다 -- 수집이 죽은 날이 정확히 그 모양이고, 아무 줄도 없으면 안 돈
+-- 것과 구분되지 않는다.
+--
 -- 돌려주는 값이 파일 수가 아니라 행 수인 이유: 파일 수는 Oracle 이 병렬
 -- 워커를 몇 개 썼는지일 뿐 같은 데이터가 2개도 4개도 되므로 호출자에게
 -- 알려주는 바가 없고, 세자면 LIST_OBJECTS 를 한 번 더 불러야 한다. 행 수는
@@ -98,6 +104,9 @@ BEGIN
 
       p_rows := p_rows + v_rows;
     END IF;
+
+    DBMS_OUTPUT.PUT_LINE(RPAD(LOWER(p_name), 20) || v_day || '  '
+                         || TO_CHAR(v_rows, 'FM999,999,999') || ' rows');
 
     v_day := TO_CHAR(TO_DATE(v_day, 'YYYYMMDD') + 1, 'YYYYMMDD');
   END LOOP;
