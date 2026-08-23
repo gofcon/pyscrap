@@ -2,7 +2,7 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
   p_name    IN  VARCHAR2,                 -- 내보낼 대상 (프리픽스 이름 겸 기본 소스)
   p_from    IN  VARCHAR2,                 -- 시작 영업일 (YYYYMMDD, 포함)
   p_to      IN  VARCHAR2 DEFAULT NULL,    -- 종료 영업일 (기본: p_from 과 같은 날)
-  p_files   OUT NUMBER,                   -- 생성된 객체 수
+  p_rows    OUT NUMBER,                   -- 내보낸 행 수 (범위면 합계)
   p_query   IN  CLOB     DEFAULT NULL     -- 사용자 지정 쿼리 (:DAY 가 그날로 치환됨)
 ) AS
 -- 결과 테이블(또는 뷰, 또는 임의의 쿼리)을 날짜별 Parquet 로 오브젝트
@@ -33,6 +33,11 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 --
 -- 파일명은 Oracle 이 정한다(접두사 뒤에 워커 id 와 타임스탬프가 붙는다).
 -- 그래서 재내보내기는 덮어쓰지 않고 쌓이므로, 먼저 해당 프리픽스를 비운다.
+--
+-- 돌려주는 값이 파일 수가 아니라 행 수인 이유: 파일 수는 Oracle 이 병렬
+-- 워커를 몇 개 썼는지일 뿐 같은 데이터가 2개도 4개도 되므로 호출자에게
+-- 알려주는 바가 없고, 세자면 LIST_OBJECTS 를 한 번 더 불러야 한다. 행 수는
+-- 빈 날을 건너뛰려고 어차피 구해 두는 값이라 공짜다.
   c_cred     CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
   c_base     CONSTANT VARCHAR2(200) :=
     'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/';
@@ -56,7 +61,7 @@ BEGIN
     END IF;
   END IF;
 
-  p_files := 0;
+  p_rows := 0;
   v_day := p_from;
   WHILE v_day <= v_to LOOP
     v_prefix := c_base || LOWER(p_name) || '/' || v_day || '/';
@@ -87,9 +92,7 @@ BEGIN
         format          => JSON_OBJECT('type' VALUE 'parquet'),
         query           => v_query);
 
-      FOR o IN (SELECT object_name FROM DBMS_CLOUD.LIST_OBJECTS(c_cred, v_prefix)) LOOP
-        p_files := p_files + 1;
-      END LOOP;
+      p_rows := p_rows + v_rows;
     END IF;
 
     v_day := TO_CHAR(TO_DATE(v_day, 'YYYYMMDD') + 1, 'YYYYMMDD');
