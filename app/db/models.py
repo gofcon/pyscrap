@@ -126,7 +126,12 @@ class ApiJobBuilder(SQLModel, table=True):
     # loose-coupling style as ApiRst.job_id/ApiJobLog.job_id) -- avoids the
     # constraint getting in the way during table drop/recreate migrations
     # (Oracle can't reorder columns -- see the models.py header comment).
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     macro_params_json: dict = Field(sa_type=JSONText)
     # key_params_list moved to ApiMst -- see its field comment there.
     is_active: bool = Field(default=False, sa_type=OracleBoolean)
@@ -147,7 +152,12 @@ class ApiJob(SQLModel, table=True):
     # table drop/recreate migrations (Oracle can't reorder columns -- see
     # the models.py header comment).
     build_id: Optional[str] = Field(default=None, index=True, max_length=50)
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     params_json: dict = Field(sa_type=JSONText)
     is_active: bool = Field(default=True, sa_type=OracleBoolean)
     save_mode: Optional[str] = Field(default="overwrite", max_length=20)
@@ -177,6 +187,10 @@ class ApiRst(SQLModel, table=True):
     __tablename__ = "api_rst"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    # Indexed here, unlike the typed result tables: this one is shared by
+    # every API whose output has no table of its own, so api_id genuinely
+    # selects a subset (6 values across ~114k rows) instead of matching
+    # everything.
     api_id: str = Field(index=True, max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
@@ -208,7 +222,12 @@ class KisFutoptPrice(SQLModel, table=True):
     __tablename__ = "kis_futopt_price"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
     short_code: Optional[str] = Field(default=None, index=True, max_length=20)
@@ -276,7 +295,12 @@ class FoIdxCodeMst(SQLModel, table=True):
     __tablename__ = "fo_idx_code_mst"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
     info_type: Optional[str] = Field(default=None, max_length=2)
@@ -307,7 +331,12 @@ class KisFutoptChart(SQLModel, table=True):
     __tablename__ = "kis_futopt_chart"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
     # key_params_list for KIS_FUTOPT_CHART_1/_2 is ["SHORT_CODE", "DATE", "HHMM"];
@@ -494,7 +523,12 @@ class KisFutoptDaily(SQLModel, table=True):
     __tablename__ = "kis_futopt_daily"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
     short_code: Optional[str] = Field(default=None, index=True, max_length=20)
@@ -533,7 +567,12 @@ class KisIndexDaily(SQLModel, table=True):
     __tablename__ = "kis_index_daily"
 
     id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
-    api_id: str = Field(index=True, max_length=150)
+    # Not indexed: a result table holds exactly one API's output, so api_id is
+    # a single value throughout and an index on it filters nothing while
+    # costing as much as a useful one -- 268MB against 5.5M rows on
+    # kis_futopt_chart before it was dropped. It stays as a column for
+    # traceability, not for lookup.
+    api_id: str = Field(max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
     short_code: Optional[str] = Field(default=None, index=True, max_length=20)  # 지수 코드 (FID_INPUT_ISCD)
