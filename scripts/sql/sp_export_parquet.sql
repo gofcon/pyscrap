@@ -43,6 +43,21 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 -- 날짜를 내보낸다. 수집 시각도 KST 로 찍으므로(app.services.job_builder)
 -- 여기서도 시장의 하루를 쓴다.
 --
+-- 하루가 파일 하나가 되도록 병렬 질의를 끈다. EXPORT_DATA 는 병렬 워커마다
+-- 자기 파일을 쓰므로 파일 수는 곧 워커 수인데, 그 수는 파싱 시점의 auto DOP
+-- 가 정하고 문장마다 달라진다 -- 같은 호출이 아침에 4개, 오후에 1개를 냈다.
+-- PARALLEL 힌트로 올릴 수도 없다(8 을 줘도 4). 내리는 것만 되고, 내리면
+-- 적어도 결과가 매번 같다.
+--
+-- 쪼개서 얻을 것도 없다. 행이 없는 워커도 스키마와 푸터만 든 1.4KB 파일을
+-- 남기고(1 행짜리 뷰를 내보내면 4개 중 3개가 그것이었다), Parquet 은 파일
+-- 단위로 압축 사전을 만들어 하루치를 넷으로 나누면 합계가 11% 커졌다
+-- (783KB -> 881KB). 하루가 수만 행인 동안은 병렬로 시간을 벌 것도 없다.
+--
+-- 세션 설정이라 되돌린다. 프로시저가 아니라 부른 쪽의 세션에 남아서, 안
+-- 되돌리면 배치의 다음 단계까지 직렬이 된다. 예외로 빠져나갈 때도 마찬가지라
+-- 핸들러에서 한 번 더 되돌리고 다시 던진다.
+--
 -- 파일명은 Oracle 이 정한다(접두사 뒤에 워커 id 와 타임스탬프가 붙는다).
 -- 그래서 재내보내기는 덮어쓰지 않고 쌓이므로, 먼저 해당 프리픽스를 비운다.
 --
@@ -84,6 +99,8 @@ BEGIN
     END IF;
   END IF;
 
+  EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL QUERY';
+
   p_rows := 0;
   v_day := v_from;
   WHILE v_day <= v_to LOOP
@@ -123,4 +140,10 @@ BEGIN
 
     v_day := TO_CHAR(TO_DATE(v_day, 'YYYYMMDD') + 1, 'YYYYMMDD');
   END LOOP;
+
+  EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL QUERY';
+EXCEPTION
+  WHEN OTHERS THEN
+    EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL QUERY';
+    RAISE;
 END;
