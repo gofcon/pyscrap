@@ -447,7 +447,7 @@ class DynamicApiScraper:
             self.params[spec.get("param", _PAGE_PARAM)] = int(spec.get("start", 1))
 
         all_records: dict[str, list[dict[str, Any]]] = {}
-        seen: dict[str, set[str]] = {}
+        seen: dict[str, dict[str, int]] = {}
         previous: dict[str, list[dict[str, Any]]] | None = None
 
         for attempt in range(1, max_pages + 1):
@@ -463,17 +463,27 @@ class DynamicApiScraper:
                             self.api.api_id, attempt)
                 break
 
-            # Deduplicated on the way in: a cursor anchored on a value taken
-            # from the last reply re-includes the record that value came from,
-            # so overlap at the seam is normal rather than a fault.
+            # Merged so the later reply wins at the seam. A cursor anchored on
+            # a value from the last reply re-requests the record that value
+            # came from, and that record can come back *different*: the first
+            # reply saw it truncated by the record cap and the next sees it
+            # whole -- observed as a bar reappearing with a larger volume or a
+            # lower low. Keying on the cursor value rather than on the whole
+            # record means the fuller version replaces the clipped one instead
+            # of both being kept as distinct.
+            cursor_field = spec.get("from", "").split(".")[-1] if spec.get("mode") == "cursor" else None
             for selector, records in per_selector.items():
                 bucket = all_records.setdefault(selector, [])
-                known = seen.setdefault(selector, set())
+                index = seen.setdefault(selector, {})
                 for record in records:
-                    fingerprint = json.dumps(record, sort_keys=True, default=str)
-                    if fingerprint in known:
+                    if cursor_field and cursor_field in record:
+                        identity = f"@{record[cursor_field]}"
+                    else:
+                        identity = json.dumps(record, sort_keys=True, default=str)
+                    if identity in index:
+                        bucket[index[identity]] = record
                         continue
-                    known.add(fingerprint)
+                    index[identity] = len(bucket)
                     bucket.append(record)
             previous = per_selector
 
