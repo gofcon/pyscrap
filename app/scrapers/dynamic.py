@@ -755,10 +755,10 @@ class DynamicApiScraper:
                 session.add(obj)
             counts[table_name] = counts.get(table_name, 0) + len(records)
 
-            # Buffered export applies only to dedicated (non-generic) tables --
-            # api_rst's free-form result_json has no fixed schema to export.
-            # See app.services.export.finalize_export for what turns this
-            # into Parquet.
+            # Buffered only for dedicated (non-generic) tables -- api_rst's
+            # free-form result_json has no fixed schema to write as columns.
+            # This is a local trail of what the run produced; the bucket is
+            # fed from the tables themselves (scripts/sql/sp_export_parquet).
             if typed_rows:
                 append_csv_rows(table_name, job_id, typed_rows)
 

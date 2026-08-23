@@ -1,12 +1,13 @@
 import oracledb
 import typer
+from sqlalchemy import text
 from sqlmodel import Session
 
 from app.db.engine import engine
 from app.logging_config import setup_logging
 from app.services.discovery import discover_period
 from app.services.execution import generate_jobs, generate_jobs_for_builder, run_cycle
-from app.services.export import finalize_pending_exports
+from app.services.export import finalize_pending_exports, purge_csv_buffers
 
 app = typer.Typer()
 
@@ -169,17 +170,41 @@ def sync_mst_fuopt_cmd():
 
 @app.command("finalize-exports")
 def finalize_exports_cmd():
-    """Turn every currently-pending buffered CSV into a Parquet upload (see
-    app.services.export.finalize_pending_exports). Register this as its own
-    systemd timer/service, scheduled as the very last step of the day's
-    batch -- after every cycle's generate-jobs + run-cycle has already run."""
+    """Upload every staged document to object storage (see
+    app.services.export.finalize_pending_exports).
+
+    Buffered CSVs are no longer part of this: Parquet is exported from the
+    result tables themselves by sp_export_parquet, which does not depend on
+    what happens to be staged and so covers rows this never could. What is
+    left here is the case the database cannot hold -- a scrape whose result
+    is a file. Register as its own systemd timer, after the cycles that might
+    have downloaded one."""
     setup_logging()
 
     results = finalize_pending_exports()
 
-    typer.echo(f"finalized {len(results)} job export(s)")
-    for job_id, key in results.items():
-        typer.echo(f"  {job_id} -> {key}")
+    # Local buffers are kept back to the previous expiry and no further. That
+    # boundary rather than a fixed number of days because a contract's life is
+    # measured in maturities: everything before the last expiry belongs to
+    # contracts that have settled, and the DB (and the Parquet exported from
+    # it) already holds all of it.
+    with Session(engine) as session:
+        keep_from = session.exec(text("""
+            SELECT prev_mat_date FROM meta_maturity
+             WHERE prod_type = 'K2I'
+               AND mat_date = (SELECT MIN(mat_date) FROM meta_maturity
+                                WHERE prod_type = 'K2I' AND mat_date >= TRUNC(SYSDATE))""")).one()[0]
+
+    typer.echo(f"finalized {len(results)} document upload(s)")
+    for name, key in results.items():
+        typer.echo(f"  {name} -> {key}")
+
+    if keep_from is None:
+        typer.echo("no maturity calendar entry ahead of today; buffers left alone")
+        return
+    removed, freed = purge_csv_buffers(keep_from.date() if hasattr(keep_from, "date") else keep_from)
+    typer.echo(f"purged {removed} buffered CSV(s) before {keep_from:%Y-%m-%d}, "
+               f"freeing {freed / 1024 / 1024:.1f} MB")
 
 
 if __name__ == "__main__":

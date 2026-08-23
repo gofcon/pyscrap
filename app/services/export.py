@@ -1,39 +1,23 @@
-"""Turns scraped rows into Parquet objects in OCI Object Storage.
+"""Local staging for scrape output: buffered rows and downloaded documents.
 
-One Parquet object per job per day, uploaded as
-{table_name}/{date}/{job_id}.parquet, so an Oracle external table can point a
-wildcard file_uri_list at table_name/* and read the whole history as one
-logical table without merging files by hand.
+Typed rows are appended to a CSV per job as they are parsed (append_csv_rows),
+giving a local trail of what a run produced. Turning those into Parquet used
+to happen here; it now happens in the database instead -- sp_export_parquet
+reads the result table for a given day and has DBMS_CLOUD.EXPORT_DATA write
+the objects directly. Exporting from the table rather than from whatever
+buffers happened to be staged is what makes it idempotent and lets it reach
+rows that never passed through a buffer at all, such as a backfill.
 
-The date segment is what lets history accumulate. An earlier layout keyed
-objects by job_id alone, and since a repeated job keeps its id for the life of
-the instrument, each day's export overwrote the previous day's object -- the
-bucket only ever held the most recent run. Dating the key also gives a reader
-something to prune on: a query for one day touches one prefix instead of the
-whole table.
+What still belongs here is what the database cannot hold: a scrape whose
+result is a document -- a PDF, an archive -- rather than rows. Those are
+staged whole (stage_file) and uploaded unchanged (upload_file), which is all
+finalize_pending_exports does now.
 
-Rows aren't sent to Parquet the moment they're parsed, though -- they're
-buffered locally as CSV first (append_csv_rows), and only turned into a
-Parquet object by finalize_export(). For an ordinary one-shot job these
-happen back-to-back in the same run_job call (see
-app.services.execution), so nothing changes externally. The buffering
-matters for a *repeated* job (a snapshot poll re-executing the same job_id
-every few minutes, see RESERVED_NOW_KEY in app.services.job_builder): each
-execution only has a row or two of new data, and job_id -- hence the Parquet
-key -- stays the same run after run, so writing Parquet immediately would
-overwrite the file down to just the latest execution's rows every time
-instead of accumulating history. Buffering to CSV and finalizing on a
-separate schedule (e.g. once a day) fixes that: run_job appends to the
-CSV every run, and finalize_export is called later to turn the day's
-accumulated CSV into one real Parquet batch.
-
-Not every scrape is rows, though. Some endpoints answer with a document --
-a PDF, an image, an archive -- that is the result rather than something to
-parse into records. Those are staged in the same local directory (see
-stage_file) and finalized in the same pass, just down a different branch:
-a .csv becomes Parquet, anything else is uploaded byte-for-byte. Sharing the
-staging area is what keeps the two kinds on one schedule and one retry story,
-so a document left behind by a crashed run gets swept up exactly like a CSV.
+The row buffers are kept on a retention window instead of being consumed
+(purge_csv_buffers). Nothing deletes them any more now that Parquet comes
+from the tables, and a 3-minute poll leaves one file per instrument per day,
+so without a window they only grow -- 61k files and 820MB accumulated from a
+single backfill.
 """
 
 from __future__ import annotations
@@ -43,11 +27,11 @@ import inspect
 import io
 import os
 import typing
+import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 from loguru import logger
 from sqlmodel import SQLModel
 
@@ -158,133 +142,80 @@ def upload_file(path: Path, delete_local: bool = True) -> str:
     return key
 
 
-def _unwrap_optional(annotation: Any) -> Any:
-    if typing.get_origin(annotation) is typing.Union:
-        args = [a for a in typing.get_args(annotation) if a is not type(None)]
-        if len(args) == 1:
-            return args[0]
-    return annotation
+# A job_id carries the trading day it covers for the tables that have one
+# (KIS_FUTOPT_CHART_C01608C42_20260813_154500_60). Retention goes by that
+# rather than by file age: a backfill writes decade-old data today, and
+# treating those buffers as fresh would defeat the window entirely.
+_DATE_IN_NAME_RE = re.compile(r"(?<!\d)(20\d{6})(?!\d)")
 
 
-def _cast_csv_row(row: dict[str, str], model_cls: type[SQLModel] | None) -> dict[str, Any]:
-    """CSV round-trips every value as a string; cast each field back to its
-    real type using the model's own annotations before handing rows to
-    pyarrow -- otherwise every Parquet column would come out as string
-    (the exact bug model_validate was introduced to avoid in run_and_save,
-    just re-appearing at the CSV boundary instead)."""
-    casted: dict[str, Any] = {}
-    for name, value in row.items():
-        if value == "":
-            casted[name] = None
+def _buffer_date(csv_path: Path) -> date:
+    """Which day's data a buffer holds -- read from the job_id when it says,
+    otherwise from the file's own age."""
+    for token in _DATE_IN_NAME_RE.findall(csv_path.stem):
+        try:
+            return datetime.strptime(token, "%Y%m%d").date()
+        except ValueError:
             continue
-        field = model_cls.model_fields.get(name) if model_cls else None
-        base = _unwrap_optional(field.annotation) if field else str
-        if base is float:
-            casted[name] = float(value)
-        elif base is int:
-            casted[name] = int(value)
-        else:
-            casted[name] = value
-    return casted
+    return datetime.fromtimestamp(csv_path.stat().st_mtime).date()
 
 
-def _write_parquet(table_name: str, stamp: str, job_id: str,
-                   rows: list[dict[str, Any]]) -> str | None:
-    if not rows:
-        return None
+def purge_csv_buffers(keep_from: date) -> tuple[int, int]:
+    """Delete buffered CSVs holding data from before ``keep_from``.
 
-    buf = io.BytesIO()
-    pq.write_table(pa.Table.from_pylist(rows), buf)
-    buf.seek(0)
-
-    key = f"{table_name}/{stamp}/{job_id}.parquet"
-    get_object_storage_client().put_object(Bucket=bucket_name(), Key=key, Body=buf.getvalue())
-    # job_id alone (not api_id) identifies the upload in this log line --
-    # _build_job_id always prefixes job_id with its api_id (see
-    # app.services.job_builder), so that context isn't actually lost.
-    logger.info("uploaded {} row(s) to oci://{}/{}", len(rows), bucket_name(), key)
-    return key
-
-
-def finalize_export(csv_path: Path, stamp: str, delete_csv: bool = True) -> str | None:
-    """Convert one locally-buffered CSV file into a Parquet object and
-    upload it, then remove the local CSV. No-op (returns None) if
-    ``csv_path`` doesn't exist.
-
-    ``table_name``/``job_id`` (needed for the model lookup and the Parquet's
-    key) are derived from the path itself -- it's always
-    ``{table_name}/{job_id}.csv`` (see ``_csv_path``/``append_csv_rows``) --
-    since the file's own location on disk is already the single source of
-    truth for both; the caller doesn't need to separately track or re-pass
-    them. ``stamp`` is the only thing the path cannot supply: which day's
-    collection this buffer holds."""
-    if not csv_path.exists():
-        return None
-
-    table_name = csv_path.parent.name
-    job_id = csv_path.stem
-
-    model_cls = TABLE_REGISTRY.get(table_name)
-    with csv_path.open("r", newline="", encoding="utf-8") as f:
-        rows = [_cast_csv_row(row, model_cls) for row in csv.DictReader(f)]
-
-    key = _write_parquet(table_name, stamp, job_id, rows)
-
-    if delete_csv:
-        csv_path.unlink()
-    return key
-
-
-def finalize_pending_exports(stamp: str | None = None) -> dict[str, str]:
-    """Finalize every CSV currently sitting in the local export directory
-    (see append_csv_rows / _LOCAL_EXPORT_DIR) -- i.e. whatever's actually
-    still pending, read directly off the filesystem. No DB query at all:
-    run_job no longer finalizes immediately on success (that step was
-    pulled out, the same way build_jobs_from_builder was pulled out of
-    run_cycle into generate_jobs -- see app.services.execution), so a
-    one-shot job's CSV now sits here for a while too, same as a
-    repeated/snapshot job's (RESERVED_NOW_KEY -- see
-    app.services.job_builder) still-accumulating one -- there's no DB-side
-    "which kind is this" distinction left to make, so the filesystem is
-    simply the source of truth for "what needs finalizing" (this also
-    means a job that crashed mid-run before it could finalize gets swept up
-    here too, as a side benefit).
-
-    Meant to run once, as the very last step of the day's batch -- after
-    every cycle's generate-jobs + run-cycle has already run (register it as
-    its own systemd timer/service, scheduled after the last one) -- since
-    that schedule is fixed and known ahead of time, there's no need for
-    this app to detect "time to finalize" itself.
-
-    ``stamp`` names the day the export covers and becomes the key's date
-    segment; it defaults to today in KST -- the market's own day rather than
-    the host's, for the same reason capture timestamps are (see
-    app.services.job_builder). Pass it only to re-file an export under a
-    different day.
-
-    Returns {stem: uploaded_object_key} -- the stem being the job_id for a
-    buffered CSV, or the document's own name for a staged file."""
-    from app.services.job_builder import _now_kst
-
-    stamp = stamp or _now_kst().strftime("%Y%m%d")
-    results: dict[str, str] = {}
+    Returns (files removed, bytes freed). The caller decides the boundary --
+    it is a market question (which maturity is still worth keeping a local
+    trail for), not a filesystem one."""
+    removed = freed = 0
     if not _LOCAL_EXPORT_DIR.exists():
-        return results
+        return removed, freed
 
     for group_dir in _LOCAL_EXPORT_DIR.iterdir():
         if not group_dir.is_dir():
             continue
-        for staged in sorted(group_dir.iterdir()):
-            if not staged.is_file():
+        for csv_file in group_dir.glob("*.csv"):
+            if _buffer_date(csv_file) >= keep_from:
                 continue
-            # Extension decides the branch: buffered rows get converted, a
-            # downloaded document is already in its final form and only needs
-            # moving. Both leave the staging area, so the directory is the
-            # queue and an empty one means nothing is pending.
-            key = (finalize_export(staged, stamp) if staged.suffix == ".csv"
-                   else upload_file(staged))
-            if key:
-                results[staged.stem] = key
-                logger.info("finalize_pending_exports: {} -> {}", staged.name, key)
+            freed += csv_file.stat().st_size
+            csv_file.unlink()
+            removed += 1
+    if removed:
+        logger.info("purged {} buffered CSV(s) older than {}, freeing {:.1f} MB",
+                    removed, keep_from, freed / 1024 / 1024)
+    return removed, freed
+
+
+def finalize_pending_exports() -> dict[str, str]:
+    """Upload every staged document and clear it from the staging area.
+
+    Reads the filesystem rather than the database: a document has no row to
+    ask about, so what is on disk is the whole of what is pending. That also
+    means one left behind by a crashed run is picked up on the next pass
+    without any bookkeeping.
+
+    Buffered CSVs are deliberately left where they are. They are a local
+    record of what a run produced, not a source for the bucket -- Parquet is
+    exported from the tables themselves now (see scripts/sql/
+    sp_export_parquet.sql), so consuming the buffers here would delete a trail
+    that nothing else keeps while adding nothing the export does not already
+    cover.
+
+    Meant to run as a late step of the day's batch, after the cycles that
+    might have downloaded something.
+
+    Returns {file_name: uploaded_object_key}."""
+    results: dict[str, str] = {}
+    if not _LOCAL_EXPORT_DIR.exists():
+        return results
+
+    for group_dir in sorted(_LOCAL_EXPORT_DIR.iterdir()):
+        if not group_dir.is_dir():
+            continue
+        for staged in sorted(group_dir.iterdir()):
+            if not staged.is_file() or staged.suffix == ".csv":
+                continue
+            key = upload_file(staged)
+            results[staged.name] = key
+            logger.info("finalize_pending_exports: {} -> {}", staged.name, key)
 
     return results
