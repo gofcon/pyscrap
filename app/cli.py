@@ -9,6 +9,7 @@ from app.logging_config import setup_logging
 from app.services.discovery import discover_period
 from app.services.execution import generate_jobs, generate_jobs_for_builder, run_cycle
 from app.services.export import finalize_pending_exports, purge_csv_buffers
+from app.services.sql_sources import compare as compare_sql, pull as pull_sql
 
 app = typer.Typer()
 
@@ -277,6 +278,38 @@ def run_export_cmd(
     typer.echo(f"exporting {f'{since} .. ' if since else ''}{span}")
     _call_procedure("sp_run_export", day, since, out_count=False)
     typer.echo("export complete")
+
+
+@app.command("check-sql")
+def check_sql_cmd(
+    pull: list[str] = typer.Option(None, "--pull", help="Object to overwrite its file with the database's version; repeatable"),
+):
+    """Report where scripts/sql and the compiled objects disagree.
+
+    Nothing loads those files at runtime -- Python calls the procedures by
+    name -- so they are a record, and a record no one checks is worse than
+    none: it is believed. This is the check. The database stays the source of
+    truth, which is the point of splitting the work; --pull brings a change
+    made there back into the file so it can be committed with its reason.
+
+    Run it after any session that touched the database, and in the daily batch
+    if you want the drift to find you rather than the other way round."""
+    setup_logging()
+
+    for name in pull or []:
+        typer.echo(f"pulled {name} -> {pull_sql(name)}")
+
+    results = compare_sql()
+    for r in results:
+        typer.echo(f"  {r.name:<26} {r.status:<8} {r.detail}")
+
+    drifted = [r for r in results if r.status in ("differ", "missing", "orphan")]
+    if drifted:
+        typer.echo("")
+        typer.echo(f"{len(drifted)} object(s) out of step; --pull <name> to take the database's version")
+        raise typer.Exit(1)
+    typer.echo("")
+    typer.echo(f"{sum(1 for r in results if r.status == 'match')} object(s) match")
 
 
 if __name__ == "__main__":
