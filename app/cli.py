@@ -1,5 +1,6 @@
 import oracledb
 import typer
+from loguru import logger
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -10,6 +11,11 @@ from app.services.execution import generate_jobs, generate_jobs_for_builder, run
 from app.services.export import finalize_pending_exports, purge_csv_buffers
 
 app = typer.Typer()
+
+# DBMS_OUTPUT is drained in one round trip, so this caps what a single
+# procedure call can report back. The procedures here write a line per step,
+# never per row.
+_MAX_OUTPUT_LINES = 200
 
 
 @app.callback()
@@ -120,19 +126,33 @@ def discover_contracts_cmd(
         typer.echo(f"  {key} -> {span}, {st['contracts']} contracts ({st['probed']} probes)")
 
 
-def _call_procedure(name: str) -> int:
-    """Run a DB-side sync procedure and return the row count it reports.
+def _call_procedure(name: str, *args: object) -> int:
+    """Run a DB-side procedure and return the count it reports.
 
     callproc rather than exec_driver_sql: these procedures report progress
     through an OUT parameter, which needs a real bind variable. The raw handle
     is fetched per call rather than held across the commit, which invalidates
     it. They deliberately don't commit themselves, so that a caller can group
-    one with other work; here there is none, so commit right after."""
+    one with other work; here there is none, so commit right after.
+
+    ``args`` are the IN parameters, and the OUT count is appended after them --
+    which is why these procedures all take it last (see
+    scripts/sql/sp_export_parquet.sql). Any DBMS_OUTPUT the procedure wrote is
+    logged: a single total hides which of several steps did nothing, and that
+    is what a broken cycle looks like from here."""
     with Session(engine) as session:
         with session.connection().connection.cursor() as cursor:
+            cursor.callproc("dbms_output.enable", [None])
             count = cursor.var(oracledb.NUMBER)
-            cursor.callproc(name, [count])
+            cursor.callproc(name, [*args, count])
             result = int(count.getvalue())
+
+            lines = cursor.arrayvar(str, _MAX_OUTPUT_LINES)
+            written = cursor.var(int)
+            written.setvalue(0, _MAX_OUTPUT_LINES)
+            cursor.callproc("dbms_output.get_lines", [lines, written])
+            for line in lines.getvalue()[: written.getvalue()]:
+                logger.info("{}: {}", name, line)
         session.commit()
     return result
 
@@ -205,6 +225,31 @@ def finalize_exports_cmd():
     removed, freed = purge_csv_buffers(keep_from.date() if hasattr(keep_from, "date") else keep_from)
     typer.echo(f"purged {removed} buffered CSV(s) before {keep_from:%Y-%m-%d}, "
                f"freeing {freed / 1024 / 1024:.1f} MB")
+
+
+@app.command("export-results")
+def export_results_cmd(
+    day: str = typer.Argument(None, help="Trading day to export, YYYYMMDD (default: today in KST)"),
+    to: str = typer.Option(None, "--to", help="End of an inclusive range; re-exports every day in it"),
+):
+    """Export the day's collected rows to object storage as Parquet, by
+    calling sp_export_results (which calls sp_export_parquet once per result
+    table -- see scripts/sql/).
+
+    The work happens in the database: DBMS_CLOUD.EXPORT_DATA writes the objects
+    directly, so no rows travel through this process and nothing depends on
+    which CSV buffers happen to be staged. That also makes it safe to repeat --
+    each day's prefix is cleared before it is rewritten -- so a failed run can
+    simply be run again, and a range can be re-exported after a backfill.
+
+    Register as a late step of the daily batch, after the last cycle of the
+    day. Give no argument there: the default is the market's own day."""
+    setup_logging()
+
+    span = day or "today (KST)"
+    typer.echo(f"exporting {span}{f' .. {to}' if to else ''}")
+    total = _call_procedure("sp_export_results", day, to)
+    typer.echo(f"exported {total:,} row(s)")
 
 
 if __name__ == "__main__":
