@@ -42,6 +42,15 @@ BEGIN
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면
   -- 경로와 내용이 어긋나고, 재실행 시 프리픽스 단위 정리도 어긋난다.
+  -- trade_at 은 VARCHAR2('YYYYMMDDHH24MISS') 라 SUBSTR 로 자른 값도 문자열이다.
+  -- :DAY 는 따옴표까지 포함해 치환되므로 그대로 비교하면 되고, TO_DATE 로
+  -- 감싸면 왼쪽 문자열이 NLS_DATE_FORMAT 으로 변환되다 ORA-01861 로 죽는다.
+  sp_export_parquet(p_name  => 'kis_futopt_price1',
+                    p_to    => p_to,
+                    p_from  => p_from,
+                    p_query => 'SELECT * FROM v_fuopt_price WHERE SUBSTR(trade_at, 1, 8) = :DAY',
+                    p_rows  => n);
+
   sp_export_parquet(p_name  => 'v_k2i_atm',
                     p_to    => p_to,
                     p_from  => p_from,
