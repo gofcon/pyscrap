@@ -1,6 +1,6 @@
 CREATE OR REPLACE PROCEDURE sp_run_export (
-  p_from  IN  VARCHAR2 DEFAULT NULL,   -- 시작 영업일 (YYYYMMDD, 기본: KST 오늘)
-  p_to    IN  VARCHAR2 DEFAULT NULL    -- 종료 영업일 (기본: p_from 과 같은 날)
+  p_to    IN  VARCHAR2 DEFAULT NULL,   -- 마지막 영업일 (YYYYMMDD, 기본: KST 오늘)
+  p_from  IN  VARCHAR2 DEFAULT NULL    -- 시작 영업일 (포함, 기본: p_to 와 같은 날)
 ) AS
 -- 하루치를 통째로 Parquet 로 내보낸다. 아래 호출 목록이 이 프로시저의
 -- 전부이고, 대상이 늘면 같은 형식으로 한 줄을 더하면 된다. 배치가 알아야 할
@@ -28,25 +28,23 @@ CREATE OR REPLACE PROCEDURE sp_run_export (
 -- 나간 대상은 같은 결과로 덮이고, 못 나간 것이 채워진다. 예외를 삼키고
 -- 계속 돌면 배치는 성공으로 끝나고 빠진 대상은 아무도 모르게 된다.
 
-  -- 기본 날짜는 KST 기준. DB 세션 시각(UTC)으로 잡으면 장 마감 후 도는 배치가
-  -- 자정을 넘긴 뒤엔 전날을, 넘기기 전엔 당일을 골라 같은 배치가 날마다 다른
-  -- 날짜를 내보낸다. 수집 시각도 KST 로 찍으므로(app.services.job_builder)
-  -- 여기서도 시장의 하루를 쓴다.
-  v_from  VARCHAR2(8) := NVL(p_from, TO_CHAR(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul', 'YYYYMMDD'));
-  n       NUMBER;
+  -- 날짜는 손대지 않고 그대로 넘긴다. 기본값(끝날은 KST 오늘, 시작일은 끝날과
+  -- 같은 날)은 sp_export_parquet 이 정하므로, 여기서 미리 풀면 같은 규칙이 두
+  -- 군데 적히고 언젠가 한쪽만 고쳐진다.
+  n  NUMBER;
 BEGIN
   -- 결과 테이블: 날짜 컬럼이 sp_export_parquet 에 매핑돼 있어 이름만 주면 된다.
-  sp_export_parquet(p_name => 'kis_futopt_price', p_from => v_from, p_to => p_to, p_rows => n);
-  sp_export_parquet(p_name => 'kis_futopt_chart', p_from => v_from, p_to => p_to, p_rows => n);
-  sp_export_parquet(p_name => 'kis_futopt_daily', p_from => v_from, p_to => p_to, p_rows => n);
-  sp_export_parquet(p_name => 'kis_index_daily',  p_from => v_from, p_to => p_to, p_rows => n);
+  sp_export_parquet(p_name => 'kis_futopt_price', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'kis_futopt_chart', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'kis_futopt_daily', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'kis_index_daily',  p_to => p_to, p_from => p_from, p_rows => n);
 
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면
   -- 경로와 내용이 어긋나고, 재실행 시 프리픽스 단위 정리도 어긋난다.
   sp_export_parquet(p_name  => 'v_k2i_atm',
-                    p_from  => v_from,
                     p_to    => p_to,
+                    p_from  => p_from,
                     p_query => 'SELECT * FROM v_k2i_atm WHERE trade_date = TO_DATE(:DAY,''YYYYMMDD'')',
                     p_rows  => n);
 END;

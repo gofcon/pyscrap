@@ -246,8 +246,8 @@ def finalize_exports_cmd():
 
 @app.command("run-export")
 def run_export_cmd(
-    day: str = typer.Argument(None, help="Trading day to export, YYYYMMDD (default: today in KST)"),
-    to: str = typer.Option(None, "--to", help="End of an inclusive range; re-exports every day in it"),
+    day: str = typer.Argument(None, help="Last trading day to export, YYYYMMDD (default: today in KST)"),
+    since: str = typer.Option(None, "--from", help="Reach back to this day too, inclusive"),
 ):
     """Export a day's collected rows to object storage as Parquet, by calling
     sp_run_export (see scripts/sql/).
@@ -266,13 +266,16 @@ def run_export_cmd(
     failed run can simply be run again, and a range can be re-exported after a
     backfill.
 
-    Register as a late step of the daily batch, after the last cycle of the
-    day. Give no argument there: the default is the market's own day."""
+    Dates are anchored on the most recent day and reach backwards: the
+    argument is the last day to export and defaults to today, while --from
+    says how far back to go. The daily batch is the common case and takes
+    neither, so register it with no argument at all; --from is for putting a
+    backfill into the bucket after the fact."""
     setup_logging()
 
     span = day or "today (KST)"
-    typer.echo(f"exporting {span}{f' .. {to}' if to else ''}")
-    _call_procedure("sp_run_export", day, to, out_count=False)
+    typer.echo(f"exporting {f'{since} .. ' if since else ''}{span}")
+    _call_procedure("sp_run_export", day, since, out_count=False)
     typer.echo("export complete")
 
 

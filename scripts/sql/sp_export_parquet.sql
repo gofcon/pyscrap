@@ -1,7 +1,7 @@
 CREATE OR REPLACE PROCEDURE sp_export_parquet (
   p_name    IN  VARCHAR2,                 -- 내보낼 대상 (프리픽스 이름 겸 기본 소스)
-  p_from    IN  VARCHAR2,                 -- 시작 영업일 (YYYYMMDD, 포함)
-  p_to      IN  VARCHAR2 DEFAULT NULL,    -- 종료 영업일 (기본: p_from 과 같은 날)
+  p_to      IN  VARCHAR2 DEFAULT NULL,    -- 마지막 영업일 (YYYYMMDD, 기본: KST 오늘)
+  p_from    IN  VARCHAR2 DEFAULT NULL,    -- 시작 영업일 (포함, 기본: p_to 와 같은 날)
   p_query   IN  CLOB     DEFAULT NULL,    -- 사용자 지정 쿼리 (:DAY 가 그날로 치환됨)
   p_rows    OUT NUMBER                    -- 내보낸 행 수 (범위면 합계)
 ) AS
@@ -31,6 +31,18 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 -- 결과 테이블을 기본 경로로 내보내려면 이 CASE 에 한 줄을 더하면 되고,
 -- 매핑이 없는 대상(뷰 등)은 p_query 로 부르면 된다.
 --
+-- 날짜는 최근을 기준으로 잡고 필요하면 과거로 넓힌다. 이 프로시저가 하는 일의
+-- 거의 전부는 "오늘 걷힌 것을 내보낸다" 이고 -- 하루 한 번 도는 배치가 인자
+-- 없이 부르는 그 경우다 -- 과거는 다시 채울 일이 있을 때만 들어온다. 그래서
+-- 기본값이 붙는 쪽이 끝날이고, p_from 은 거기서 얼마나 거슬러 올라갈지를
+-- 말한다. 기간을 시작일부터 세면 정작 흔한 호출이 "오늘부터 오늘까지" 가
+-- 된다.
+--
+-- 기본 날짜는 KST 다. DB 세션 시각(UTC)으로 잡으면 장 마감 후 도는 배치가
+-- 자정을 넘긴 뒤엔 전날을, 넘기기 전엔 당일을 골라 같은 배치가 날마다 다른
+-- 날짜를 내보낸다. 수집 시각도 KST 로 찍으므로(app.services.job_builder)
+-- 여기서도 시장의 하루를 쓴다.
+--
 -- 파일명은 Oracle 이 정한다(접두사 뒤에 워커 id 와 타임스탬프가 붙는다).
 -- 그래서 재내보내기는 덮어쓰지 않고 쌓이므로, 먼저 해당 프리픽스를 비운다.
 --
@@ -52,7 +64,8 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
   c_base     CONSTANT VARCHAR2(200) :=
     'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/';
   v_col      VARCHAR2(60);
-  v_to       VARCHAR2(8) := NVL(p_to, p_from);
+  v_to       VARCHAR2(8) := NVL(p_to, TO_CHAR(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul', 'YYYYMMDD'));
+  v_from     VARCHAR2(8) := NVL(p_from, v_to);
   v_day      VARCHAR2(8);
   v_prefix   VARCHAR2(400);
   v_query    CLOB;
@@ -72,7 +85,7 @@ BEGIN
   END IF;
 
   p_rows := 0;
-  v_day := p_from;
+  v_day := v_from;
   WHILE v_day <= v_to LOOP
     v_prefix := c_base || LOWER(p_name) || '/' || v_day || '/';
 
