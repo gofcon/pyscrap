@@ -2,9 +2,9 @@
 --
 -- 행사가는 2.5 격자이므로 종가는 대개 두 행사가 사이에 떨어짐. 반올림한
 -- 행사가에서 0.7 이내면 그 행사가를 ATM 으로 확정하고, 그보다 멀면 어느
--- 쪽도 ATM 이라 하기 어려우므로 콜은 아래쪽 · 풋은 위쪽을 쓴다(각자
--- 등가에서 밀리는 방향). 격자가 2.5 라 중간점까지가 1.25 이므로 0.7~1.25
--- 구간만 이 "사이" 판정에 해당함.
+-- 쪽도 ATM 이라 하기 어려우므로 각자 외가격이 되는 쪽을 쓴다 -- 콜은 위쪽,
+-- 풋은 아래쪽. 격자가 2.5 라 중간점까지가 1.25 이므로 0.7~1.25 구간만 이
+-- "사이" 판정에 해당함.
 --
 -- 위클리 둘은 LEFT: WKM 은 2023-08 상장이라 그 이전 NULL 이 정상이고, 그
 -- 사실 자체가 데이터로서 의미가 있으므로 행을 지우지 않음.
@@ -22,10 +22,10 @@ SELECT h.trade_date,
        ROUND(h.close_price / 2.5) * 2.5                     AS atm,
        CASE WHEN ABS(h.close_price - ROUND(h.close_price / 2.5) * 2.5) <= 0.7
             THEN ROUND(h.close_price / 2.5) * 2.5
-            ELSE FLOOR(h.close_price / 2.5) * 2.5 END       AS call_atm,
+            ELSE CEIL(h.close_price / 2.5) * 2.5 END        AS call_atm,
        CASE WHEN ABS(h.close_price - ROUND(h.close_price / 2.5) * 2.5) <= 0.7
             THEN ROUND(h.close_price / 2.5) * 2.5
-            ELSE CEIL(h.close_price / 2.5) * 2.5 END        AS put_atm,
+            ELSE FLOOR(h.close_price / 2.5) * 2.5 END       AS put_atm,
        k.mat_date                                           AS mat_date,
        wi.mat_date                                          AS wki_date,
        wm.mat_date                                          AS wkm_date
@@ -42,4 +42,4 @@ SELECT h.trade_date,
   LEFT JOIN meta_maturity wm ON wm.prod_type = 'WKM'
                             AND h.trade_date >  wm.prev_mat_date
                             AND h.trade_date <= wm.mat_date
- WHERE h.mv_id = 'KI2'
+ WHERE h.mv_id = 'K2I'

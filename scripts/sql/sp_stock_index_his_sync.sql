@@ -12,7 +12,7 @@ BEGIN
   MERGE INTO stock_index_his t
   USING (
     SELECT TO_DATE(k.stck_bsop_date, 'YYYYMMDD') AS trade_date,
-           CASE k.short_code WHEN '2001' THEN 'KI2' END AS mv_id,
+           CASE k.short_code WHEN '2001' THEN 'K2I' END AS mv_id,
            k.bstp_nmix_prpr AS close_price,
            k.bstp_nmix_oprc AS open_price,
            k.bstp_nmix_hgpr AS high_price,

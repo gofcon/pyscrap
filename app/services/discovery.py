@@ -318,9 +318,9 @@ def discover_period(session: Session, period: str) -> dict[str, dict[str, Any]]:
     rows = session.exec(text("""
         SELECT m.prod_type, m.mat_code, m.mat_scd, m.mat_date, m.prev_mat_date,
                (SELECT h.close_price FROM stock_index_his h
-                 WHERE h.mv_id = 'KI2'
+                 WHERE h.mv_id = 'K2I'
                    AND h.trade_date = (SELECT MAX(trade_date) FROM stock_index_his
-                                        WHERE mv_id = 'KI2' AND trade_date < m.mat_date)) ref
+                                        WHERE mv_id = 'K2I' AND trade_date < m.mat_date)) ref
           FROM meta_maturity m
          WHERE m.mat_scd IS NOT NULL AND m.mat_date IS NOT NULL
            AND TO_CHAR(m.mat_date, 'YYYY-MM') LIKE :p
