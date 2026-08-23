@@ -65,14 +65,7 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 -- 이미 있어 중복이지만, 경로는 내려받는 순간 사라진다 -- 여러 날 것을 한
 -- 폴더에 모아 두면 part_ 로 시작하는 이름들은 서로 구분되지 않는다.
 --
--- 폴더 이름이 'day=20260813' 인 것은 하이브 규약이라, 읽는 쪽에서
--- DBMS_CLOUD.CREATE_EXTERNAL_PART_TABLE 이 이 경로만 보고 day 파티션을
--- 만들어 낸다(scripts/sql/create_external_tables.sql). 그러면 하루를 묻는
--- 질의가 그 하루의 파일만 연다 -- 실행계획의 Pstart/Pstop 이 한 파티션으로
--- 좁혀지는 것으로 확인했다. 그냥 '20260813' 이면 파티션이 아니라 그저 경로라
--- 매 질의가 그 테이블의 모든 날을 훑는다.
---
--- 날짜를 폴더로 두는 또 다른 이유는 나누어 담으려는 게 아니라 지울 단위여서다.
+-- 날짜를 폴더로 두는 이유는 나누어 담으려는 게 아니라 지울 단위여서다.
 -- DBMS_CLOUD.LIST_OBJECTS 는 폴더 경계에서만 매칭한다 -- 실제로
 -- 'tbl/20260820/' 은 찾지만 'tbl/2026082' 는 0건이다. 파일명 접두사로는
 -- 그날 것만 골라낼 수 없어서, 평면으로 두면 테이블 폴더 전체(몇 년치면 수천
@@ -122,7 +115,7 @@ BEGIN
   p_rows := 0;
   v_day := v_from;
   WHILE v_day <= v_to LOOP
-    v_prefix := c_base || LOWER(p_name) || '/day=' || v_day || '/';
+    v_prefix := c_base || LOWER(p_name) || '/' || v_day || '/';
 
     IF p_query IS NULL THEN
       v_query := 'SELECT * FROM ' || p_name || ' WHERE ' || v_col || ' = ''' || v_day || '''';
