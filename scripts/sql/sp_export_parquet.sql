@@ -2,8 +2,8 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
   p_name    IN  VARCHAR2,                 -- 내보낼 대상 (프리픽스 이름 겸 기본 소스)
   p_from    IN  VARCHAR2,                 -- 시작 영업일 (YYYYMMDD, 포함)
   p_to      IN  VARCHAR2 DEFAULT NULL,    -- 종료 영업일 (기본: p_from 과 같은 날)
-  p_rows    OUT NUMBER,                   -- 내보낸 행 수 (범위면 합계)
-  p_query   IN  CLOB     DEFAULT NULL     -- 사용자 지정 쿼리 (:DAY 가 그날로 치환됨)
+  p_query   IN  CLOB     DEFAULT NULL,    -- 사용자 지정 쿼리 (:DAY 가 그날로 치환됨)
+  p_rows    OUT NUMBER                    -- 내보낸 행 수 (범위면 합계)
 ) AS
 -- 결과 테이블(또는 뷰, 또는 임의의 쿼리)을 날짜별 Parquet 로 오브젝트
 -- 스토리지에 내보낸다.
@@ -33,6 +33,10 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 --
 -- 파일명은 Oracle 이 정한다(접두사 뒤에 워커 id 와 타임스탬프가 붙는다).
 -- 그래서 재내보내기는 덮어쓰지 않고 쌓이므로, 먼저 해당 프리픽스를 비운다.
+--
+-- OUT 을 맨 뒤에 둔 이유: 선택 인자 앞에 있으면 그 인자를 안 쓸 때도
+-- 자리를 채워야 해서 호출이 지저분해진다. 뒤로 보내면 명명 표기로
+-- p_rows => n 만 주고 나머지는 생략할 수 있다.
 --
 -- 돌려주는 값이 파일 수가 아니라 행 수인 이유: 파일 수는 Oracle 이 병렬
 -- 워커를 몇 개 썼는지일 뿐 같은 데이터가 2개도 4개도 되므로 호출자에게
