@@ -227,20 +227,28 @@ def finalize_exports_cmd():
                f"freeing {freed / 1024 / 1024:.1f} MB")
 
 
-@app.command("export-results")
-def export_results_cmd(
+@app.command("run-export")
+def run_export_cmd(
     day: str = typer.Argument(None, help="Trading day to export, YYYYMMDD (default: today in KST)"),
     to: str = typer.Option(None, "--to", help="End of an inclusive range; re-exports every day in it"),
 ):
-    """Export the day's collected rows to object storage as Parquet, by
-    calling sp_export_results (which calls sp_export_parquet once per result
-    table -- see scripts/sql/).
+    """Export a day's collected rows to object storage as Parquet, by calling
+    sp_run_export (see scripts/sql/).
 
-    The work happens in the database: DBMS_CLOUD.EXPORT_DATA writes the objects
-    directly, so no rows travel through this process and nothing depends on
-    which CSV buffers happen to be staged. That also makes it safe to repeat --
-    each day's prefix is cleared before it is rewritten -- so a failed run can
-    simply be run again, and a range can be re-exported after a backfill.
+    What gets exported is not decided here. sp_run_export holds the list of
+    targets and calls sp_export_parquet for each; this command passes a date
+    and reports what came back. Adding a table or a view to the export is a
+    change to that procedure alone -- nothing here names a target, so this
+    file does not move when the export grows. The per-target counts printed
+    below come from the procedure's own output for the same reason: a new
+    target appears in the log without being taught to Python.
+
+    The work happens in the database too: DBMS_CLOUD.EXPORT_DATA writes the
+    objects directly, so no rows travel through this process and nothing
+    depends on which CSV buffers happen to be staged. That also makes it safe
+    to repeat -- each day's prefix is cleared before it is rewritten -- so a
+    failed run can simply be run again, and a range can be re-exported after a
+    backfill.
 
     Register as a late step of the daily batch, after the last cycle of the
     day. Give no argument there: the default is the market's own day."""
@@ -248,7 +256,7 @@ def export_results_cmd(
 
     span = day or "today (KST)"
     typer.echo(f"exporting {span}{f' .. {to}' if to else ''}")
-    total = _call_procedure("sp_export_results", day, to)
+    total = _call_procedure("sp_run_export", day, to)
     typer.echo(f"exported {total:,} row(s)")
 
 
