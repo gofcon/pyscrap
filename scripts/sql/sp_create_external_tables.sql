@@ -1,6 +1,6 @@
 CREATE OR REPLACE PROCEDURE sp_create_external_tables (
   p_target IN VARCHAR2 DEFAULT NULL   -- 이 대상만 다시 걸기 (기본: 전부)
-) AS
+) AUTHID CURRENT_USER AS
 -- 오브젝트 스토리지의 Parquet 을 테이블처럼 읽도록 외부 테이블을 건다.
 -- sp_run_export 가 내보낸 대상마다 하나씩, 이름은 xt_<대상>.
 --
@@ -30,6 +30,15 @@ CREATE OR REPLACE PROCEDURE sp_create_external_tables (
 -- 여기 옮겨 적으면 쿼리를 고칠 때마다 두 군데를 맞춰야 하기 때문이다. 다만
 -- 타입은 Parquet 을 거치며 옮겨간다 -- NUMBER 는 BINARY_DOUBLE, DATE 는
 -- TIMESTAMP(3) 으로 돌아온다.
+-- AUTHID CURRENT_USER 인 이유: 이 프로시저가 하는 일은 결국 CREATE TABLE 이고,
+-- 정의자 권한(기본값)으로 돌면 그 안에서 롤이 꺼진다. ADB 에서 CREATE TABLE 은
+-- 보통 DWROLE 같은 롤로 오므로, 롤로만 가진 계정에서는 여기서 ORA-01031 이
+-- 난다 -- 같은 문장을 SQL 창에 직접 치면 되는데 프로시저 안에서만 안 되는,
+-- 원인이 잘 안 보이는 실패다. 호출자 권한으로 돌면 세션과 같은 권한을 쓴다.
+--
+-- 부수적으로 맞는 동작이기도 하다: 외부 테이블도 크리덴셜도 부른 사람의
+-- 스키마에서 찾고 만든다. 한 스키마에 프로시저를 두고 여러 스키마가 자기
+-- 테이블을 거는 것이 그대로 된다.
   c_cred CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
   c_base CONSTANT VARCHAR2(200) :=
     'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/';
