@@ -1,9 +1,12 @@
 """OCI Object Storage client (S3-compatible API), used by
-:mod:`app.services.export` to export typed-table scrape results as Parquet
--- so they can later be read via an Oracle external table pointed at the
-bucket (one Parquet object per job, organized {table_name}/{job_id}.parquet,
-so a wildcard file_uri_list picks up every job's file as one logical table
-without merging files by hand).
+:func:`app.services.export.upload_file` to put a staged file into the bucket.
+
+What goes through here is what a table cannot hold -- a scrape whose result
+is a document rather than rows. Row data reaches the same bucket without
+touching this process: DBMS_CLOUD.EXPORT_DATA writes the Parquet from inside
+the database (scripts/sql/sp_export_parquet.sql), reading the result table
+directly, so an export covers rows that never passed through a run here and
+can be repeated without depending on what happens to be staged on disk.
 
 boto3's newer default "flexible checksums" behavior streams the request body
 with aws-chunked Content-Encoding, which OCI's S3-compat endpoint rejects
