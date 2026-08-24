@@ -11,13 +11,65 @@ cp .env.example .env  # 값 채우기
 
 ## Run -- batch (systemd timers)
 
-Three independently-schedulable steps; see `scripts/` for the matching
+Independently-schedulable steps; see `scripts/` for the matching
 `.service`/`.timer` units.
 
 ```bash
 python -m app.cli generate-jobs 5m     # create pending ApiJob rows for this execution_cycle
 python -m app.cli run-cycle 5m         # execute whatever's currently pending
-python -m app.cli finalize-exports     # CSV -> Parquet -> upload, once as the day's last step
+python -m app.cli sync-index-his       # index bars -> stock_index_his, refreshes v_k2i_atm
+python -m app.cli run-export           # the day's rows -> Parquet in object storage
+python -m app.cli finalize-exports     # upload staged documents, purge old CSV buffers
+python -m app.cli check-sql            # scripts/sql vs the compiled procedures
+```
+
+Rows reach object storage from the database itself (`scripts/sql/`), not
+through this process: `run-export` calls `sp_run_export`, which exports each
+target for a given day. `finalize-exports` is left with what the database
+cannot hold -- a scrape whose result is a file.
+
+### Deploying the units
+
+Units are plain files in `scripts/`; deployment is copying them and enabling
+the timers. Run on the instance, from the checkout:
+
+```bash
+chmod +x scripts/*.sh
+```
+
+```bash
+sudo cp scripts/pyscrap-*.service scripts/pyscrap-*.timer /etc/systemd/system/
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo systemctl enable --now pyscrap-daily-start.timer pyscrap-generate-3m.timer pyscrap-3m-call.timer pyscrap-3m-put.timer pyscrap-5m.timer pyscrap-1h.timer pyscrap-daily-end.timer pyscrap-export.timer pyscrap-finalize-exports.timer pyscrap-check-sql.timer
+```
+
+Only the timers are enabled -- each starts its own `.service`, so enabling
+the services as well would run them at boot too.
+
+```bash
+systemctl list-timers 'pyscrap-*'
+```
+
+A changed unit needs the copy and `daemon-reload` again; already-enabled
+timers pick the new file up without re-enabling.
+
+Check a step by hand before trusting it to the timer:
+
+```bash
+sudo systemctl start pyscrap-export.service && journalctl -u pyscrap-export.service -n 40 --no-pager
+```
+
+`check-sql` exits non-zero when a file and its procedure disagree, so drift
+shows up as a failed unit:
+
+```bash
+systemctl --failed
 ```
 
 ### Sharded cycles (rate-limited high-frequency polling)
@@ -25,13 +77,14 @@ python -m app.cli finalize-exports     # CSV -> Parquet -> upload, once as the d
 A KIS rate limit is per-account, so the 3-minute futures/options snapshot
 poll (1,753 instruments: front-month index calls/puts, both weekly series,
 index futures) is split across two accounts. Each half is its own
-`execution_cycle` -- `3m_a` (account #1) and `3m_b` (account #2) -- with its
-own timer, firing on the same instants. `_floor_datetime` ignores the
-`_<shard>` suffix, so both halves stamp the same `trade_at`.
+`execution_cycle` -- `3m_call` (account #1, calls and futures) and `3m_put`
+(account #2) -- with its own timer, firing on the same instants.
+`_floor_datetime` ignores the `_<shard>` suffix, so both halves stamp the
+same `trade_at`.
 
 ```bash
-python -m app.cli generate-jobs 3m_a   # once a day, after fo_idx_code_mst refreshes
-python -m app.cli run-cycle 3m_a       # every tick (scripts/run_cycle.sh 3m_a run-only)
+python -m app.cli generate-jobs 3m_call   # once a day, after fo_idx_code_mst refreshes
+python -m app.cli run-cycle 3m_call       # every tick (scripts/run_cycle.sh 3m_call run-only)
 ```
 
 Measured on this workload: ~155ms per job, ~136s per 876-job shard, against
