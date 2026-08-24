@@ -36,7 +36,8 @@ globals (where the closure-local `model` doesn't exist)."""
 
 from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import Column, func
 from sqlmodel import SQLModel, select
 
@@ -57,8 +58,10 @@ def make_crud_router(model: type[SQLModel], id_field: str, prefix: str, tag: str
     def list_page(
         session: SessionDep,
         response: Response,
+        request: Request,
         limit: int = Query(default=100, le=1000, description="Rows per page"),
         offset: int = Query(default=0, ge=0, description="Rows to skip"),
+        q: str | None = Query(default=None, description=f"Substring of {id_field}"),
     ) -> list[SQLModel]:
         """One page of rows, most recently updated first.
 
@@ -76,11 +79,48 @@ def make_crud_router(model: type[SQLModel], id_field: str, prefix: str, tag: str
 
         The count goes in an X-Total-Count header rather than wrapping the
         rows in an envelope, which would change this response's shape for
-        every existing caller to serve the page controls of one."""
-        total = session.exec(select(func.count()).select_from(model)).one()
+        every existing caller to serve the page controls of one. It counts
+        what the filters match, not the table, so page controls stay right
+        while a filter is on.
+
+        Any field of the model can be used as an exact-match filter --
+        ?execution_cycle=3m_call&is_active=true -- and ``q`` matches a
+        substring of the primary key, which is the search box a UI wants.
+        Filters rather than paging alone because most of api_job is finished
+        backfill: paging through 160,000 rows to reach the one job you care
+        about is not a workable way to find it.
+
+        The filterable set is not declared per mount. Every field is offered
+        and an unknown one is rejected, the same way update() checks its
+        body: a list to maintain would go stale against the models, and this
+        router already trades the generated schema for staying generic (see
+        the module docstring)."""
+        reserved = {"limit", "offset", "q"}
+        filters = {k: v for k, v in request.query_params.items() if k not in reserved}
+        unknown = set(filters) - set(model.model_fields)
+        if unknown:
+            raise HTTPException(400, f"unknown filter field(s): {sorted(unknown)}")
+
+        statement = select(model)
+        for field, raw in filters.items():
+            # Coerced through the field's own annotation so "true" reaches a
+            # boolean column as True and "1" reaches an integer one as 1 --
+            # a query string carries neither type. Same validation the model
+            # would apply to a write.
+            try:
+                value = TypeAdapter(model.model_fields[field].annotation).validate_python(raw)
+            except ValidationError as exc:
+                raise HTTPException(400, f"bad value for {field}: {raw!r}") from exc
+            statement = statement.where(cast(Column, getattr(model, field)) == value)
+        if q is not None:
+            statement = statement.where(id_column.like(f"%{q}%"))
+
+        total = session.exec(
+            select(func.count()).select_from(statement.subquery())
+        ).one()
         response.headers["X-Total-Count"] = str(total)
         rows = session.exec(
-            select(model)
+            statement
             .order_by(updated_at_column.desc(), id_column.asc())
             .offset(offset)
             .limit(limit)
