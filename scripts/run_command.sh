@@ -1,44 +1,43 @@
 #!/bin/bash
 
 # =================================================================
-# pyscrap Finalize Exports Script
-# This script is intended to be called by systemd services.
-# Usage: ./finalize_exports.sh
+# pyscrap CLI 실행 래퍼 -- systemd 서비스가 부른다.
+# Usage: ./run_command.sh <cli-command> [args...]
+#   예: ./run_command.sh run-export
+#       ./run_command.sh sync-index-his
 #
-# Turns every currently-pending buffered CSV into a Parquet upload (see
-# app.services.export.finalize_pending_exports). Meant to run once, as the
-# very last step of the day's batch -- after every cycle's
-# generate-jobs + run-cycle (via run_cycle.sh) has already run.
+# 명령마다 스크립트를 따로 두지 않는 이유: 하는 일이 디렉터리 이동, 가상환경
+# 활성화, 로그 머리말, python3 -m app.cli 호출로 전부 같다. 복사본이 늘면
+# 언젠가 한쪽만 고쳐진다.
 # =================================================================
 
-# 1. 설정
-# 서비스 파일의 WorkingDirectory와 일치해야 함
 PROJECT_DIR="/home/opc/pyscrap"
 
-# 2. 프로젝트 디렉토리로 이동
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <cli-command> [args...]"
+    exit 2
+fi
+
 cd "$PROJECT_DIR" || {
     echo "Error: Directory $PROJECT_DIR not found."
     exit 1
 }
 
-# 3. 가상환경 활성화 (있을 경우)
 if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
 elif [ -f "venv/bin/activate" ]; then
     source venv/bin/activate
 fi
 
-# 4. 실행 로깅
 echo "============================================================"
 echo "Job Started: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "Command: app.cli $*"
 echo "Project Path: $PROJECT_DIR"
 echo "============================================================"
 
-# 5. 애플리케이션 실행
-python3 -m app.cli finalize-exports
-
-# 6. 종료 로깅
+python3 -m app.cli "$@"
 EXIT_CODE=$?
+
 echo "============================================================"
 echo "Job Finished: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "Exit Code: $EXIT_CODE"

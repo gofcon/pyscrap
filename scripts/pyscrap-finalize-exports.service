@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap Finalize Exports (18:10, end of day's batch)
+Description=pyscrap Finalize Exports (18:20, after the day's export)
 After=network.target
 
 [Service]
@@ -7,9 +7,10 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
-# app.services.export.finalize_pending_exports -- CSV -> Parquet -> upload
-# for whatever's still pending on disk, from any job (one-shot or repeated).
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/finalize_exports.sh
+# 디스크에 남은 문서(PDF, 압축파일 등)를 업로드하고, 지난 월물까지의 CSV
+# 버퍼를 지운다(app.services.export). 행 데이터는 여기 없다 -- 그쪽은
+# pyscrap-export.service 가 DB 에서 직접 Parquet 으로 내보낸다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh finalize-exports
 
 [Install]
 WantedBy=multi-user.target

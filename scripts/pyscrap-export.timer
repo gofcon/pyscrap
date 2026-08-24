@@ -1,0 +1,13 @@
+[Unit]
+Description=Timer for pyscrap Export to Object Storage
+
+[Timer]
+# 18:10 -- daily_end(18:00) 가 그날 수집을 마친 뒤. run-export 는 인자 없이
+# 돌아 KST 오늘을 내보낸다(scripts/sql/sp_export_parquet.sql).
+# Mon..Fri only -- app.services.job_builder._last_bday 와 같은 범위라
+# 공휴일에도 뜬다. 그런 날은 0건이라 아무 파일도 안 만든다.
+OnCalendar=Mon..Fri *-*-* 18:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

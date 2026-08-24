@@ -1,0 +1,23 @@
+[Unit]
+Description=pyscrap Export to Object Storage (18:10, after the day's collection)
+After=network.target pyscrap-daily-end.service
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+# 두 단계를 한 유닛에 둔 이유: 순서가 실제 의존이다. sync-index-his 가
+# stock_index_his 를 채우고 그 끝에서 v_k2i_atm 을 갱신하는데(scripts/sql/
+# sp_stock_index_his_sync.sql), 그 갱신 전에 내보내면 당일분이 빈 채로 나가고
+# 파일은 만들어지므로 배치는 성공으로 끝난다. 타이머를 둘로 나눠 시각으로
+# 순서를 맞추면 앞 단계가 길어진 날 조용히 어긋난다.
+#
+# 앞 단계가 실패하면 뒤는 돌지 않는다(oneshot 의 기본 동작). 지수 시계열이
+# 안 채워진 상태로 내보내는 것보다 그 편이 낫다 -- 다시 돌리면 되고,
+# sp_export_parquet 은 같은 날짜를 몇 번 내보내도 결과가 같다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-index-his
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh run-export
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for pyscrap SQL Drift Check
+
+[Timer]
+# 하루 배치가 다 끝난 뒤. 매일 볼 필요까지는 없지만, DB 쪽을 직접 고치는
+# 사람이 따로 있는 구성이라 갈라진 채로 오래 두지 않는 편이 낫다.
+OnCalendar=Mon..Fri *-*-* 18:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

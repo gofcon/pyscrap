@@ -1,0 +1,16 @@
+[Unit]
+Description=pyscrap SQL Drift Check (18:40, end of day's batch)
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+# scripts/sql 의 파일과 DB 에 컴파일된 프로시저가 갈라졌는지 본다. 갈라지면
+# 0 이 아닌 코드로 끝나므로 systemd 가 이 유닛을 failed 로 표시하고,
+# systemctl --failed 에 남는다 -- 갈라짐이 사람을 찾아오게 하는 것이 목적이다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh check-sql
+
+[Install]
+WantedBy=multi-user.target

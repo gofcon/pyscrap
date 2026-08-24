@@ -16,7 +16,7 @@ WorkingDirectory=/home/opc/pyscrap
 # reloaded by the daily_start cycle: sync_mst_fuopt reads it, and the shards'
 # db macro selects from what that sync produces, so generating first would
 # use yesterday's contract list and miss the front-month roll.
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/sync_mst_fuopt.sh
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-mst-fuopt
 # generate-only for both shards, in one process each so the two stay in step.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_call generate-only
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_put generate-only
