@@ -27,10 +27,6 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 -- query 는 정적 문자열이라 바인드를 받지 않는다). 뒤에 글자가 이어지는
 -- :DAYS 같은 이름은 건드리지 않는다.
 --
--- 날짜 컬럼은 테이블마다 이름이 달라 기본 쿼리용으로 여기 매핑해 둔다. 새
--- 결과 테이블을 기본 경로로 내보내려면 이 CASE 에 한 줄을 더하면 되고,
--- 매핑이 없는 대상(뷰 등)은 p_query 로 부르면 된다.
---
 -- 날짜는 최근을 기준으로 잡고 필요하면 과거로 넓힌다. 이 프로시저가 하는 일의
 -- 거의 전부는 "오늘 걷힌 것을 내보낸다" 이고 -- 하루 한 번 도는 배치가 인자
 -- 없이 부르는 그 경우다 -- 과거는 다시 채울 일이 있을 때만 들어온다. 그래서
@@ -98,17 +94,31 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
   v_rows     NUMBER;
 BEGIN
   IF p_query IS NULL THEN
-    v_col := CASE LOWER(p_name)
-               WHEN 'kis_futopt_chart' THEN 'stck_bsop_date'
-               WHEN 'kis_futopt_daily' THEN 'stck_bsop_date'
-               WHEN 'kis_index_daily'  THEN 'stck_bsop_date'
-               WHEN 'kis_futopt_price' THEN 'SUBSTR(trade_at, 1, 8)'
-             END;
-    IF v_col IS NULL THEN
-      raise_application_error(-20001,
-        'no date column mapped for ' || p_name || '; pass p_query instead');
-    END IF;
+    v_col := fn_export_day_col(p_name);
   END IF;
+
+  -- 통짜 내보내기와 겹치면 멈춘다. 겹친 채로 두면 그 기간이 _bulk 파일과 날짜
+  -- 폴더 양쪽에 있게 되고, 외부 테이블은 <대상>/*/*.parquet 하나로 둘 다 읽어
+  -- 그 며칠만 두 번 세어진다 -- 읽는 쪽에서는 알아채기 어려운 종류의 오류다.
+  -- 중복이 생길 수 있는 유일한 경로가 이 프로시저라, 여기서 거절하면 구조로
+  -- 보장된다.
+  --
+  -- 범위는 파일 이름이 들고 있다(20250814_20260820_part_...). 어디까지
+  -- 통짜로 나갔는지를 별도 테이블에 적어두면 누가 버킷에서 파일을 지웠을 때
+  -- 그 기록만 남아 어긋나므로, 버킷을 유일한 사실로 둔다.
+  --
+  -- '_bulk/' 로 조회하는 것이 싼 이유: LIST_OBJECTS 는 폴더 경계에서만
+  -- 매칭하므로 이 호출은 통짜 파일 하나만 돌려준다. 대상 폴더 전체(몇 년치면
+  -- 수천 건)를 훑지 않는다. 날짜 루프 밖이라 호출당 한 번이다.
+  FOR o IN (SELECT object_name FROM DBMS_CLOUD.LIST_OBJECTS(c_cred,
+                   c_base || LOWER(p_name) || '/_bulk/')) LOOP
+    IF v_from <= SUBSTR(o.object_name, 10, 8) AND v_to >= SUBSTR(o.object_name, 1, 8) THEN
+      raise_application_error(-20002,
+        v_from || '..' || v_to || ' overlaps the bulk export '
+        || SUBSTR(o.object_name, 1, 17) || ' of ' || LOWER(p_name)
+        || '; re-run sp_export_bulk instead, or drop it first');
+    END IF;
+  END LOOP;
 
   EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL QUERY';
 
