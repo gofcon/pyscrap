@@ -8,7 +8,30 @@ CREATE OR REPLACE PROCEDURE sp_stock_index_his_sync (p_merged OUT NUMBER) AS
 -- price_change/change_rate 는 원본에 없어 종가 시계열에서 LAG 로 계산함.
 -- listed_market_cap 도 이 엔드포인트가 주지 않으므로 건드리지 않고 남겨둠
 -- (다른 소스로 채운 과거분을 덮어쓰지 않기 위함).
+--
+-- 끝에서 v_k2i_atm 을 갱신한다. 그 MV 는 stock_index_his 의 종가에서 그날의
+-- ATM 행사가를 뽑아 놓은 것이라, 여기서 새 종가를 넣고 갱신하지 않으면 MV 는
+-- 어제까지만 알고 있다. 그 상태로 내보내면 당일분이 빈 채로 나가는데, 파일이
+-- 만들어지긴 하므로 배치는 성공으로 끝나고 아무도 모른다.
+--
+-- 배치 순서에 맡기지 않고 여기 둔 이유: 갱신해야 할 시점은 '내보내기 전' 이
+-- 아니라 '원본이 바뀐 직후' 다. 그 시점을 아는 것은 이 프로시저뿐이고,
+-- 호출하는 쪽에 순서를 맡기면 언젠가 한 군데서 빠진다.
+--
+-- ON DEMAND MV 라 COMPLETE 로 다시 만든다. 1,700 행 남짓이라 그 편이
+-- 빠르고, FAST 는 로그 테이블을 요구해서 원본 쪽에 부담을 남긴다.
+--
+-- 병렬 DML 을 끄는 이유: MV 가 읽는 stock_index_his 를 바로 위에서 고쳤는데,
+-- 그 MERGE 가 병렬로 돌면 같은 트랜잭션에서 그 테이블을 다시 읽을 수 없다
+-- (ORA-12838). 커밋으로 풀 수도 있지만 이 프로시저는 커밋하지 않는다 --
+-- 호출하는 쪽이 다른 작업과 묶을 수 있어야 해서다. 수십 행짜리 MERGE 라
+-- 병렬로 얻을 것도 없다.
+--
+-- 세션 설정이라 되돌린다. 이 DB 는 병렬 DML 이 기본 활성이고(그래서 위
+-- 오류가 났다), 안 되돌리면 배치의 다음 단계까지 직렬이 된다.
 BEGIN
+  EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL DML';
+
   MERGE INTO stock_index_his t
   USING (
     SELECT TO_DATE(k.stck_bsop_date, 'YYYYMMDD') AS trade_date,
@@ -57,4 +80,12 @@ BEGIN
   ) s
   ON (t.trade_date = s.trade_date AND t.mv_id = s.mv_id)
   WHEN MATCHED THEN UPDATE SET t.price_change = s.chg, t.change_rate = s.rate;
+
+  DBMS_MVIEW.REFRESH('v_k2i_atm', 'C');
+
+  EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL DML';
+EXCEPTION
+  WHEN OTHERS THEN
+    EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL DML';
+    RAISE;
 END;
