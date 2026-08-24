@@ -32,6 +32,26 @@ CREATE OR REPLACE PROCEDURE sp_stock_index_his_sync (p_merged OUT NUMBER) AS
 BEGIN
   EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL DML';
 
+  -- 원본에서 같은 (일자, 종목) 이 여러 벌인 것을 최신 한 벌만 남기고 지운다.
+  --
+  -- 왜 생기냐면: 이 API 의 빌더가 롤링 기간(last_month ~ last_bday)을 쓰고,
+  -- 그 날짜가 job_id 에 들어간다. key_params_list 에 NOW 가 없어 일회성 잡이라
+  -- 매일 새 job_id 가 생겨야 다시 수집되는데 -- 그게 이 API 가 매일 도는
+  -- 방식이다 -- save_mode=overwrite 는 '같은 job_id 의 이전 결과' 만 지운다.
+  -- 그래서 어제 잡과 오늘 잡의 겹치는 구간이 두 벌로 남는다.
+  --
+  -- 기간을 하루로 좁히면 겹침은 없어지지만, 하루 걸렀을 때 저절로 메워지는
+  -- 성질도 같이 없어진다. 그 겹침이 자가 치유 장치라 그대로 두고 여기서
+  -- 접는다. 아래 MERGE 가 (trade_date, mv_id) 로 접으므로 downstream 은
+  -- 원래 영향이 없었지만, 원본 테이블은 그냥 두면 하루 20 행씩 계속 는다.
+  DELETE FROM kis_index_daily
+   WHERE id IN (
+     SELECT id FROM (
+       SELECT id, ROW_NUMBER() OVER (PARTITION BY stck_bsop_date, short_code
+                                     ORDER BY updated_at DESC, id DESC) rn
+         FROM kis_index_daily)
+      WHERE rn > 1);
+
   MERGE INTO stock_index_his t
   USING (
     SELECT TO_DATE(k.stck_bsop_date, 'YYYYMMDD') AS trade_date,
