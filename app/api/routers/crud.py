@@ -34,9 +34,10 @@ rely on `model` being evaluated eagerly as the real class object, not
 deferred as a string that would need resolving against this module's
 globals (where the closure-local `model` doesn't exist)."""
 
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Response
+from sqlalchemy import Column, func
 from sqlmodel import SQLModel, select
 
 from app.api.deps import SessionDep
@@ -45,9 +46,46 @@ from app.api.deps import SessionDep
 def make_crud_router(model: type[SQLModel], id_field: str, prefix: str, tag: str) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=[tag])
 
+    # cast: class-level column access resolves to the field's declared Python
+    # type for a type checker, which has no .desc(); at runtime it is
+    # SQLAlchemy's InstrumentedAttribute, which does. Same gap as
+    # _EXECUTED_AT in app.api.routers.job_logs.
+    updated_at_column = cast(Column, model.updated_at)
+    id_column = cast(Column, getattr(model, id_field))
+
     @router.get("/", response_model=list[model])
-    def list_all(session: SessionDep) -> list[SQLModel]:
-        return list(session.exec(select(model)).all())
+    def list_page(
+        session: SessionDep,
+        response: Response,
+        limit: int = Query(default=100, le=1000, description="Rows per page"),
+        offset: int = Query(default=0, ge=0, description="Rows to skip"),
+    ) -> list[SQLModel]:
+        """One page of rows, most recently updated first.
+
+        Paged because two of these three tables are not the small fixed
+        config sets this router was written for any more: api_job holds a row
+        per generated job, which a year of minute-bar backfill took past
+        160,000. Returning all of them serialized the whole table into one
+        response and the UI could not open the page at all.
+
+        Ordered by updated_at with the primary key as tiebreaker, not by
+        updated_at alone. Job generation stamps a whole batch within the same
+        instant, so the database is free to return those rows in a different
+        arrangement per query -- and then paging re-reads some rows and skips
+        others. The key breaks every tie the timestamp leaves.
+
+        The count goes in an X-Total-Count header rather than wrapping the
+        rows in an envelope, which would change this response's shape for
+        every existing caller to serve the page controls of one."""
+        total = session.exec(select(func.count()).select_from(model)).one()
+        response.headers["X-Total-Count"] = str(total)
+        rows = session.exec(
+            select(model)
+            .order_by(updated_at_column.desc(), id_column.asc())
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return list(rows)
 
     @router.get("/{row_id}", response_model=model)
     def get_one(row_id: str, session: SessionDep) -> SQLModel:
