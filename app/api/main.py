@@ -28,8 +28,11 @@ app.include_router(health.router)
 # Config-table CRUD (see app.api.routers.crud) -- one call per table, kept
 # explicit rather than looped/auto-discovered since this set is small and
 # fixed (same three as app.services.export._BOOKKEEPING_TABLES).
-app.include_router(make_crud_router(ApiMst, id_field="api_id", prefix="/api-mst", tag="api_mst"))
-app.include_router(make_crud_router(ApiJobBuilder, id_field="build_id", prefix="/job-builders", tag="api_job_builder"))
+app.include_router(make_crud_router(ApiMst, id_field="api_id", prefix="/api-mst", tag="api_mst",
+                                    children={"job-builders": (ApiJobBuilder, "api_id"),
+                                              "jobs": (ApiJob, "api_id")}))
+app.include_router(make_crud_router(ApiJobBuilder, id_field="build_id", prefix="/job-builders",
+                                    tag="api_job_builder", children={"jobs": (ApiJob, "build_id")}))
 app.include_router(make_crud_router(ApiJob, id_field="job_id", prefix="/jobs", tag="api_job"))
 
 # ApiJob action endpoints (generate/run) -- mounted at the same "/jobs"

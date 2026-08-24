@@ -44,7 +44,40 @@ from sqlmodel import SQLModel, select
 from app.api.deps import SessionDep
 
 
-def make_crud_router(model: type[SQLModel], id_field: str, prefix: str, tag: str) -> APIRouter:
+def _page(session: Any, response: Response, statement: Any,
+          order_by: tuple[Column, ...], limit: int, offset: int) -> list[SQLModel]:
+    """One page of `statement`, with the full match count in a header.
+
+    Counted from the statement's own subquery rather than the table, so the
+    number describes what the caller asked for and page controls stay right
+    when a filter or a parent narrows it."""
+    total = session.exec(select(func.count()).select_from(statement.subquery())).one()
+    response.headers["X-Total-Count"] = str(total)
+    rows = session.exec(statement.order_by(*order_by).offset(offset).limit(limit)).all()
+    return list(rows)
+
+
+def make_crud_router(
+    model: type[SQLModel],
+    id_field: str,
+    prefix: str,
+    tag: str,
+    children: dict[str, tuple[type[SQLModel], str]] | None = None,
+) -> APIRouter:
+    """``children`` maps a path segment to (child model, the child column
+    holding this row's id) -- {"jobs": (ApiJob, "api_id")} mounts
+    GET {prefix}/{row_id}/jobs.
+
+    Declared per mount rather than derived, because the models carry no
+    relationships to derive it from (see models.py on why those were dropped
+    project-wide) and a column named api_id on two tables is a naming
+    convention, not a statement that they are related.
+
+    Children are their own paged endpoints and are not embedded in the parent
+    -- one api_mst row owns 167,146 jobs, so a detail response carrying its
+    children would be the same unbounded read this router just stopped doing.
+    {prefix}/{row_id}/children gives the counts alone, which is what a page
+    showing "42 builders, 167,146 jobs" actually needs."""
     router = APIRouter(prefix=prefix, tags=[tag])
 
     # cast: class-level column access resolves to the field's declared Python
@@ -115,17 +148,8 @@ def make_crud_router(model: type[SQLModel], id_field: str, prefix: str, tag: str
         if q is not None:
             statement = statement.where(id_column.like(f"%{q}%"))
 
-        total = session.exec(
-            select(func.count()).select_from(statement.subquery())
-        ).one()
-        response.headers["X-Total-Count"] = str(total)
-        rows = session.exec(
-            statement
-            .order_by(updated_at_column.desc(), id_column.asc())
-            .offset(offset)
-            .limit(limit)
-        ).all()
-        return list(rows)
+        return _page(session, response, statement,
+                     (updated_at_column.desc(), id_column.asc()), limit, offset)
 
     @router.get("/{row_id}", response_model=model)
     def get_one(row_id: str, session: SessionDep) -> SQLModel:
@@ -170,5 +194,60 @@ def make_crud_router(model: type[SQLModel], id_field: str, prefix: str, tag: str
             raise HTTPException(404, f"{model.__name__} '{row_id}' not found")
         session.delete(row)
         session.commit()
+
+    def require_parent(row_id: str, session: SessionDep) -> None:
+        # A missing parent is a 404, not an empty list: a mistyped id would
+        # otherwise read as "this one has no children".
+        if session.get(model, row_id) is None:
+            raise HTTPException(404, f"{model.__name__} '{row_id}' not found")
+
+    @router.get("/{row_id}/children")
+    def child_counts(row_id: str, session: SessionDep) -> dict[str, int]:
+        """How many rows each child set holds, without reading any of them."""
+        require_parent(row_id, session)
+        counts: dict[str, int] = {}
+        for segment, (child_model, fk_field) in (children or {}).items():
+            counts[segment] = session.exec(
+                select(func.count())
+                .select_from(child_model)
+                .where(cast(Column, getattr(child_model, fk_field)) == row_id)
+            ).one()
+        return counts
+
+    for segment, (child_model, fk_field) in (children or {}).items():
+
+        def make_child_route(child_model: type[SQLModel] = child_model,
+                             fk_field: str = fk_field) -> Any:
+            # Defaults bind this iteration's values: a closure over the loop
+            # variables would leave every route pointing at the last child.
+            child_updated_at = cast(Column, child_model.updated_at)
+            # The child's own key as tiebreaker, for the reason the parent
+            # list has one: a batch of generated jobs shares an instant, and
+            # rows tied on the sort column can come back arranged differently
+            # per query -- which makes paging repeat some and skip others.
+            child_key = cast(Column, list(child_model.__table__.primary_key.columns)[0])
+
+            def list_children(
+                row_id: str,
+                session: SessionDep,
+                response: Response,
+                limit: int = Query(default=100, le=1000, description="Rows per page"),
+                offset: int = Query(default=0, ge=0, description="Rows to skip"),
+            ) -> list[SQLModel]:
+                require_parent(row_id, session)
+                statement = select(child_model).where(
+                    cast(Column, getattr(child_model, fk_field)) == row_id)
+                return _page(session, response, statement,
+                             (child_updated_at.desc(), child_key.asc()), limit, offset)
+
+            return list_children
+
+        router.add_api_route(
+            f"/{{row_id}}/{segment}",
+            make_child_route(),
+            methods=["GET"],
+            response_model=list[child_model],
+            summary=f"{child_model.__name__} rows whose {fk_field} is this row",
+        )
 
     return router
