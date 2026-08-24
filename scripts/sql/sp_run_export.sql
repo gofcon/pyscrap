@@ -11,6 +11,14 @@ CREATE OR REPLACE PROCEDURE sp_run_export (
 -- 이름 배열에는 그게 들어갈 자리가 없다. 호출을 그대로 나열하면 두 종류가
 -- 같은 모양으로 한 줄씩 놓인다.
 --
+-- 무엇을 여기 넣을지의 기준은 하루 발생량이다. 장중 내내 쌓이는 것만
+-- 여기 두고, 하루에 몇 행뿐인 마스터성·요약성 자료는 분석 쪽에서 DB 링크로
+-- 바로 읽는다. 파일 하나에 몇 KB 를 담자고 외부 테이블을 걸어 둘 값어치가
+-- 없고, 늘어나는 건 갱신 순서를 챙길 자리뿐이다.
+--   남김: kis_futopt_chart(분봉), kis_futopt_price/price1(3분 스냅샷),
+--         kis_futopt_daily(일봉)
+--   뺌:   kis_index_daily(하루 2행), v_k2i_atm(하루 1행)
+--
 -- 목록을 질의로 뽑지 않은 이유: job_id 가 있는 테이블을 고르는 파이썬 쪽
 -- 규칙을 그대로 옮기면 api_job, api_job_log, api_rst, fo_idx_code_mst 까지
 -- 걸린다. 그것들은 수집 부기와 원본 마스터라 '거래일' 이라는 게 없다.
@@ -37,7 +45,6 @@ BEGIN
   sp_export_parquet(p_name => 'kis_futopt_price', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'kis_futopt_chart', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'kis_futopt_daily', p_to => p_to, p_from => p_from, p_rows => n);
-  sp_export_parquet(p_name => 'kis_index_daily',  p_to => p_to, p_from => p_from, p_rows => n);
 
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면
@@ -51,9 +58,4 @@ BEGIN
                     p_query => 'SELECT * FROM v_fuopt_price WHERE SUBSTR(trade_at, 1, 8) = :DAY',
                     p_rows  => n);
 
-  sp_export_parquet(p_name  => 'v_k2i_atm',
-                    p_to    => p_to,
-                    p_from  => p_from,
-                    p_query => 'SELECT * FROM v_k2i_atm WHERE trade_date = TO_DATE(:DAY,''YYYYMMDD'')',
-                    p_rows  => n);
 END;

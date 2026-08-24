@@ -86,7 +86,5 @@ BEGIN
   attach('kis_futopt_price');
   attach('kis_futopt_chart');
   attach('kis_futopt_daily');
-  attach('kis_index_daily');
   attach('kis_futopt_price1');
-  attach('v_k2i_atm');
 END;
