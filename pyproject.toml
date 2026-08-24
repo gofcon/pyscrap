@@ -2,7 +2,12 @@
 name = "pyscrap"
 version = "0.1.0"
 description = "Oracle DB scraper using SQLModel"
-requires-python = ">=3.13"
+# 3.13 은 개발 기계의 버전을 적어둔 것이었고, 코드가 요구하는 수준이 아니다.
+# 3.12 나 3.13 에만 있는 문법을 쓰는 곳이 없다 -- 실제 하한은 애노테이션의
+# "X | None" 이라 3.10 이다. 배포 대상인 Oracle Linux 가 3.12 까지만 주고
+# 3.13 패키지가 없어서 설치가 막혔다. 돌려본 것이 3.12 와 3.13 이라 그 둘만
+# 적는다.
+requires-python = ">=3.12"
 dependencies = [
     "sqlmodel>=0.0.22",
     "oracledb>=2.4.1",
@@ -13,7 +18,6 @@ dependencies = [
     "tenacity>=9.0.0",
     "loguru>=0.7.2",
     "typer>=0.15.1",
-    "pyarrow>=17.0.0",
     "boto3>=1.34.0",
     "fastapi[standard]>=0.115.0",
     "requests>=2.32.0",
