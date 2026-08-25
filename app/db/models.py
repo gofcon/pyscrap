@@ -282,9 +282,13 @@ class FoIdxCodeMst(SQLModel, table=True):
     """Typed output table for the KRX/KIS index futures/option master file
     (``fo_idx_code_mts.mst``, downloaded as a ZIP -- see response_type=
     'zip_delimited' on ApiMst). One row per listed futures/option contract;
-    the whole file is a full snapshot, not incremental, so its ApiJobBuilder
-    should use save_mode='overwrite' (replace this job's rows every refresh)
-    rather than 'append'.
+    Each download is a full snapshot of what is listed that day, and every
+    snapshot is kept: the builder appends and ``trade_at`` stamps which run a
+    row came from (``{"NOW": "trade_at"}`` in key_params_list). Keeping them
+    is what makes the listing history answerable -- when a contract appeared,
+    when it stopped being listed -- which a single overwritten copy cannot
+    say. Readers that want "what is listed now" take the rows of the latest
+    trade_at (see scripts/sql/sp_mst_fuopt_sync.sql).
 
     Column names/meanings taken directly from KIS's own ST_FO_IDX_CODE C
     struct (info_type/atm_cls_code/acpr/mmsc_cls_code kept verbatim; the two
@@ -317,7 +321,11 @@ class FoIdxCodeMst(SQLModel, table=True):
     acpr: Optional[float] = Field(default=None)                                  # 행사가 (선물은 0)
     mmsc_cls_code: Optional[str] = Field(default=None, max_length=2)             # 월물구분(0:연결,1:최근월...4:차차차근월), 옵션은 공백
     unas_short_code: Optional[str] = Field(default=None, max_length=20)          # 기초자산 단축코드
-    unas_kor_name: Optional[str] = Field(default=None, max_length=100)           # 기초자산명
+    unas_kor_name: Optional[str] = Field(default=None, max_length=100)
+    # Which download this row came from -- stamped per execution by the
+    # reserved NOW key, not part of the file. Same name/shape as trade_at on
+    # KisFutoptPrice so a capture time reads the same way across tables.
+    trade_at: Optional[str] = Field(default=None, max_length=14)           # 기초자산명
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

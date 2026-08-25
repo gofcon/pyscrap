@@ -42,7 +42,13 @@ BEGIN
                NULLIF(f.acpr, 0) AS strike_prc,
                -- 원본은 short_code 에 유니크 제약이 없음. MERGE 는 소스에 키가
                -- 중복되면 ORA-30926 으로 실패하므로 여기서 1건으로 접어둠.
-               ROW_NUMBER() OVER (PARTITION BY f.short_code ORDER BY f.id) AS rn
+               --
+               -- 최신 것부터 세는(DESC) 이유: 이 테이블이 이제 매일의 스냅샷을
+               -- 쌓는다(save_mode=append + trade_at). 오름차순이면 같은
+               -- short_code 의 가장 오래된 판을 집어, 이름이나 행사가가 그 뒤에
+               -- 정정된 경우 옛 값이 mst_fuopt 로 들어간다.
+               ROW_NUMBER() OVER (PARTITION BY f.short_code
+                                  ORDER BY f.trade_at DESC NULLS LAST, f.id DESC) AS rn
           FROM fo_idx_code_mst f
          WHERE f.info_type IN ('1','5','6','L','M','N','O','D','E')
       ) b
