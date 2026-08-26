@@ -347,11 +347,15 @@ class KisFutoptChart(SQLModel, table=True):
     api_id: str = Field(max_length=150)
     job_id: str = Field(index=True, max_length=150)
 
-    # key_params_list for KIS_FUTOPT_CHART_1/_2 is ["SHORT_CODE", "DATE", "HHMM"];
-    # 'date' itself is an Oracle reserved word (confirmed: ORA-03050), hence trade_date.
+    # Stamped from key_params_list (["SHORT_CODE", {"DATE": "trade_date"},
+    # "BAR_SEC"]) -- 'date' is an Oracle reserved word (ORA-03050), hence the
+    # explicit mapping to trade_date. HHMM used to be stamped here too and no
+    # longer is: it is the cursor's starting point, always 154500, and reading
+    # it as a bar's own time is a mistake this column invited -- the bar's time
+    # is stck_cntg_hour. BAR_SEC has nowhere to land (no column), so a row
+    # cannot say which interval it holds; every row here is 60-second.
     short_code: Optional[str] = Field(default=None, index=True, max_length=20)
     trade_date: Optional[str] = Field(default=None, max_length=8)
-    hhmm: Optional[str] = Field(default=None, max_length=6)
 
     stck_bsop_date: str = Field(index=True, max_length=8)   # 영업일자
     stck_cntg_hour: str = Field(max_length=6)                # 체결시각
