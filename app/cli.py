@@ -280,6 +280,30 @@ def run_export_cmd(
     typer.echo("export complete")
 
 
+@app.command("purge-jobs")
+def purge_jobs_cmd(
+    days: int = typer.Option(90, "--days", min=1, help="Keep jobs whose last run is newer than this"),
+):
+    """Delete finished jobs and their logs once they are older than --days, by
+    calling sp_purge_jobs (see scripts/sql/).
+
+    These tables grow with the shape of the APIs behind them: a request takes
+    one instrument for one day, so a job exists per instrument per day and the
+    minute-bar and daily-bar builders alone add about three thousand a day.
+    What they leave behind is bookkeeping -- the results live in the result
+    tables -- and it stops being worth keeping after a few months.
+
+    Active jobs are never touched, whatever their age: still-pending work, a
+    failed job waiting to be retried on the next tick, and repeated jobs all
+    show as active, and deleting any of them would stop collection.
+
+    Register as a late step of the daily batch, alongside the other retention
+    work (see app.services.export.purge_csv_buffers)."""
+    setup_logging()
+    deleted = _call_procedure("sp_purge_jobs", days)
+    typer.echo(f"purged {deleted:,} job(s) older than {days} day(s)")
+
+
 @app.command("check-sql")
 def check_sql_cmd(
     pull: list[str] = typer.Option(None, "--pull", help="Object to overwrite its file with the database's version; repeatable"),

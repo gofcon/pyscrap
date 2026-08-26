@@ -11,6 +11,10 @@ WorkingDirectory=/home/opc/pyscrap
 # 버퍼를 지운다(app.services.export). 행 데이터는 여기 없다 -- 그쪽은
 # pyscrap-export.service 가 DB 에서 직접 Parquet 으로 내보낸다.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh finalize-exports
+# 이어서 끝난 잡 정리. 같은 종류의 일이라 한 자리에 둔다 -- 위가 지난 월물까지의
+# CSV 버퍼를 지우고, 이것이 몇 달 지난 잡 부기를 지운다. 결과는 어느 쪽도
+# 건드리지 않는다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh purge-jobs
 
 [Install]
 WantedBy=multi-user.target
