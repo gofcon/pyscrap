@@ -37,24 +37,11 @@ globals (where the closure-local `model` doesn't exist)."""
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import Column, func
 from sqlmodel import SQLModel, select
 
 from app.api.deps import SessionDep
-
-
-def _page(session: Any, response: Response, statement: Any,
-          order_by: tuple[Column, ...], limit: int, offset: int) -> list[SQLModel]:
-    """One page of `statement`, with the full match count in a header.
-
-    Counted from the statement's own subquery rather than the table, so the
-    number describes what the caller asked for and page controls stay right
-    when a filter or a parent narrows it."""
-    total = session.exec(select(func.count()).select_from(statement.subquery())).one()
-    response.headers["X-Total-Count"] = str(total)
-    rows = session.exec(statement.order_by(*order_by).offset(offset).limit(limit)).all()
-    return list(rows)
+from app.api.paging import apply_filters, page
 
 
 def make_crud_router(
@@ -128,27 +115,11 @@ def make_crud_router(
         body: a list to maintain would go stale against the models, and this
         router already trades the generated schema for staying generic (see
         the module docstring)."""
-        reserved = {"limit", "offset", "q"}
-        filters = {k: v for k, v in request.query_params.items() if k not in reserved}
-        unknown = set(filters) - set(model.model_fields)
-        if unknown:
-            raise HTTPException(400, f"unknown filter field(s): {sorted(unknown)}")
-
-        statement = select(model)
-        for field, raw in filters.items():
-            # Coerced through the field's own annotation so "true" reaches a
-            # boolean column as True and "1" reaches an integer one as 1 --
-            # a query string carries neither type. Same validation the model
-            # would apply to a write.
-            try:
-                value = TypeAdapter(model.model_fields[field].annotation).validate_python(raw)
-            except ValidationError as exc:
-                raise HTTPException(400, f"bad value for {field}: {raw!r}") from exc
-            statement = statement.where(cast(Column, getattr(model, field)) == value)
+        statement = apply_filters(model, select(model), request, {"limit", "offset", "q"})
         if q is not None:
             statement = statement.where(id_column.like(f"%{q}%"))
 
-        return _page(session, response, statement,
+        return page(session, response, statement,
                      (updated_at_column.desc(), id_column.asc()), limit, offset)
 
     @router.get("/{row_id}", response_model=model)
@@ -237,7 +208,7 @@ def make_crud_router(
                 require_parent(row_id, session)
                 statement = select(child_model).where(
                     cast(Column, getattr(child_model, fk_field)) == row_id)
-                return _page(session, response, statement,
+                return page(session, response, statement,
                              (child_updated_at.desc(), child_key.asc()), limit, offset)
 
             return list_children
