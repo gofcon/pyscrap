@@ -8,9 +8,9 @@ Description=Timer for pyscrap Finalize Exports
 # CSVs are left pending.
 # Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
 # app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
-# 18:20 -- pyscrap-export(18:10) 뒤. 서로 독립이지만 저녁 배치가
-# 한 방향으로 읽히도록 순서대로 둔다.
-OnCalendar=Mon..Fri *-*-* 18:20:00
+# pyscrap-export 뒤. 서로 독립이지만 저녁 배치가 한 방향으로 읽히도록
+# 순서대로 둔다.
+OnCalendar=Mon..Fri *-*-* 18:40:00
 Persistent=true
 
 [Install]
