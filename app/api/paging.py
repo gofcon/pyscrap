@@ -21,6 +21,22 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import Column, func
 from sqlmodel import SQLModel, select
 
+# '*' is the only wildcard a caller gets. LIKE's own '%' and '_' are escaped
+# to their literal selves, because these ids are full of underscores --
+# KIS_FUTOPT_PRICE_A2, KIS_INDEX_DAILY_2001_20260825_20260825 -- and letting
+# '_' mean "any character" quietly widens a search past what was asked for.
+# '*' rather than '%' because a caller types these into a URL, where '%' has
+# to be written %25.
+#
+# One translate pass rather than chained replaces: escaping the backslash
+# first and the others after would re-escape the backslashes just added.
+_LIKE_LITERALS = str.maketrans({"\\": r"\\", "%": r"\%", "_": r"\_"})
+
+
+def like_pattern(raw: str) -> str:
+    """A caller's '*' pattern as a LIKE pattern, everything else literal."""
+    return raw.translate(_LIKE_LITERALS).replace("*", "%")
+
 
 def apply_filters(model: type[SQLModel], statement: Any, request: Request,
                   reserved: set[str]) -> Any:
@@ -46,7 +62,16 @@ def apply_filters(model: type[SQLModel], statement: Any, request: Request,
             value = TypeAdapter(model.model_fields[field].annotation).validate_python(raw)
         except ValidationError as exc:
             raise HTTPException(400, f"bad value for {field}: {raw!r}") from exc
-        statement = statement.where(cast(Column, getattr(model, field)) == value)
+
+        column = cast(Column, getattr(model, field))
+        if isinstance(value, str) and "*" in raw:
+            # A pattern anchored at the front ('C0160*') still uses the
+            # column's index; one that starts with '*' cannot, and reads the
+            # whole table. Left to the caller -- both are worth having, and
+            # only they know which they meant.
+            statement = statement.where(column.like(like_pattern(raw), escape="\\"))
+        else:
+            statement = statement.where(column == value)
     return statement
 
 

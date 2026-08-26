@@ -41,7 +41,7 @@ from sqlalchemy import Column, func
 from sqlmodel import SQLModel, select
 
 from app.api.deps import SessionDep
-from app.api.paging import apply_filters, page
+from app.api.paging import apply_filters, like_pattern, page
 
 
 def make_crud_router(
@@ -117,7 +117,13 @@ def make_crud_router(
         the module docstring)."""
         statement = apply_filters(model, select(model), request, {"limit", "offset", "q"})
         if q is not None:
-            statement = statement.where(id_column.like(f"%{q}%"))
+            # Same escaping the field filters get, so '_' means an underscore
+            # in both -- a search box where it meant "any character" while a
+            # filter took it literally would be the same API answering the
+            # same string two ways. '*' works here too, on top of the
+            # substring match this always did.
+            statement = statement.where(
+                id_column.like(f"%{like_pattern(q)}%", escape="\\"))
 
         return page(session, response, statement,
                      (updated_at_column.desc(), id_column.asc()), limit, offset)
