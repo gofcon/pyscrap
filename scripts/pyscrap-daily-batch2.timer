@@ -1,0 +1,15 @@
+[Unit]
+Description=Timer for pyscrap Daily Batch 2 (21:00)
+
+[Timer]
+# 21:00 -- 늦게 확정되는 자료를 위한 두 번째 자리. 18:00 에 아직 안
+# 나왔거나 정정이 들어오는 소스를 여기 둔다.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still
+# fire. Those days generate jobs that come back empty, which costs a request
+# and writes nothing.
+OnCalendar=Mon..Fri *-*-* 21:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

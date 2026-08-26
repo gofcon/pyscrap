@@ -46,7 +46,7 @@ sudo systemctl daemon-reload
 ```
 
 ```bash
-sudo systemctl enable --now pyscrap-daily-start.timer pyscrap-generate-3m.timer pyscrap-3m-call.timer pyscrap-3m-put.timer pyscrap-5m.timer pyscrap-1h.timer pyscrap-daily-end.timer pyscrap-export.timer pyscrap-finalize-exports.timer pyscrap-check-sql.timer
+sudo systemctl enable --now pyscrap-daily-start.timer pyscrap-generate-3m.timer pyscrap-3m-call.timer pyscrap-3m-put.timer pyscrap-5m.timer pyscrap-1h.timer pyscrap-daily-close.timer pyscrap-daily-batch1.timer pyscrap-daily-batch2.timer pyscrap-export.timer pyscrap-finalize-exports.timer pyscrap-check-sql.timer
 ```
 
 Only the timers are enabled -- each starts its own `.service`, so enabling

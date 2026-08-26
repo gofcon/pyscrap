@@ -1,0 +1,13 @@
+[Unit]
+Description=pyscrap Daily Batch 2 (21:00)
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_batch2
+
+[Install]
+WantedBy=multi-user.target

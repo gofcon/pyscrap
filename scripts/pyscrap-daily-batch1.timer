@@ -1,0 +1,15 @@
+[Unit]
+Description=Timer for pyscrap Daily Batch 1 (18:00)
+
+[Timer]
+# 18:00 -- 그날 자료가 자리를 잡은 뒤. 지금까지 daily_end 가 하던 몫이
+# 여기로 온다: 공시 목록, ETF 시세, 지수 일봉, 1분봉 수집.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still
+# fire. Those days generate jobs that come back empty, which costs a request
+# and writes nothing.
+OnCalendar=Mon..Fri *-*-* 18:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

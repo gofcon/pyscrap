@@ -10,7 +10,7 @@ Description=Timer for pyscrap Export to Object Storage
 # 18:00 단계가 수 분간 이어지므로, 예전 18:10 은 수집이 끝나기 전에 내보내기를
 # 시작할 수 있었다. 그러면 그날 마지막 몇 종목이 파일에서 빠지고, 파일은
 # 만들어지므로 배치는 성공으로 끝난다.
-OnCalendar=Mon..Fri *-*-* 18:30:00
+OnCalendar=Mon..Fri *-*-* 22:00:00
 Persistent=true
 
 [Install]

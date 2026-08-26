@@ -1,0 +1,16 @@
+[Unit]
+Description=Timer for pyscrap Daily-Close Execution (16:00)
+
+[Timer]
+# 16:00 -- 장 마감(15:45) 직후. 세션만 끝나면 되는 것, 즉 그날 거래에서
+# 바로 확정되는 자료를 위한 자리다. 거래소가 집계해 내보내는 자료는
+# 이 시각에 아직 안 나와 있으므로 뒤 배치로 미룬다.
+# Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
+# app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still
+# fire. Those days generate jobs that come back empty, which costs a request
+# and writes nothing.
+OnCalendar=Mon..Fri *-*-* 16:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

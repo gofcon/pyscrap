@@ -65,4 +65,20 @@ BEGIN
             s.cont_mult, s.mat_code, s.mat_date, s.front_date, s.strike_prc);
 
   p_inserted := SQL%ROWCOUNT;
+
+  -- 만기 달력이 뒤늦게 채워진 종목의 만기일을 메운다.
+  --
+  -- 위 MERGE 는 신규 short_code 만 INSERT 하고 기존 행은 손대지 않는다(사람이
+  -- 고쳐둔 값을 지키려는 것). 그런데 종목이 meta_maturity 보다 먼저 상장되면
+  -- 그 시점에 mat_date 가 NULL 로 들어가고, 나중에 달력을 채워도 그 행은
+  -- 영영 NULL 로 남는다. 실제로 위클리 490 종목이 그 상태로 수집에서 통째로
+  -- 빠졌다 -- 종목 선택 쿼리가 mat_date 로 조인하므로 NULL 은 탈락한다.
+  --
+  -- NULL 인 것만 채우므로 사람이 넣은 값은 그대로다.
+  MERGE INTO mst_fuopt t
+  USING meta_maturity m
+     ON (t.prod_type = m.prod_type AND t.mat_code = m.mat_code)
+  WHEN MATCHED THEN UPDATE SET t.mat_date   = m.mat_date,
+                               t.front_date = m.prev_mat_date
+                   WHERE t.mat_date IS NULL;
 END;
