@@ -117,6 +117,12 @@ alembic revision --autogenerate -m "message"
 alembic upgrade head
 ```
 
+## Docs
+
+`docs/TECHNICAL.md` -- what each configuration field means and how to fill it
+in: registering an API, expanding it into jobs, the export path, and the
+mistakes the shape of this system invites.
+
 ## Layout
 
 ```
