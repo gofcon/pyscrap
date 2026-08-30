@@ -70,6 +70,20 @@ PAGE_MARKER_RE = r"(?<!\w):" + _PAGE_PARAM + r"(?!\w)"
 # happens to scrape in the same run.
 _REQUEST_MIN_INTERVAL_SEC = float(os.environ.get("REQUEST_MIN_INTERVAL_SEC", "0.15"))
 
+# Per-host overrides, {host_suffix: seconds}, consulted before the default
+# above (see _interval_for). Settable as JSON in REQUEST_MIN_INTERVAL_HOSTS so
+# a site can be slowed down without a release.
+#
+# seibro.or.kr is here because the bond collection is the one job in this
+# process that hammers a site nobody metered for us. It runs ~10 requests per
+# instrument against a WebSquare screen, for an hour a night, for weeks --
+# a shape that looks nothing like the burst-then-idle traffic the KIS-derived
+# default was measured for. 0.5s holds it to 2 req/s.
+_HOST_INTERVALS: dict[str, float] = {
+    "seibro.or.kr": 0.5,
+    **json.loads(os.environ.get("REQUEST_MIN_INTERVAL_HOSTS", "{}")),
+}
+
 # One httpx.Client shared by every DynamicApiScraper in the process. A new
 # client per request (what this replaced) meant a fresh TLS handshake every
 # time: measured live against KIS, 287ms per request of which only ~24ms was
@@ -106,18 +120,38 @@ def close_http_client() -> None:
         _client = None
 
 
+def _interval_for(host: str) -> float:
+    """This host's minimum gap between requests.
+
+    The default above is sized against KIS's published per-second limit, which
+    is the wrong yardstick for a site that publishes no limit at all: SEIBRO
+    and KRX's ISIN service are web screens, not metered APIs, and what is
+    polite there is a judgement rather than a number they gave us. A host
+    listed here uses its own gap; everything else uses the default.
+
+    Matched on suffix so one entry covers a site's subdomains
+    (``seibro.or.kr`` also covers ``isin.krx.co.kr``-style hosts only if
+    listed separately -- this is a suffix match, not a guess at ownership).
+    """
+    for suffix, interval in _HOST_INTERVALS.items():
+        if host == suffix or host.endswith("." + suffix):
+            return interval
+    return _REQUEST_MIN_INTERVAL_SEC
+
+
 def _pace_host(url: str) -> None:
     """Block until this host's next request slot is due, so a whole cycle's
     worth of jobs can't burst past the site's rate limit. Reserves the slot
     while holding the lock and only *then* sleeps, so concurrent callers each
     get their own slot instead of all waking on the same one."""
-    if _REQUEST_MIN_INTERVAL_SEC <= 0:
-        return
     host = httpx.URL(url).host or ""
+    interval = _interval_for(host)
+    if interval <= 0:
+        return
     with _pace_lock:
         now = time.monotonic()
         slot = max(now, _next_slot_at.get(host, 0.0))
-        _next_slot_at[host] = slot + _REQUEST_MIN_INTERVAL_SEC
+        _next_slot_at[host] = slot + interval
     time.sleep(max(0.0, slot - time.monotonic()))
 
 
