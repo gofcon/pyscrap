@@ -206,6 +206,25 @@ def sync_mst_fuopt_cmd():
     typer.echo(f"mst_fuopt: {_call_procedure('sp_mst_fuopt_sync')} new contract(s)")
 
 
+@app.command("sync-mst-bond")
+def sync_mst_bond_cmd():
+    """Fold any newly-listed issues from ksd_bond_isin into mst_bond, by
+    calling the DB-side procedure sp_mst_bond_sync (a MERGE that inserts
+    unseen ISINs and leaves existing rows alone).
+
+    Schedule it between the two halves of the bond batch: after the
+    daily_batch1 cycle, which appends the day's full listing, and before
+    daily_batch2 generates jobs, which select the issues still missing their
+    detail from mst_bond. Running it earlier folds yesterday's listing; later
+    means a bond listed today waits a day for its detail.
+
+    The first run inserts everything, because nothing has been seen before --
+    ~29k issues. From then on it inserts only what the exchange actually
+    listed that day."""
+    setup_logging()
+    typer.echo(f"mst_bond: {_call_procedure('sp_mst_bond_sync')} new issue(s)")
+
+
 @app.command("finalize-exports")
 def finalize_exports_cmd():
     """Upload every staged document to object storage (see

@@ -7,6 +7,15 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
+# Multiple ExecStart= lines on a Type=oneshot service run sequentially, and
+# the unit stops at the first failure -- which is what we want here, because
+# generating the detail jobs before the master is folded would pick up
+# yesterday's issues and miss today's.
+#
+# daily_batch1 (18:00) appended today's full bond listing to ksd_bond_isin;
+# this folds whatever is new in it into mst_bond, and the cycle below then
+# generates detail jobs for the issues in mst_bond that still have none.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-mst-bond
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_batch2
 
 [Install]

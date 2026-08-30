@@ -854,10 +854,19 @@ class KsdBondIsin(VendorRecordBase, table=True):
     go that way -- it is the only place a kind finer than ``codevalue_nm``
     would land.
 
-    ``isin`` is unique *within* one api_id but not across the table: run
-    both APIs and every issue outside MBS/SLBS is here twice, once per
-    endpoint. save_mode clears by job_id, so neither clears the other --
-    filter on ``api_id`` when reading, or run only one of the two."""
+    ``isin`` is unique within neither api_id nor the table. Two things
+    multiply it: running both APIs puts every issue outside MBS/SLBS here
+    twice, once per endpoint (save_mode clears by job_id, so neither clears
+    the other -- filter on ``api_id``, or run only one); and KSD_ISIN_ALL is
+    appended daily rather than overwritten, so each run leaves a full
+    snapshot of its own. ``trade_at`` separates those, and the current list
+    is the one with the highest value.
+
+    Kept as history rather than a live snapshot because listings and
+    delistings are only visible as a difference between two runs -- nothing
+    in the response says a bond is new. That difference is what decides which
+    instruments the bond-detail jobs go and fetch. The cost is size: ~29k
+    rows a run, so a year of trading days is around 7M rows."""
 
     __tablename__ = "ksd_bond_isin"
 
@@ -876,6 +885,10 @@ class KsdBondIsin(VendorRecordBase, table=True):
     kor_secn_nm: Optional[str] = Field(default=None, max_length=200)   # 종목명
     codevalue_nm: Optional[str] = Field(default=None, max_length=100)  # 대분류명 (국채/특수채)
     issu_dt: Optional[str] = Field(default=None, max_length=8)      # 발행일
+
+    # 수집 시각 (KST, YYYYMMDDHH24MISS) -- 스냅샷을 서로 구분하는 축이다.
+    # 응답에는 없고 ApiMst.key_params_list 의 NOW 가 실행할 때마다 찍는다.
+    trade_at: Optional[str] = Field(default=None, index=True, max_length=14)
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
@@ -1353,5 +1366,47 @@ class KsdBondStoptHis(VendorRecordBase, table=True):
     list_dt: Optional[str] = Field(default=None, max_length=8)          # 상장일
     lday_cpri: Optional[float] = Field(default=None)                    # 상장일 종가
 
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class MstBond(SQLModel, table=True):
+    """Curated bond instrument master -- the list of issues worth collecting
+    detail for, as opposed to KsdBondIsin, which is the raw SEIBRO listing
+    appended in full every day.
+
+    Reference data like MstFuopt: derived DB-side by sp_mst_bond_sync, not
+    written by the scraping engine, and kept out of TABLE_REGISTRY by having
+    no job_id (see app.services.export._discover_table_registry). So no
+    id/api_id/job_id -- ``isin`` is the natural key, and it is the same code
+    ksd_bond_isin.isin and every ksd_bond_* detail table use, so this joins
+    straight to all of them.
+
+    Insert-only, the same way mst_fuopt is. The procedure adds ISINs it has
+    not seen before and leaves existing rows alone, so a value edited here by
+    hand survives the next run. That is also what makes ``first_seen``
+    meaningful: it is the snapshot day a bond first appeared in the listing,
+    which is the only evidence of a new issue there is -- SEIBRO's response
+    says nothing about whether a bond is new, so it can only be read as the
+    difference between two days' listings.
+
+    A delisted bond is not removed. It simply stops appearing in new
+    ksd_bond_isin snapshots while its row stays here, which keeps the detail
+    already collected against it referencable."""
+
+    __tablename__ = "mst_bond"
+
+    isin: str = Field(primary_key=True, max_length=12)                       # 표준코드
+    kor_secn_nm: Optional[str] = Field(default=None, max_length=200)         # 종목명
+    secn_kacd: Optional[str] = Field(default=None, index=True, max_length=10)   # 종류코드
+    codevalue_nm: Optional[str] = Field(default=None, max_length=100)        # 대분류명 (국채/특수채)
+    issuco_custno: Optional[str] = Field(default=None, max_length=20)        # 발행회사 고객번호
+    issu_dt: Optional[str] = Field(default=None, index=True, max_length=8)   # 발행일
+
+    # 이 종목이 처음 목록에 나타난 스냅샷 일자 (YYYYMMDD). 신규 상장 여부는
+    # 이 값으로만 알 수 있고, 상세 수집 순서를 정하는 축이기도 하다.
+    first_seen: Optional[str] = Field(default=None, index=True, max_length=8)
+
+    description: Optional[str] = Field(default=None, max_length=100)
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
