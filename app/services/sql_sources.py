@@ -125,6 +125,17 @@ def pull(name: str) -> Path:
     if source is None:
         raise LookupError(f"{name} is not compiled in this database")
 
-    path.write_text("CREATE OR REPLACE " + _normalize(source) + "\n", encoding="utf-8")
+    # The header is rebuilt rather than pasted on. What the database stores
+    # starts at the object *type*, with words like EDITIONABLE blanked rather
+    # than removed, so appending it to "CREATE OR REPLACE " leaves a run of
+    # spaces before the object name -- the very difference _from_name exists
+    # to ignore on the way in. Ignoring it there and writing it out here would
+    # put it in the file, and in the commit, for nothing.
+    written = "CREATE OR REPLACE " + _normalize(source)
+    header = _CREATE_RE.match(written)
+    if header:
+        written = ("CREATE OR REPLACE " + " ".join(header.group(1).split()) + " "
+                   + written[header.start(2):])
+    path.write_text(written + "\n", encoding="utf-8")
     logger.info("pulled {} into {}", name, path)
     return path
