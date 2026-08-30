@@ -14,6 +14,9 @@ BEGIN
              WHEN 'kis_futopt_chart' THEN 'stck_bsop_date'
              WHEN 'kis_futopt_daily' THEN 'stck_bsop_date'
              WHEN 'kis_index_daily'  THEN 'stck_bsop_date'
+             WHEN 'krx_fut_daily'    THEN 'bas_dd'
+             WHEN 'krx_opt_daily'    THEN 'bas_dd'
+             WHEN 'krx_etf_daily'    THEN 'bas_dd'
              WHEN 'kis_futopt_price' THEN 'SUBSTR(trade_at, 1, 8)'
            END;
   IF v_col IS NULL THEN

@@ -45,6 +45,9 @@ BEGIN
   sp_export_parquet(p_name => 'kis_futopt_price', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'kis_futopt_chart', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'kis_futopt_daily', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'krx_opt_daily', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'krx_fut_daily', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'krx_etf_daily', p_to => p_to, p_from => p_from, p_rows => n);
 
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면

@@ -87,4 +87,7 @@ BEGIN
   attach('kis_futopt_chart');
   attach('kis_futopt_daily');
   attach('kis_futopt_price1');
+  attach('krx_opt_daily');
+  attach('krx_fut_daily');
+  attach('krx_etf_daily');
 END;
