@@ -12,7 +12,7 @@ CREATE OR REPLACE PROCEDURE sp_mst_etf_sync (p_inserted OUT NUMBER) AS
 -- 돌아야 한다. 먼저 돌면 어제 목록으로 접는다.
 --
 -- MERGE 마다 NO_PARALLEL 힌트가 붙는 이유: 이 DB 는 병렬 DML 이 기본 활성인데,
--- 같은 표를 잇달아 갱신하는 아래 세 문장이 ORA-12860(형제 행 잠금 대기 중
+-- 같은 표를 잇달아 갱신하는 아래 문장들이 ORA-12860(형제 행 잠금 대기 중
 -- 교착)으로 죽었다. sp_stock_index_his_sync 는 세션 설정으로 껐지만 여기서는
 -- 못 쓴다 -- 그쪽은 중간에 REFRESH 가 커밋을 넣어 주는데, 여기는 트랜잭션이
 -- 열린 채 끝나 되돌릴 때 ORA-12841 이 난다. 문장 단위 힌트는 그 제약이 없고
@@ -94,12 +94,12 @@ BEGIN
   WHEN MATCHED THEN
     UPDATE SET t.amc = s.amc, t.amc_etf_cd = s.amc_etf_cd;
 
-  -- 4) ISIN: 지금은 ACE 목록에서만 온다.
+  -- 4) ISIN: ACE 목록에서. 5) 가 붙기 전까지 유일한 소스였다.
   --
   -- 거래소 쪽 수집물에는 ETF 의 ISIN 이 없고(krx_etf_daily 에 컬럼 자체가 없다),
   -- 운용사 중에서도 한투만 stockCd 로 준다. 그래서 여기 채워지는 것은 ACE
-  -- 종목뿐이고, 나머지는 소스가 생길 때까지 NULL 로 남는다. 비어 있는 것만
-  -- 채우므로 나중에 다른 소스가 붙어도 이 문장은 그대로 둔다.
+  -- 종목뿐이다. 비어 있는 것만 채우므로 5) 가 생겨도 이 문장은 그대로 둔다 --
+  -- 먼저 도는 이쪽이 채운 값을 5) 가 덮지 않는다.
   MERGE /*+ NO_PARALLEL */ INTO mst_etf t
   USING (
     SELECT SUBSTR(stockcd, 4, 6) AS isu_cd,
@@ -107,6 +107,37 @@ BEGIN
       FROM ace_etf
      WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
      GROUP BY SUBSTR(stockcd, 4, 6)
+  ) s
+  ON (t.isu_cd = s.isu_cd)
+  WHEN MATCHED THEN
+    UPDATE SET t.isin = s.isin
+    WHERE t.isin IS NULL;
+
+  -- 5) ISIN: KRX 데이터마켓의 ETF 종목 목록에서. 이걸로 전종목이 채워진다.
+  --
+  -- 4) 가 기다리던 "다른 소스"가 이것이다. 로그인이 필요한 화면이라 늦게
+  -- 붙었다(api_mst 의 KRX_ETF_LIST / KRX_DATA_LOGIN). 단축코드와 ISIN 을
+  -- 나란히 주므로 접을 것이 없고, 처음 붙였을 때 1,051 종목이 한 번에
+  -- 채워지면서 기존 ACE 값 112 건과 한 건도 어긋나지 않았다.
+  --
+  -- 날짜를 가리지 않고 api_rst 전체에서 접는다: 한 종목의 ISIN 은 바뀌지
+  -- 않고, 상장폐지된 종목도 마지막으로 본 값이 남아야 mst_etf 의 과거 행이
+  -- 비지 않는다. api_rst.api_id 에는 인덱스가 있다.
+  --
+  -- 이 프로시저는 daily_batch2 안에서 run_cycle 보다 *먼저* 돈다(서비스
+  -- 파일의 ExecStart 순서). 그래서 여기서 보는 목록은 늘 직전 실행분이고,
+  -- 갓 상장한 ETF 는 하루 뒤에 ISIN 이 채워진다 -- 그날의 구성종목 잡도
+  -- 하루 늦게 생긴다. 당일부터 받으려면 KRX_ETF_LIST 를 daily_batch1 로
+  -- 옮기면 되지만, 쿠키가 프로세스를 못 넘으므로 그 사이클에도 로그인 행이
+  -- 하나 더 있어야 한다.
+  MERGE /*+ NO_PARALLEL */ INTO mst_etf t
+  USING (
+    SELECT JSON_VALUE(result_json, '$.ISU_SRT_CD') AS isu_cd,
+           MAX(JSON_VALUE(result_json, '$.ISU_CD')) AS isin
+      FROM api_rst
+     WHERE api_id = 'KRX_ETF_LIST'
+       AND JSON_VALUE(result_json, '$.ISU_CD') IS NOT NULL
+     GROUP BY JSON_VALUE(result_json, '$.ISU_SRT_CD')
   ) s
   ON (t.isu_cd = s.isu_cd)
   WHEN MATCHED THEN
