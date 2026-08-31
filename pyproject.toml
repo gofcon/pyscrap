@@ -14,6 +14,9 @@ dependencies = [
     "alembic>=1.14.0",
     "pydantic-settings>=2.6.1",
     "httpx>=0.28.0",
+    # httpx 가 이미 끌어오지만 직접 import 한다 (app/certs 의 추가 인증서를
+    # certifi 번들 위에 얹는다 -- dynamic._ssl_context 참고).
+    "certifi>=2024.8.30",
     "beautifulsoup4>=4.12.3",
     # 운용사 ETF 구성종목이 스프레드시트로만 나오는 곳이 있다 -- NH/타임은
     # OOXML(xlsx), 키움은 아직 OLE2(xls) 라 리더가 둘 다 필요하다.
@@ -29,6 +32,12 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+# app/certs 는 코드가 아니라 데이터라 packages.find 만으로는 설치본에
+# 들어가지 않는다. 개발/배포 모두 editable 설치라 지금은 소스 트리에서
+# 읽히지만, 일반 설치로 바뀌어도 인증서가 빠지지 않도록 명시한다.
+[tool.setuptools.package-data]
+app = ["certs/*.pem"]
 
 [tool.fastapi]
 # `fastapi run`'s auto-detection only looks at a fixed set of root-level

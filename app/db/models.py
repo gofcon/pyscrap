@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime
 from typing import Any, Optional
 
@@ -605,8 +606,9 @@ class KisIndexDaily(SQLModel, table=True):
 
 class VendorRecordBase(SQLModel):
     """Shared record normalization for result tables fed by a source that
-    spells its records the way KRX and KSD/SEIBRO do -- currently the
-    ``krx_*`` and ``ksd_*`` tables below.
+    spells its records the way KRX and KSD/SEIBRO do -- the ``krx_*`` and
+    ``ksd_*`` tables below, and ``kis_etf*`` for the blank handling alone
+    (KIS already sends lower-case keys, so the folding is a no-op there).
 
     Both differ from the KIS endpoints in the same two ways, and a typed
     column can absorb neither on its own:
@@ -1820,14 +1822,46 @@ class AceEtf(VendorRecordBase, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
-class AceEtfPdf(VendorRecordBase, table=True):
+class EtfPdfDateMixin:
+    """``std_dt`` 를 YYYYMMDD 로 맞춘다.
+
+    운용사가 저마다 다른 표기로 날짜를 준다 -- ACE 는 ``2026-08-31``, 키움은
+    ``2026.08.31``, 나머지는 잡 파라미터가 찍는 ``20260831`` 이다. 소스가 준
+    값이 잡 파라미터를 이기도록 되어 있어(dynamic.run_and_save 에서 레코드를
+    나중에 병합한다) 파라미터 형식을 맞추는 것만으로는 통일되지 않는다.
+
+    그 규칙과 싸우는 대신 받은 값에서 숫자만 남긴다. 어느 쪽이 이기든 결과가
+    같아지고, 한 컬럼에 세 형식이 섞여 export 쪽에서 파싱이 갈리는 일이 없다."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_std_dt(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # 해당하는 키를 **전부** 고친다. 잡 파라미터가 찍는 ``std_dt`` 와
+            # 소스가 주는 ``std_DT``(ACE) 가 한 딕셔너리에 같이 들어오는데,
+            # 키를 소문자로 접는 VendorRecordBase 의 검증기를 지나면 둘이 한
+            # 칸으로 합쳐지면서 뒤엣것이 이긴다. 하나만 고치면 어느 쪽이 남는지가
+            # 검증기 실행 순서에 달리게 되므로, 둘 다 같은 값으로 만들어 둔다.
+            fixed = {}
+            for key, value in data.items():
+                if key.lower() != "std_dt" or not isinstance(value, str) or not value.strip():
+                    continue
+                digits = re.sub(r"\D", "", value)
+                if len(digits) == 8:
+                    fixed[key] = digits
+            if fixed:
+                data = {**data, **fixed}
+        return data
+
+
+class AceEtfPdf(EtfPdfDateMixin, VendorRecordBase, table=True):
     """ACE_ETF_PDF (``/api/funds/{fundCd}/pdf``) -- ACE ETF 구성종목.
 
     응답 봉투에 ``pdfList`` 말고 ``sectorList``/``assetList``(섹터·자산군 비중)도
     함께 오는데, 그건 구성종목에서 계산되는 값이라 받지 않는다.
 
-    ``wg`` 는 퍼센트값, ``jm_ksc_cd`` 는 구성종목 단축코드다. ``std_dt`` 가
-    행마다 있어(``2026-08-31``, 하이픈 포함) 잡 파라미터로 찍을 필요가 없다."""
+    ``wg`` 는 퍼센트값, ``jm_ksc_cd`` 는 구성종목 단축코드다. ``std_dt`` 는 행마다
+    오지만 표기가 ``2026-08-31`` 이라 EtfPdfDateMixin 이 숫자만 남긴다."""
 
     __tablename__ = "ace_etf_pdf"
 
@@ -1848,7 +1882,7 @@ class AceEtfPdf(VendorRecordBase, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
-class AmcEtfPdf(VendorRecordBase, table=True):
+class AmcEtfPdf(EtfPdfDateMixin, VendorRecordBase, table=True):
     """표 형태로만 공시하는 운용사들의 ETF 구성종목 -- TIGER, KB, NH, 키움, 타임.
 
     JSON 을 주는 운용사들과 달리 이쪽은 HTML 표나 스프레드시트로만 나온다.
@@ -1921,5 +1955,103 @@ class UserEtf(SQLModel, table=True):
     amc_etf_cd: Optional[str] = Field(default=None, max_length=30)       # 운용사 조회코드
 
     description: Optional[str] = Field(default=None, max_length=100)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KisEtf(VendorRecordBase, table=True):
+    """KIS_ETF_PDF 의 ``output1`` -- ETF 한 종목의 시세와 NAV.
+
+    같은 응답의 output2(구성종목)와 짝이다. 한 요청이 두 표를 채우는 다른
+    KIS API 들과 같은 구조인데, 그쪽은 output1 을 api_rst 로 흘려보내는 데
+    반해 여기는 받아둔다 -- NAV 시가/고가/저가와 CU 단위 증권 수는 이 화면
+    말고는 들어오는 곳이 없다.
+
+    ``short_code``(ETF 단축코드)와 ``snap_at`` 은 응답에 없어 잡 파라미터에서
+    찍는다(ApiMst.key_params_list). 조회일을 받지도 돌려주지도 않는 현재 시점
+    화면이라, 언제 본 값인지는 ``NOW`` 가 찍는 그 시각뿐이다 -- 그래서 이 API
+    는 날짜로 작업을 가르지 않고 **반복 작업 하나**로 돌린다(is_repeated_api).
+    같은 날 다시 받는 것이 정정이 아니라 다른 시각의 관측이므로 save_mode 도
+    append 다.
+
+    한 종목이 하루에 몇 벌 쌓일 수 있다. 하루치는 ``snap_at`` 의 범위로
+    고른다(``BETWEEN '20260831000000' AND '20260831235959'``) -- 날짜만 떼어
+    둔 컬럼은 두지 않는다. 같은 값을 두 벌 적으면서 어긋날 여지만 생기고,
+    범위 조건이 이미 snap_at 의 인덱스를 그대로 탄다."""
+
+    __tablename__ = "kis_etf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    short_code: Optional[str] = Field(default=None, index=True, max_length=20)  # ETF 단축코드
+    snap_at: Optional[str] = Field(default=None, index=True, max_length=14)     # 관측 시각 YYYYMMDDHH24MISS
+
+    stck_prpr: Optional[float] = Field(default=None)            # 현재가
+    prdy_vrss: Optional[float] = Field(default=None)            # 전일 대비
+    prdy_vrss_sign: Optional[str] = Field(default=None, max_length=1)   # 전일 대비 부호
+    prdy_ctrt: Optional[float] = Field(default=None)            # 전일 대비율
+    etf_cnfg_issu_avls: Optional[int] = Field(default=None)     # ETF구성종목시가총액
+    nav: Optional[float] = Field(default=None)                  # NAV
+    nav_prdy_vrss_sign: Optional[str] = Field(default=None, max_length=1)  # NAV 전일 대비 부호
+    nav_prdy_vrss: Optional[float] = Field(default=None)        # NAV 전일 대비
+    nav_prdy_ctrt: Optional[float] = Field(default=None)        # NAV 전일 대비율
+    etf_ntas_ttam: Optional[int] = Field(default=None)          # ETF 순자산 총액
+    prdy_clpr_nav: Optional[float] = Field(default=None)        # NAV 전일 종가
+    oprc_nav: Optional[float] = Field(default=None)             # NAV 시가
+    hprc_nav: Optional[float] = Field(default=None)             # NAV 고가
+    lprc_nav: Optional[float] = Field(default=None)             # NAV 저가
+    etf_cu_unit_scrt_cnt: Optional[int] = Field(default=None)   # CU 단위 증권 수
+    etf_cnfg_issu_cnt: Optional[int] = Field(default=None)      # 구성 종목 수 (공시 기준)
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KisEtfPdf(VendorRecordBase, table=True):
+    """KIS_ETF_PDF 의 ``output2`` -- ETF 구성종목.
+
+    **전량이 아니라 상위 30 종목이다.** 확인한 값으로, KODEX 200 은 공시
+    구성종목이 202 개인데 30 행(비중합 84.2%)만 오고, 편입 종목이 해외인
+    TIGER 미국S&P500 은 0 행이다. 응답 헤더의 ``tr_cont`` 가 비어 있어 이어받을
+    수단도 없다. 그러니 운용사 PDF(amc_etf_pdf 등)를 대신하지 못한다 -- 대신
+    구성종목마다 **현재가·시가총액·거래량**이 함께 오는데, 그건 운용사 PDF 가
+    주지 않는 값이라 서로 채워주는 관계다.
+
+    ``short_code`` 는 구성종목이 아니라 **그 종목을 담고 있는 ETF** 의 코드다.
+    응답에는 없고 잡 파라미터에서 찍는다(kis_index_daily 와 같은 이유). 구성
+    종목 자신의 코드는 ``stck_shrn_iscd`` 다 -- 둘을 헷갈리면 표 전체가
+    뒤집히므로 이름을 나눠 두었다.
+
+    ``etf_cu_unit_scrt_cnt`` 는 KIS 문서의 output2 목록에 없는데 실제로는
+    내려온다. 문서가 아니라 응답을 따랐다."""
+
+    __tablename__ = "kis_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    short_code: Optional[str] = Field(default=None, index=True, max_length=20)  # 담고 있는 ETF 의 단축코드
+    snap_at: Optional[str] = Field(default=None, index=True, max_length=14)     # 관측 시각 YYYYMMDDHH24MISS
+
+    stck_shrn_iscd: Optional[str] = Field(default=None, index=True, max_length=20)  # 구성종목 단축코드
+    hts_kor_isnm: Optional[str] = Field(default=None, max_length=100)   # 구성종목명
+    stck_prpr: Optional[float] = Field(default=None)            # 현재가
+    prdy_vrss: Optional[float] = Field(default=None)            # 전일 대비
+    prdy_vrss_sign: Optional[str] = Field(default=None, max_length=1)   # 전일 대비 부호
+    prdy_ctrt: Optional[float] = Field(default=None)            # 전일 대비율
+    acml_vol: Optional[int] = Field(default=None)               # 누적 거래량
+    acml_tr_pbmn: Optional[int] = Field(default=None)           # 누적 거래 대금
+    etf_cu_unit_scrt_cnt: Optional[int] = Field(default=None)   # CU 단위 증권 수
+    tday_rsfl_rate: Optional[float] = Field(default=None)       # 당일 등락 비율
+    prdy_vrss_vol: Optional[int] = Field(default=None)          # 전일 대비 거래량
+    tr_pbmn_tnrt: Optional[float] = Field(default=None)         # 거래대금 회전율
+    hts_avls: Optional[int] = Field(default=None)               # 시가총액
+    etf_cnfg_issu_avls: Optional[int] = Field(default=None)     # ETF구성종목시가총액
+    etf_cnfg_issu_rlim: Optional[float] = Field(default=None)   # ETF구성종목비중
+    etf_vltn_amt: Optional[int] = Field(default=None)           # ETF구성종목내평가금액
+
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

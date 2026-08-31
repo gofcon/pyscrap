@@ -223,6 +223,21 @@ def _resolve_date(keyword: str, fmt: str | None = None) -> str:
 # never during job generation -- must never appear in macro_params_json.
 RESERVED_NOW_KEY = "NOW"
 
+# Column name meaning "this key isn't stamped onto result rows" -- the entry
+# is there only to shape job_id and, for RESERVED_NOW_KEY, to mark the API as
+# repeated (see is_repeated_api). A key_params_list entry must name a column
+# even when there is no column to name: the plain-string form derives one from
+# the param name, and RESERVED_NOW_KEY has no param name to derive from, so it
+# can only be written as a dict. Before this existed the four ETF_LIST rows
+# said {"NOW": "trade_at"} against tables that have no trade_at, and the value
+# was dropped in silence by pydantic -- indistinguishable from a typo.
+#
+# Not for an API that writes to a generic table (one with a result_json
+# field): there the whole key_params dict is stored as key_params_json
+# rather than spread over columns, so every key lands regardless of name
+# and NO_COLUMN would throw away a value that was being kept.
+NO_COLUMN = "none_mapped"
+
 
 def resolve_now(execution_cycle: str | None = None, fmt: str = "%Y%m%d%H%M%S") -> str:
     """Capture timestamp for a RESERVED_NOW_KEY entry, floored to
@@ -292,6 +307,10 @@ def normalize_key_param(entry: str | dict[str, str]) -> tuple[str, str]:
     ``{param_name: column_name}`` dict for cases where they must differ --
     e.g. Oracle reserves ``date`` as an identifier, so a job param literally
     named ``DATE`` needs ``{"DATE": "trade_date"}`` to land in a real column.
+
+    ``NO_COLUMN`` as the column name means the key shapes job_id but is not
+    written to result rows.
+
     Returns ``(param_key, column_name)``."""
     if isinstance(entry, dict):
         # Not `((param_key, column_name),) = entry.items()`: that nested

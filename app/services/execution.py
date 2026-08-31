@@ -29,6 +29,7 @@ from app.db.models import ApiJob, ApiJobBuilder, ApiJobLog, ApiMst
 from app.scrapers.dynamic import DynamicApiScraper
 from app.services.export import TABLE_REGISTRY
 from app.services.job_builder import (
+    NO_COLUMN,
     RESERVED_NOW_KEY,
     build_jobs_from_builder,
     is_repeated_api,
@@ -120,6 +121,13 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
     key_params: dict[str, Any] = {}
     for entry in api.key_params_list or []:
         param_key, column_name = normalize_key_param(entry)
+        if column_name == NO_COLUMN:
+            # The entry earns its place by shaping job_id (and, for
+            # RESERVED_NOW_KEY, by marking the API repeated) -- there is no
+            # column to land in. Skipped rather than stamped-and-dropped so
+            # the intent is on the record instead of relying on pydantic
+            # discarding a key that matches no field.
+            continue
         if param_key == RESERVED_NOW_KEY:
             # Capture time for repeated/snapshot jobs (e.g. a quote endpoint
             # polled every few minutes) -- resolved fresh on every execution,

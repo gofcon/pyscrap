@@ -20,12 +20,15 @@ import io
 import json
 import os
 import re
+import ssl
 import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from pathlib import Path
 from typing import Any
 
+import certifi
 import httpx
 from loguru import logger
 from sqlmodel import Session
@@ -85,6 +88,18 @@ _HOST_INTERVALS: dict[str, float] = {
     # 오류 코드가 아니라 본문이 바뀌는 형태라, 세는 쪽이 아니라 받는 쪽이
     # 밀린 것으로 보인다. 여기도 metered API 가 아니다.
     "samsungfund.com": 0.5,
+    # 나머지 자산운용사도 같은 이유로 묶는다. ETF 구성종목은 종목마다 한
+    # 요청이라 하루 한 번 수십~수백 건이 한 줄로 나가는데, 어느 곳도 우리를
+    # 위해 용량을 재준 적이 없는 상품 소개 사이트다. 삼성만 예외로 두면
+    # "아직 아무도 항의하지 않은 곳"과 "괜찮은 곳"이 구별되지 않는다.
+    "aceetf.co.kr": 0.5,
+    "soletf.co.kr": 0.5,
+    "plusetf.co.kr": 0.5,
+    "riseetf.co.kr": 0.5,
+    "hanaroetf.com": 0.5,
+    "kiwoometf.com": 0.5,
+    "timeetf.co.kr": 0.5,
+    "investments.miraeasset.com": 0.5,
     **json.loads(os.environ.get("REQUEST_MIN_INTERVAL_HOSTS", "{}")),
 }
 
@@ -104,12 +119,39 @@ _pace_lock = threading.Lock()
 _next_slot_at: dict[str, float] = {}
 
 
+# Extra CA certificates, one PEM per file, added to certifi's bundle for
+# every request this process makes (see _ssl_context).
+_EXTRA_CA_DIR = Path(__file__).resolve().parent.parent / "certs"
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """certifi's trust store plus whatever sits in app/certs.
+
+    Some servers send an incomplete chain -- kiwoometf.com presents only its
+    leaf and leaves out the Sectigo intermediate that signs it -- so
+    verification fails on a certificate that is perfectly valid. Browsers
+    paper over this by fetching the missing link from the leaf's AIA
+    extension; httpx does not, and neither should we at request time (it
+    would mean trusting a URL read out of the certificate being verified).
+
+    Carrying the intermediate ourselves settles it before the connection:
+    it is a public CA certificate whose own issuer (USERTrust RSA) is
+    already a certifi root, so nothing is trusted here that Sectigo could
+    not already vouch for. Verification stays on -- the alternative,
+    verify=False, would drop it for the whole host."""
+    context = ssl.create_default_context(cafile=certifi.where())
+    for pem in sorted(_EXTRA_CA_DIR.glob("*.pem")):
+        context.load_verify_locations(cafile=str(pem))
+    return context
+
+
 def get_http_client() -> httpx.Client:
     """The process-wide connection-pooled client (see _client)."""
     global _client
     with _client_lock:
         if _client is None or _client.is_closed:
-            _client = httpx.Client(timeout=30, follow_redirects=True)
+            _client = httpx.Client(timeout=30, follow_redirects=True,
+                                   verify=_ssl_context())
             atexit.register(close_http_client)
         return _client
 
