@@ -225,6 +225,22 @@ def sync_mst_bond_cmd():
     typer.echo(f"mst_bond: {_call_procedure('sp_mst_bond_sync')} new issue(s)")
 
 
+@app.command("sync-mst-etf")
+def sync_mst_etf_cmd():
+    """Fold the ETF universe and each manager's own product code into mst_etf,
+    by calling the DB-side procedure sp_mst_etf_sync.
+
+    Two merges: newly listed instruments from krx_etf_daily, then the manager
+    code for any row still missing one. Both leave existing values alone, so
+    anything edited by hand survives.
+
+    Schedule it after the daily_batch1 cycle, which refreshes krx_etf_daily
+    and the three manager lists, and before daily_batch2 generates the
+    holdings jobs -- they select their instruments from this table."""
+    setup_logging()
+    typer.echo(f"mst_etf: {_call_procedure('sp_mst_etf_sync')} new ETF(s)")
+
+
 @app.command("finalize-exports")
 def finalize_exports_cmd():
     """Upload every staged document to object storage (see

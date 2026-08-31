@@ -1726,3 +1726,50 @@ class PlusEtfPdf(VendorRecordBase, table=True):
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class MstEtf(SQLModel, table=True):
+    """Curated ETF instrument master -- the universe with each manager's own
+    lookup code beside it.
+
+    Reference data like MstFuopt and MstBond: derived DB-side by
+    sp_mst_etf_sync, not written by the scraping engine, and kept out of
+    TABLE_REGISTRY by having no job_id.
+
+    Exists because the holdings endpoints are keyed on codes nobody else
+    uses. KODEX asks for ``2ETF01``, SOL for ``211096``, PLUS for ``006184``,
+    and none of those appear anywhere in KRX's data. Each manager's product
+    list carries the KRX short code beside its own, so folding the lists in
+    here turns "which instruments does this manager have" into one column and
+    lets every holdings builder select from the same place.
+
+    ``isu_cd`` is the key rather than ``isin`` because no source collected
+    today publishes an ETF's ISIN -- krx_etf_daily has no such column, PLUS's
+    ``krfundcd`` is null on all 84 rows, and the rest give the short code
+    alone. It could be *derived* (KR7 + code + check digit) but that would be
+    inventing an identifier rather than recording one. ``isin`` stays here,
+    nullable, for whenever a source turns up; the sync fills it then without
+    anything else moving.
+
+    Insert-only for the universe and NULL-fill for the manager columns, the
+    same shape as sp_mst_fuopt_sync: a value edited here by hand survives the
+    next run, and an ETF whose manager list arrives later still gets its code
+    filled in."""
+
+    __tablename__ = "mst_etf"
+
+    isu_cd: str = Field(primary_key=True, max_length=20)                 # KRX 단축코드
+    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # 표준코드 (소스 확보 시)
+    isu_nm: Optional[str] = Field(default=None, max_length=200)          # 종목명
+
+    # 운용사와, 그 운용사가 이 ETF 에 부여한 코드. 구성종목 빌더는 이 둘만 본다.
+    # 이름에 amc 를 붙인 것은 isu_cd(거래소가 부여) 와 대비시키기 위해서다 --
+    # 같은 ETF 에 코드가 둘이고, 어느 쪽이 누구 것인지가 늘 헷갈리는 지점이다.
+    amc: Optional[str] = Field(default=None, index=True, max_length=20)   # KODEX / SOL / PLUS ...
+    amc_etf_cd: Optional[str] = Field(default=None, max_length=30)        # 2ETF01 / 211096 / 006184
+
+    first_seen: Optional[str] = Field(default=None, index=True, max_length=8)  # 최초 관측일
+
+    description: Optional[str] = Field(default=None, max_length=100)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
