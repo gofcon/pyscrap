@@ -1888,3 +1888,38 @@ class AmcEtfPdf(VendorRecordBase, table=True):
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class UserEtf(SQLModel, table=True):
+    """운용사 ETF 코드 중 사람이 직접 넣는 것 -- mst_etf 로 접혀 들어간다.
+
+    TIGER, KB, NH, 키움, TIME 은 상품목록이 화면뿐이고 코드가 링크 href 나
+    data- 속성, 셀 문장 속에 박혀 있어 수집 대상이 못 된다(MstEtf 참고). 그
+    다섯의 코드를 여기에 손으로 적고, sp_mst_etf_sync 가 JSON 목록들과 함께
+    mst_etf 로 접는다.
+
+    mst_etf 를 직접 고치지 않고 표를 따로 두는 이유는 출처가 섞이지 않게 하려는
+    것이다. mst_etf 는 수집물에서 다시 만들어질 수 있는 표이고, 여기 적은 값은
+    다시 만들 수 없다 -- 섞어 두면 어느 행이 손으로 넣은 것인지 구별할 방법이
+    없고, 표를 비우는 순간 사라진다.
+
+    같은 isu_cd 가 운용사 목록에도 있으면 **이쪽이 이긴다** -- 수집물은 비어
+    있을 때만 채우지만 이 표는 무조건 덮어쓴다. 수집된 코드가 틀렸을 때 고칠
+    자리가 여기 말고는 없어서다. 행을 지우면 다음 실행에서 수집물 쪽 값으로
+    돌아간다.
+
+    수집 엔진이 건드리지 않는 참조 데이터라 job_id 가 없다(TABLE_REGISTRY 에서
+    빠진다). 채울 대상은 이 질의로 나온다::
+
+        SELECT isu_cd, isu_nm FROM mst_etf WHERE amc IS NULL ORDER BY isu_nm;
+    """
+
+    __tablename__ = "user_etf"
+
+    isu_cd: str = Field(primary_key=True, max_length=20)                 # KRX 단축코드
+    amc: Optional[str] = Field(default=None, index=True, max_length=20)  # KODEX / TIGER / KB ...
+    amc_etf_cd: Optional[str] = Field(default=None, max_length=30)       # 운용사 조회코드
+
+    description: Optional[str] = Field(default=None, max_length=100)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

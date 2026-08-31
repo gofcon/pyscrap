@@ -37,12 +37,13 @@ BEGIN
 
   -- 2) 운용사 코드: 비어 있는 것만 채운다.
   --
-  -- 여기 있는 넷은 상품목록을 JSON 으로 주는 운용사다. 나머지 다섯(TIGER, KB,
-  -- NH, 키움, TIME)은 목록이 화면이고 코드가 링크 href 나 data- 속성, 또는
-  -- 셀 문장 속에 박혀 있어 표로 읽히지 않는다. 그쪽은 mst_etf 에 손으로 채운다
-  -- -- ETF 의 운용사 코드는 상장 때 정해지면 안 바뀌므로 신규 상장분만 가끔
-  -- 더하면 된다. 아래 UPDATE 가 NULL 인 것만 건드리므로 손으로 넣은 값을
-  -- 덮어쓰지 않는다.
+  -- 소스가 둘이다. JSON 목록을 주는 넷은 수집물에서, 나머지 다섯(TIGER, KB,
+  -- NH, 키움, TIME)은 user_etf 에서 온다 -- 그쪽은 목록이 화면이고 코드가 링크
+  -- href 나 data- 속성, 셀 문장 속에 박혀 있어 표로 읽히지 않는다. ETF 의
+  -- 운용사 코드는 상장 때 정해지면 안 바뀌므로 손으로 적어도 신규 상장분만
+  -- 가끔 더하면 된다.
+  --
+  -- 수집물 쪽은 비어 있을 때만 채운다 -- 여느 마스터와 같은 규칙이다.
   --
   -- 한 ETF 는 운용사가 하나뿐이라 소스에 단축코드가 겹칠 일이 없어야 하지만,
   -- 목록이 갱신되는 중이거나 브랜드가 옮겨가면 겹칠 수 있다. MERGE 는 소스 키가
@@ -53,7 +54,7 @@ BEGIN
            MAX(amc)        KEEP (DENSE_RANK FIRST ORDER BY amc) AS amc,
            MAX(amc_etf_cd) KEEP (DENSE_RANK FIRST ORDER BY amc) AS amc_etf_cd
       FROM (
-        SELECT stkticker AS isu_cd, 'KODEX' AS amc, fid     AS amc_etf_cd
+        SELECT stkticker AS isu_cd, 'KODEX' AS amc, fid AS amc_etf_cd
           FROM kodex_etf WHERE stkticker IS NOT NULL
         UNION ALL
         SELECT etf_cd6,             'SOL',          fund_cd
@@ -76,7 +77,24 @@ BEGIN
     UPDATE SET t.amc = s.amc, t.amc_etf_cd = s.amc_etf_cd
     WHERE t.amc_etf_cd IS NULL;
 
-  -- 3) ISIN: 지금은 ACE 목록에서만 온다.
+  -- 3) 사람이 적은 코드: 덮어쓴다.
+  --
+  -- user_etf 는 수집이 닿지 않는 다섯 운용사를 손으로 적어 두는 표다. 비어
+  -- 있을 때만 채우는 위 규칙과 달리 여기는 무조건 덮어쓴다 -- 표 이름 그대로
+  -- '사람이 정한 값'이라, 수집된 코드가 틀렸을 때 고칠 자리가 여기 말고는
+  -- 없기 때문이다. 지우면 다음 실행에서 수집물 쪽 값으로 돌아간다.
+  MERGE /*+ NO_PARALLEL */ INTO mst_etf t
+  USING (
+    SELECT isu_cd, MAX(amc) amc, MAX(amc_etf_cd) amc_etf_cd
+      FROM user_etf
+     WHERE amc IS NOT NULL AND amc_etf_cd IS NOT NULL
+     GROUP BY isu_cd
+  ) s
+  ON (t.isu_cd = s.isu_cd)
+  WHEN MATCHED THEN
+    UPDATE SET t.amc = s.amc, t.amc_etf_cd = s.amc_etf_cd;
+
+  -- 4) ISIN: 지금은 ACE 목록에서만 온다.
   --
   -- 거래소 쪽 수집물에는 ETF 의 ISIN 이 없고(krx_etf_daily 에 컬럼 자체가 없다),
   -- 운용사 중에서도 한투만 stockCd 로 준다. 그래서 여기 채워지는 것은 ACE
