@@ -562,6 +562,16 @@ class DynamicApiScraper:
             staged = self._stage_binary(response)
             return {selector: staged for selector in mapping}
 
+        if self.api.response_type == "html_table":
+            # Content-type says spreadsheet and the body is markup, so this
+            # has to be decided by config rather than sniffed.
+            records = self._parse_html_table(response)
+            return {selector: records for selector in mapping}
+
+        if self.api.response_type in ("xlsx", "xls"):
+            records = self._parse_spreadsheet(response)
+            return {selector: records for selector in mapping}
+
         if self.api.response_type in ("zip_delimited", "delimited"):
             # Binary/plain-text response, not XML/JSON -- response.text may
             # be garbage (zip) or just isn't XML/JSON, so this must be
@@ -696,6 +706,34 @@ class DynamicApiScraper:
         fields = spec.get("fields")
 
         rows = [row for row in csv.reader(io.StringIO(text), delimiter=delimiter) if row]
+        return DynamicApiScraper._rows_to_records(rows, spec)
+
+    @staticmethod
+    def _rows_to_records(rows: list[list[str]], spec: dict[str, Any]) -> list[dict[str, Any]]:
+        """A rectangle of cells -> records, shared by every tabular source.
+
+        Delimited text, an HTML table and a spreadsheet all arrive as the
+        same thing once read: a header somewhere near the top and rows under
+        it. Only the reading differs, so only the reading is per-format.
+
+        response_parse_json keys (see _parse_delimited_text for the
+        delimited-only ones):
+        - "skip_rows": drop this many rows before anything else. Sheets and
+          exported tables often open with a title or a note above the header
+          (TIGER's holdings table starts with a lone '- 설정/해지현황' cell).
+        - "has_header": the first remaining row is the header -- skipped, and
+          used as the field names when "fields" is not given.
+        - "fields": explicit column names, in order. Needed whenever the
+          header is prose rather than identifiers, which is the usual case
+          for a table meant to be read by a person: '수량(주)' cannot be a
+          column name, and translating it in code would put per-site
+          knowledge where this engine keeps none.
+        """
+        skip = int(spec.get("skip_rows", 0))
+        if skip:
+            rows = rows[skip:]
+        has_header = spec.get("has_header", False)
+        fields = spec.get("fields")
         if has_header and rows:
             header, rows = rows[0], rows[1:]
             fields = fields or [h.strip() for h in header]
@@ -708,6 +746,61 @@ class DynamicApiScraper:
             values = [v.strip() for v in row]
             records.append({name: (v or None) for name, v in zip(fields, values)})
         return records
+
+    def _parse_html_table(self, response: httpx.Response) -> list[dict[str, Any]]:
+        """response_type='html_table': a table in an HTML document.
+
+        Several managers publish holdings as an "Excel download" that is
+        really an HTML table with a spreadsheet MIME type (TIGER and KB both
+        answer application/vnd.ms-excel with markup in the body). The data is
+        rectangular and complete; only the wrapper pretends otherwise.
+
+        response_parse_json adds "table_index" (default 0) for a document
+        with more than one table.
+        """
+        spec = self.api.response_parse_json or {}
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        tables = soup.find_all("table")
+        if not tables:
+            return []
+        table = tables[int(spec.get("table_index", 0))]
+        rows = [[cell.get_text(" ", strip=True) for cell in tr.find_all(["td", "th"])]
+                for tr in table.find_all("tr")]
+        return self._rows_to_records([r for r in rows if any(r)], spec)
+
+    def _parse_spreadsheet(self, response: httpx.Response) -> list[dict[str, Any]]:
+        """response_type='xlsx'/'xls': a real spreadsheet file.
+
+        Two formats because the managers use both -- NH and TIME send OOXML,
+        Kiwoom still sends the OLE2 one that openpyxl refuses. Everything
+        after reading the cells is shared with the other tabular sources.
+
+        response_parse_json adds "sheet" (index, default 0). Cells come back
+        as text so a code with leading zeros stays a code rather than
+        becoming a number the sheet happened to store.
+        """
+        spec = self.api.response_parse_json or {}
+        sheet_no = int(spec.get("sheet", 0))
+        cells: list[list[str]]
+        if self.api.response_type == "xlsx":
+            import openpyxl
+
+            book = openpyxl.load_workbook(io.BytesIO(response.content), read_only=True,
+                                          data_only=True)
+            sheet = book.worksheets[sheet_no]
+            cells = [["" if c is None else str(c) for c in row]
+                     for row in sheet.iter_rows(values_only=True)]
+            book.close()
+        else:
+            import xlrd
+
+            book = xlrd.open_workbook(file_contents=response.content)
+            sheet = book.sheet_by_index(sheet_no)
+            cells = [["" if c is None else str(c) for c in sheet.row_values(i)]
+                     for i in range(sheet.nrows)]
+        return self._rows_to_records([r for r in cells if any(str(x).strip() for x in r)], spec)
 
     def _apply_merge_fields(self, data: Any, per_selector: dict[str, list[dict[str, Any]]]) -> None:
         """Mutates ``per_selector`` in place: for each ``{selector: {source_dot_path:

@@ -1773,3 +1773,108 @@ class MstEtf(SQLModel, table=True):
     description: Optional[str] = Field(default=None, max_length=100)
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class AceEtf(VendorRecordBase, table=True):
+    """ACE_ETF_LIST (한국투자신탁운용 ``papi.aceetf.co.kr/api/funds``) -- ACE ETF
+    상품 목록.
+
+    운용사 목록 중 유일하게 **ETF 의 ISIN**(``stockcd``)을 준다. 다른 곳은
+    단축코드뿐이라 mst_etf.isin 이 통째로 비어 있었는데, 여기서 처음 실물이
+    들어온다. ``fundcd``(``KR5101877748``)가 구성종목 조회키다.
+
+    ISIN 의 4~9번째 자리가 단축코드라는 것도 여기서 확인했다
+    (``KR7105190003`` -> ``105190`` = ACE 200). 그 방향은 자릿수를 잘라내는
+    것뿐이라 안전하지만, 반대로 단축코드에서 ISIN 을 만드는 것은 체크디지트를
+    지어내는 일이라 하지 않는다.
+
+    page 파라미터로 10건씩 12페이지."""
+
+    __tablename__ = "ace_etf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    fundcd: str = Field(index=True, max_length=20)                      # 조회키 (KR5101877748)
+    stockcd: Optional[str] = Field(default=None, index=True, max_length=12)  # ETF ISIN
+    fundnm: Optional[str] = Field(default=None, max_length=200)         # 상품명
+    fundwhlnm: Optional[str] = Field(default=None, max_length=300)      # 정식명칭
+    fundtypenm: Optional[str] = Field(default=None, max_length=50)      # 유형
+    lstddt: Optional[str] = Field(default=None, max_length=8)           # 상장일
+    stddt: Optional[str] = Field(default=None, index=True, max_length=10)  # 기준일
+    nastamt: Optional[float] = Field(default=None)                      # 순자산
+    clpr: Optional[float] = Field(default=None)                         # 종가
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class AceEtfPdf(VendorRecordBase, table=True):
+    """ACE_ETF_PDF (``/api/funds/{fundCd}/pdf``) -- ACE ETF 구성종목.
+
+    응답 봉투에 ``pdfList`` 말고 ``sectorList``/``assetList``(섹터·자산군 비중)도
+    함께 오는데, 그건 구성종목에서 계산되는 값이라 받지 않는다.
+
+    ``wg`` 는 퍼센트값, ``jm_ksc_cd`` 는 구성종목 단축코드다. ``std_dt`` 가
+    행마다 있어(``2026-08-31``, 하이픈 포함) 잡 파라미터로 찍을 필요가 없다."""
+
+    __tablename__ = "ace_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    fundcd: str = Field(index=True, max_length=20)                      # 조회키 (잡 파라미터에서)
+    std_dt: Optional[str] = Field(default=None, index=True, max_length=10)  # 기준일 (2026-08-31)
+    rank: Optional[int] = Field(default=None)                           # 순위
+    jm_ksc_cd: Optional[str] = Field(default=None, index=True, max_length=20)  # 구성종목 코드
+    sec_nm: Optional[str] = Field(default=None, max_length=200)         # 구성종목명
+    cu_item_cnt: Optional[float] = Field(default=None)                  # 수량
+    val_am: Optional[float] = Field(default=None)                       # 평가금액
+    wg: Optional[float] = Field(default=None)                           # 비중(%)
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class AmcEtfPdf(VendorRecordBase, table=True):
+    """표 형태로만 공시하는 운용사들의 ETF 구성종목 -- TIGER, KB, NH, 키움, 타임.
+
+    JSON 을 주는 운용사들과 달리 이쪽은 HTML 표나 스프레드시트로만 나온다.
+    그런데 형식이 다를 뿐 **컬럼 구성은 사실상 같다** -- 종목코드·종목명·수량·
+    평가금액·비중이 전부다. 필드명이 소스마다 다른 JSON 쪽과 달리, 여기서는
+    이름을 붙이는 주체가 우리다(``response_parse_json`` 의 ``fields`` 가
+    위치순으로 이름을 준다). 그래서 소스별로 표를 나눌 이유가 없다.
+
+    다섯 운용사가 한 표를 쓰므로 ``api_id`` 가 출처를 가른다. ``amc_etf_cd`` 는
+    그 운용사의 조회 코드이고 mst_etf 와 같은 값이다.
+
+    ``kr_cd``(구성종목 ISIN)는 키움만 준다. ``rtn_1w``(1주 수익률)는 TIGER 만
+    준다. 나머지는 그 자리를 비워 둔다 -- 표마다 컬럼 수가 다른 것이 아니라
+    같은 표에서 어떤 소스는 채우고 어떤 소스는 안 채우는 것이다.
+
+    값은 소스가 쓴 그대로 문자열이다. 천단위 쉼표(``1,794,888,000``), 퍼센트
+    기호(``17.76%``), 엑셀이 수를 실수로 저장해 생긴 ``1.0`` 같은 표기가 섞여
+    있어, 숫자로 바꾸는 일은 통합 뷰에서 소스별로 한다."""
+
+    __tablename__ = "amc_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(index=True, max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    amc_etf_cd: str = Field(index=True, max_length=30)                  # 운용사 조회코드 (잡 파라미터에서)
+    std_dt: Optional[str] = Field(default=None, index=True, max_length=10)  # 기준일
+
+    no: Optional[str] = Field(default=None, max_length=20)              # 표의 순번
+    itm_cd: Optional[str] = Field(default=None, index=True, max_length=50)  # 구성종목 코드
+    itm_nm: Optional[str] = Field(default=None, max_length=200)         # 구성종목명
+    kr_cd: Optional[str] = Field(default=None, max_length=20)           # 구성종목 ISIN (키움만)
+    qty: Optional[str] = Field(default=None, max_length=40)             # 수량
+    eval_amt: Optional[str] = Field(default=None, max_length=40)        # 평가금액
+    wgt: Optional[str] = Field(default=None, max_length=20)             # 비중
+    rtn_1w: Optional[str] = Field(default=None, max_length=20)          # 1주 수익률 (TIGER만)
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

@@ -15,6 +15,10 @@ dependencies = [
     "pydantic-settings>=2.6.1",
     "httpx>=0.28.0",
     "beautifulsoup4>=4.12.3",
+    # 운용사 ETF 구성종목이 스프레드시트로만 나오는 곳이 있다 -- NH/타임은
+    # OOXML(xlsx), 키움은 아직 OLE2(xls) 라 리더가 둘 다 필요하다.
+    "openpyxl>=3.1.5",
+    "xlrd>=2.0.1",
     "tenacity>=9.0.0",
     "loguru>=0.7.2",
     "typer>=0.15.1",

@@ -8,11 +8,18 @@ CREATE OR REPLACE PROCEDURE sp_mst_etf_sync (p_inserted OUT NUMBER) AS
 -- 데이터 어디에도 없다. 각 운용사 목록이 자기 코드 옆에 단축코드를 같이 주므로,
 -- 여기서 한 번 접어 두면 구성종목 빌더들이 전부 같은 표를 보게 된다.
 --
--- 순서가 중요하다: daily_batch1 이 krx_etf_daily 와 세 운용사 목록을 갱신한 뒤에
+-- 순서가 중요하다: daily_batch1 이 krx_etf_daily 와 운용사 목록들을 갱신한 뒤에
 -- 돌아야 한다. 먼저 돌면 어제 목록으로 접는다.
+--
+-- MERGE 마다 NO_PARALLEL 힌트가 붙는 이유: 이 DB 는 병렬 DML 이 기본 활성인데,
+-- 같은 표를 잇달아 갱신하는 아래 세 문장이 ORA-12860(형제 행 잠금 대기 중
+-- 교착)으로 죽었다. sp_stock_index_his_sync 는 세션 설정으로 껐지만 여기서는
+-- 못 쓴다 -- 그쪽은 중간에 REFRESH 가 커밋을 넣어 주는데, 여기는 트랜잭션이
+-- 열린 채 끝나 되돌릴 때 ORA-12841 이 난다. 문장 단위 힌트는 그 제약이 없고
+-- 다른 세션 상태를 건드리지도 않는다. 천여 행짜리라 병렬로 얻을 것도 없다.
 BEGIN
   -- 1) 유니버스: 거래소에 보인 적 있는 단축코드를 신규만 넣는다.
-  MERGE INTO mst_etf t
+  MERGE /*+ NO_PARALLEL */ INTO mst_etf t
   USING (
     SELECT isu_cd,
            MIN(bas_dd) AS first_seen,
@@ -33,7 +40,7 @@ BEGIN
   -- 한 ETF 는 운용사가 하나뿐이라 소스에 단축코드가 겹칠 일이 없어야 하지만,
   -- 목록이 갱신되는 중이거나 브랜드가 옮겨가면 겹칠 수 있다. MERGE 는 소스 키가
   -- 중복되면 ORA-30926 으로 죽으므로 한 행으로 접어 둔다.
-  MERGE INTO mst_etf t
+  MERGE /*+ NO_PARALLEL */ INTO mst_etf t
   USING (
     SELECT isu_cd,
            MAX(amc)        KEEP (DENSE_RANK FIRST ORDER BY amc) AS amc,
@@ -47,6 +54,13 @@ BEGIN
         UNION ALL
         SELECT namecode,            'PLUS',         prod_id
           FROM plus_etf  WHERE namecode  IS NOT NULL
+        UNION ALL
+        -- ACE 만 ISIN 을 주므로 단축코드는 거기서 잘라 쓴다. ISIN 의 4~9번째가
+        -- 단축코드다(KR7105190003 -> 105190 = ACE 200, 실물 3건 대조 확인).
+        -- 자릿수를 잘라내는 방향이라 안전하다 -- 반대로 단축코드에서 ISIN 을
+        -- 만드는 것은 체크디지트를 지어내는 일이라 하지 않는다.
+        SELECT SUBSTR(stockcd, 4, 6),'ACE',          fundcd
+          FROM ace_etf   WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
       )
      GROUP BY isu_cd
   ) s
@@ -54,4 +68,24 @@ BEGIN
   WHEN MATCHED THEN
     UPDATE SET t.amc = s.amc, t.amc_etf_cd = s.amc_etf_cd
     WHERE t.amc_etf_cd IS NULL;
+
+  -- 3) ISIN: 지금은 ACE 목록에서만 온다.
+  --
+  -- 거래소 쪽 수집물에는 ETF 의 ISIN 이 없고(krx_etf_daily 에 컬럼 자체가 없다),
+  -- 운용사 중에서도 한투만 stockCd 로 준다. 그래서 여기 채워지는 것은 ACE
+  -- 종목뿐이고, 나머지는 소스가 생길 때까지 NULL 로 남는다. 비어 있는 것만
+  -- 채우므로 나중에 다른 소스가 붙어도 이 문장은 그대로 둔다.
+  MERGE /*+ NO_PARALLEL */ INTO mst_etf t
+  USING (
+    SELECT SUBSTR(stockcd, 4, 6) AS isu_cd,
+           MAX(stockcd) KEEP (DENSE_RANK FIRST ORDER BY fundcd) AS isin
+      FROM ace_etf
+     WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
+     GROUP BY SUBSTR(stockcd, 4, 6)
+  ) s
+  ON (t.isu_cd = s.isu_cd)
+  WHEN MATCHED THEN
+    UPDATE SET t.isin = s.isin
+    WHERE t.isin IS NULL;
+
 END;
