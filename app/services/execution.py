@@ -22,11 +22,11 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from loguru import logger
-from sqlalchemy import Column, delete as sa_delete
+from sqlalchemy import Column, delete as sa_delete, func
 from sqlmodel import Session, select
 
 from app.db.models import ApiJob, ApiJobBuilder, ApiJobLog, ApiMst
-from app.scrapers.dynamic import DynamicApiScraper
+from app.scrapers import make_scraper
 from app.services.export import TABLE_REGISTRY
 from app.services.job_builder import (
     NO_COLUMN,
@@ -143,7 +143,10 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
             key_params[column_name] = job.params_json[param_key]
 
     try:
-        scraper = DynamicApiScraper(api, params=job.params_json)
+        # HTTP or browser, by the row's own request_type -- see
+        # app.scrapers.make_scraper. Everything from here down is the same
+        # either way.
+        scraper = make_scraper(api, params=job.params_json)
         counts = scraper.run_and_save(session, job_id=job.job_id, key_params=key_params)
         job.description = ", ".join(f"{table}: {n}" for table, n in counts.items())
         if not is_repeated:
@@ -236,6 +239,32 @@ def generate_jobs_for_builder(session: Session, build_id: str) -> list[ApiJob]:
     return build_jobs_from_builder(session, build_id)
 
 
+def _login_rows_first(session: Session, jobs: Sequence[ApiJob]) -> list[ApiJob]:
+    """Order a cycle's jobs so that its login rows run before anything else.
+
+    A login row (``ApiMst.response_type == 'session'``) leaves a cookie jar
+    behind -- in the process-wide httpx.Client for an HTTP row, in a storage
+    state file for a browser one -- and everything else on that site depends
+    on it having run. Nothing else in this engine cares what order jobs run
+    in, so this is deliberately not a general dependency graph: the row's own
+    response_type already says "this exists to precede others", and a second
+    kind of ordering can grow its own column when there is a second kind.
+
+    Note what this does *not* solve: a session that expires mid-batch, which
+    ordering cannot help with because the expiry lands between two jobs that
+    are already correctly ordered. That is handled where it has to be -- the
+    job that hits it logs in again and retries once (see
+    app.scrapers.base.BaseScraper.collect). This just saves the first job of a
+    run from taking that path every time."""
+    login_apis = set(session.exec(
+        select(ApiMst.api_id).where(func.lower(ApiMst.response_type) == "session")
+    ).all())
+    if not login_apis:
+        return list(jobs)
+    # sorted() is stable, so everything else keeps the order the DB gave it.
+    return sorted(jobs, key=lambda job: 0 if job.api_id in login_apis else 1)
+
+
 def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
     """Execute every currently-pending ApiJob for this execution_cycle --
     the entrypoint a systemd timer should call (e.g.
@@ -260,7 +289,7 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
             ApiJob.is_active == True,  # noqa: E712 - Oracle native BOOLEAN column rejects IS-based binds (ORA-00908), needs plain equality
         )
     ).all()
-    for job in jobs:
+    for job in _login_rows_first(session, jobs):
         run_job(session, job)
         results[job.job_id] = job.description
         logger.info("run_cycle({}): executed {}", execution_cycle, job.job_id)

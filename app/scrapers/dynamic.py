@@ -31,12 +31,12 @@ from typing import Any
 import certifi
 import httpx
 from loguru import logger
-from sqlmodel import Session
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (retry, retry_if_not_exception_type, stop_after_attempt,
+                      wait_exponential)
 
 from app.auth_config import persist_env_var, resolve_env_placeholders
-from app.db.models import ApiMst
-from app.services.export import TABLE_REGISTRY, append_csv_rows, stage_file
+from app.scrapers.base import (BaseScraper, SessionExpired, merge_records,
+                               rows_to_records)
 
 # payload_type is stored verbatim as the httpx request kwarg name, so each
 # ApiMst row picks its own transport mechanism purely via data -- no code
@@ -84,6 +84,15 @@ _REQUEST_MIN_INTERVAL_SEC = float(os.environ.get("REQUEST_MIN_INTERVAL_SEC", "0.
 # default was measured for. 0.5s holds it to 2 req/s.
 _HOST_INTERVALS: dict[str, float] = {
     "seibro.or.kr": 0.5,
+    # KRX 표준코드 검색 화면. seibro 와 같은 이유로 같은 값이고, 접미사
+    # 일치라 seibro 항목이 이 호스트를 덮어주지 않아 따로 적는다. 브라우저
+    # 잡도 이 표를 그대로 쓴다 (app.scrapers.browser 가 _pace_host 를
+    # 공유한다) -- 한 화면을 여는 데 요청이 여러 건 나가는 쪽이라 오히려
+    # 간격이 더 중요하다.
+    "isin.krx.co.kr": 0.5,
+    # 데이터마켓(로그인 필요)도 같은 성격이다. ETF 구성종목은 종목당 한
+    # 요청이라 하루 900건 안팎이 한 줄로 나간다.
+    "data.krx.co.kr": 0.5,
     # 0.2s 로 43개 ETF 를 훑었더니 22개가 JSON 이 아닌 응답으로 돌아왔다 --
     # 오류 코드가 아니라 본문이 바뀌는 형태라, 세는 쪽이 아니라 받는 쪽이
     # 밀린 것으로 보인다. 여기도 metered API 가 아니다.
@@ -326,7 +335,7 @@ def _extract_json_scalar(data: Any, path: str) -> Any:
     return data
 
 
-class DynamicApiScraper:
+class DynamicApiScraper(BaseScraper):
     """Builds and runs one HTTP call described by an ``ApiMst`` row.
 
     ``api.payload_type`` is the httpx request kwarg to send the body as --
@@ -352,23 +361,16 @@ class DynamicApiScraper:
     resolved from ``os.environ`` at request-build time.
 
     A ``:PAGE`` placeholder anywhere in ``api_url``/``payload_xml`` opts into
-    pagination: :meth:`run_and_save` then calls :meth:`fetch_all_pages`
+    pagination: :meth:`collect` then calls :meth:`fetch_all_pages`
     instead of a single :meth:`fetch`, incrementing ``:PAGE`` from 1 and
     stopping once a page comes back with no records for any selector.
+
+    Saving what comes back is not this class's business -- see
+    :class:`app.scrapers.base.BaseScraper`, which this shares with the
+    browser-driven transport.
     """
 
-    def __init__(self, api: ApiMst, params: dict[str, Any] | None = None):
-        self.api = api
-        self.params = params or {}
-
     # ---- request building --------------------------------------------------
-
-    def _substitute_placeholders(self, text: str) -> str:
-        for key, value in self.params.items():
-            # ':KEY' (Oracle bind-variable style), matched as a whole token so
-            # ':KACD' doesn't also swallow something like ':KACD2'.
-            text = re.sub(rf"(?<!\w):{re.escape(key)}(?!\w)", str(value), text)
-        return text
 
     def build_request(self) -> dict[str, Any]:
         api = self.api
@@ -406,15 +408,46 @@ class DynamicApiScraper:
 
     # ---- execution ------------------------------------------------------
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+    # SessionExpired is excluded from the retry: being logged out is not a
+    # transient failure, and retrying it would spend three attempts and ~10s
+    # of backoff before the caller ever gets to log in again.
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),
+           retry=retry_if_not_exception_type(SessionExpired))
     def fetch(self) -> httpx.Response:
         request_kwargs = self.build_request()
         # Paced *inside* the retry, so a retried attempt (e.g. after a rate-
         # limit rejection) takes its own slot rather than firing immediately.
         _pace_host(request_kwargs["url"])
         response = get_http_client().request(**request_kwargs)
+        self._check_logged_out(response)
         response.raise_for_status()
         return response
+
+    def _check_logged_out(self, response: httpx.Response) -> None:
+        """Raise if this reply is the site saying "you are not logged in".
+
+        Checked *before* raise_for_status because that is often how it
+        arrives: KRX's data endpoint answers HTTP 400 with the body ``LOGOUT``
+        rather than a status a client could read on its own. So the row names
+        the tell itself -- ``response_parse_json['logged_out']``, a string
+        that appears in the body (a css selector for a browser row; same key,
+        same job, read the way that transport can read it).
+
+        Rows that do not configure it pay a dict lookup and nothing else. That
+        matters here more than anywhere: every API in the process goes through
+        fetch(), including a 3-minute KIS cycle pushing several requests a
+        second, so this check has to cost nothing for the rows it does not
+        concern. Scoped by configuration rather than by host, which is
+        tighter -- only the rows that asked are ever examined."""
+        marker = (self.api.response_parse_json or {}).get("logged_out")
+        if not marker:
+            return
+        # Cheap guard for a row that also downloads documents: a marker only
+        # ever appears in a text reply, and a truncated read is enough.
+        head = response.content[:4]
+        body = "" if head[:2] == b"PK" or head == b"%PDF" else response.text[:4000]
+        if marker in body:
+            raise SessionExpired(f"{self.api.api_id}: reply says {marker!r}")
 
     # ---- continuation ----------------------------------------------------
 
@@ -551,28 +584,12 @@ class DynamicApiScraper:
                             self.api.api_id, attempt)
                 break
 
-            # Merged so the later reply wins at the seam. A cursor anchored on
-            # a value from the last reply re-requests the record that value
-            # came from, and that record can come back *different*: the first
-            # reply saw it truncated by the record cap and the next sees it
-            # whole -- observed as a bar reappearing with a larger volume or a
-            # lower low. Keying on the cursor value rather than on the whole
-            # record means the fuller version replaces the clipped one instead
-            # of both being kept as distinct.
+            # A cursor anchored on a value from the last reply re-requests the
+            # record that value came from, so that value is what identifies a
+            # record across the seam rather than the record as a whole -- see
+            # app.scrapers.base.merge_records for why that matters.
             cursor_field = spec.get("from", "").split(".")[-1] if spec.get("mode") == "cursor" else None
-            for selector, records in per_selector.items():
-                bucket = all_records.setdefault(selector, [])
-                index = seen.setdefault(selector, {})
-                for record in records:
-                    if cursor_field and cursor_field in record:
-                        identity = f"@{record[cursor_field]}"
-                    else:
-                        identity = json.dumps(record, sort_keys=True, default=str)
-                    if identity in index:
-                        bucket[index[identity]] = record
-                        continue
-                    index[identity] = len(bucket)
-                    bucket.append(record)
+            merge_records(all_records, seen, per_selector, cursor_field)
             previous = per_selector
 
             if not self._advance(spec, response, _response_body(response), count):
@@ -601,7 +618,8 @@ class DynamicApiScraper:
             # record describing it, so the rest of the pipeline (job logging,
             # save_mode, the result table) works unchanged; only the bytes
             # take a different route. See app.services.export.stage_file.
-            staged = self._stage_binary(response)
+            staged = self._stage_binary(response.content,
+                                        response.headers.get("content-type"))
             return {selector: staged for selector in mapping}
 
         if self.api.response_type == "html_table":
@@ -643,65 +661,6 @@ class DynamicApiScraper:
         self._apply_merge_fields(data, per_selector)
         self._persist_env_fields(data)
         return per_selector
-
-    def _stage_binary(self, response: httpx.Response) -> list[dict[str, Any]]:
-        """Save a downloaded document and describe it, one record per file.
-
-        ``response_parse_json`` supplies the layout:
-        {"group": "dart_docs", "name": ":RCEPT_NO.pdf"} -- ``name`` goes
-        through the same ':KEY' substitution as the url and payload, so a
-        document is named from the job's own parameters rather than from
-        whatever the server happened to call it. Falling back to the job's
-        params keeps a misconfigured row from silently overwriting one file
-        over and over.
-
-        The returned record is metadata only; the bytes are already on disk.
-        Deliberately not the file content -- a result table is the wrong place
-        for a multi-megabyte blob, and the object store is where the pipeline
-        already puts large artifacts."""
-        config = self.api.response_parse_json or {}
-        group = config.get("group") or self.api.api_id.lower()
-        name = self._substitute_placeholders(config.get("name") or "")
-        if not name or ":" in name:
-            # No usable template: fall back to something unique per job rather
-            # than a fixed name every run would clobber.
-            suffix = config.get("suffix", "")
-            name = "_".join(str(v) for v in self.params.values()) or self.api.api_id
-            name = f"{name}{suffix}"
-        # "unzip": true stores the archive's contents instead of the archive.
-        # Worth it when the payload is a single document that is more useful
-        # readable than packed -- DART wraps one XML per disclosure, and an
-        # unpacked XML can be read straight from the bucket. Costs space
-        # (that XML is ~8x its zipped size), so it stays opt-in.
-        if config.get("unzip") and response.content[:2] == b"PK":
-            records = []
-            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-                for info in archive.infolist():
-                    if info.is_dir():
-                        continue
-                    body = archive.read(info)
-                    stage_file(group, info.filename, body)
-                    records.append(self._describe(group, info.filename, len(body), None))
-            logger.info("{}: staged {} file(s) from archive {}",
-                        self.api.api_id, len(records), name)
-            return records
-
-        path = stage_file(group, name, response.content)
-        logger.info("{}: staged {} ({} bytes)", self.api.api_id, path, len(response.content))
-        return [self._describe(group, name, len(response.content),
-                               response.headers.get("content-type"))]
-
-    @staticmethod
-    def _describe(group: str, name: str, size: int, content_type: str | None) -> dict[str, Any]:
-        """Metadata record for one staged file -- what the result table gets in
-        place of the bytes, and enough to locate the object afterwards."""
-        return {
-            "group": group,
-            "file_name": name,
-            "object_key": f"{group}/{name}",
-            "byte_size": size,
-            "content_type": content_type,
-        }
 
     def _parse_zip_delimited(self, response: httpx.Response) -> list[dict[str, Any]]:
         """response_type='zip_delimited': unzip response.content in-memory,
@@ -748,46 +707,7 @@ class DynamicApiScraper:
         fields = spec.get("fields")
 
         rows = [row for row in csv.reader(io.StringIO(text), delimiter=delimiter) if row]
-        return DynamicApiScraper._rows_to_records(rows, spec)
-
-    @staticmethod
-    def _rows_to_records(rows: list[list[str]], spec: dict[str, Any]) -> list[dict[str, Any]]:
-        """A rectangle of cells -> records, shared by every tabular source.
-
-        Delimited text, an HTML table and a spreadsheet all arrive as the
-        same thing once read: a header somewhere near the top and rows under
-        it. Only the reading differs, so only the reading is per-format.
-
-        response_parse_json keys (see _parse_delimited_text for the
-        delimited-only ones):
-        - "skip_rows": drop this many rows before anything else. Sheets and
-          exported tables often open with a title or a note above the header
-          (TIGER's holdings table starts with a lone '- 설정/해지현황' cell).
-        - "has_header": the first remaining row is the header -- skipped, and
-          used as the field names when "fields" is not given.
-        - "fields": explicit column names, in order. Needed whenever the
-          header is prose rather than identifiers, which is the usual case
-          for a table meant to be read by a person: '수량(주)' cannot be a
-          column name, and translating it in code would put per-site
-          knowledge where this engine keeps none.
-        """
-        skip = int(spec.get("skip_rows", 0))
-        if skip:
-            rows = rows[skip:]
-        has_header = spec.get("has_header", False)
-        fields = spec.get("fields")
-        if has_header and rows:
-            header, rows = rows[0], rows[1:]
-            fields = fields or [h.strip() for h in header]
-
-        if not fields:
-            raise ValueError("response_parse_json needs 'fields' (or 'has_header': true)")
-
-        records = []
-        for row in rows:
-            values = [v.strip() for v in row]
-            records.append({name: (v or None) for name, v in zip(fields, values)})
-        return records
+        return rows_to_records(rows, spec)
 
     def _parse_html_table(self, response: httpx.Response) -> list[dict[str, Any]]:
         """response_type='html_table': a table in an HTML document.
@@ -810,7 +730,7 @@ class DynamicApiScraper:
         table = tables[int(spec.get("table_index", 0))]
         rows = [[cell.get_text(" ", strip=True) for cell in tr.find_all(["td", "th"])]
                 for tr in table.find_all("tr")]
-        return self._rows_to_records([r for r in rows if any(r)], spec)
+        return rows_to_records([r for r in rows if any(r)], spec)
 
     def _parse_spreadsheet(self, response: httpx.Response) -> list[dict[str, Any]]:
         """response_type='xlsx'/'xls': a real spreadsheet file.
@@ -842,7 +762,7 @@ class DynamicApiScraper:
             sheet = book.sheet_by_index(sheet_no)
             cells = [["" if c is None else str(c) for c in sheet.row_values(i)]
                      for i in range(sheet.nrows)]
-        return self._rows_to_records([r for r in cells if any(str(x).strip() for x in r)], spec)
+        return rows_to_records([r for r in cells if any(str(x).strip() for x in r)], spec)
 
     def _apply_merge_fields(self, data: Any, per_selector: dict[str, list[dict[str, Any]]]) -> None:
         """Mutates ``per_selector`` in place: for each ``{selector: {source_dot_path:
@@ -877,79 +797,40 @@ class DynamicApiScraper:
                 persist_env_var(env_var, str(value))
                 logger.info("{}: persisted {} to .env", self.api.api_id, env_var)
 
-    # ---- persistence ------------------------------------------------------
+    # ---- collection -------------------------------------------------------
 
-    def run_and_save(
-        self,
-        session: Session,
-        job_id: str,
-        key_params: dict[str, Any] | None = None,
-    ) -> dict[str, int]:
-        """Fetch (paginating automatically if the ApiMst row has a ``:PAGE``
-        placeholder), extract every selector, and save each to its mapped
-        table. Returns ``{table_name: record_count}`` (summed if >1 selector
-        maps to the same table).
-
-        ``key_params`` (the generating job's ``ApiMst.key_params_list``
-        subset, see :func:`app.services.execution.run_job`) is stamped onto every
-        saved row: as real columns for a dedicated/typed table (when its
-        field names match), or as ``key_params_json`` for a generic table --
-        so results are filterable by e.g. instrument/date without parsing
-        job_id or joining back to ApiJob.params_json."""
-        mapping = self.api.output_tables_json or {}
-        key_params = key_params or {}
-
+    def _collect_once(self, session=None) -> dict[str, list[dict[str, Any]]]:
+        """Fetch (paginating automatically if the ApiMst row says there is
+        more to ask for) and extract every selector. Saving what comes back,
+        and retrying this through a fresh login when the site logged us out,
+        are app.scrapers.base.BaseScraper's job."""
+        if (self.api.response_type or "").lower() == "session":
+            return self._log_in()
         if self.is_paginated():
-            per_selector = self.fetch_all_pages()
-        else:
-            response = self.fetch()
-            per_selector = self.parse(response)
+            return self.fetch_all_pages()
+        return self.parse(self.fetch())
 
-        counts: dict[str, int] = {}
-        for selector, table_name in mapping.items():
-            model_cls = TABLE_REGISTRY.get(table_name)
-            if model_cls is None:
-                raise ValueError(f"{self.api.api_id}: unknown target table '{table_name}'")
+    def _log_in(self) -> dict[str, list[dict[str, Any]]]:
+        """response_type='session': make the request and keep only the cookies.
 
-            records = per_selector.get(selector, [])
-            is_generic = "result_json" in model_cls.model_fields
-            typed_rows: list[dict[str, Any]] = []
-            for record in records:
-                if is_generic:
-                    obj = model_cls(
-                        api_id=self.api.api_id,
-                        job_id=job_id,
-                        key_params_json=key_params or None,
-                        result_json=record,
-                    )
-                else:
-                    # model_validate (not plain __init__) so string values from
-                    # JSON/XML actually get coerced to the field's real type
-                    # (e.g. "19.20" -> 19.2 float) -- SQLModel's __init__
-                    # doesn't validate, it just stores what it's given as-is.
-                    # key_params first, record last, so a genuine field-name
-                    # clash lets the API's own data win over the job param.
-                    obj = model_cls.model_validate(
-                        {"api_id": self.api.api_id, "job_id": job_id, **key_params, **record}
-                    )
-                    typed_rows.append(obj.model_dump(exclude={"id", "updated_at"}))
-                session.add(obj)
-            counts[table_name] = counts.get(table_name, 0) + len(records)
+        The cookies land in the process-wide httpx.Client (see
+        get_http_client), which is what every later row in the same run then
+        sends -- the HTTP counterpart to a browser row's storage-state file.
+        Being process-wide is also the limit: a login row only helps rows that
+        run in the *same* process, which is why run_cycle puts session rows
+        first (see app.services.execution.run_cycle) and why an expiry
+        mid-batch is handled by logging in again rather than by ordering.
 
-            # Buffered only for dedicated (non-generic) tables -- api_rst's
-            # free-form result_json has no fixed schema to write as columns.
-            # This is a local trail of what the run produced; the bucket is
-            # fed from the tables themselves (scripts/sql/sp_export_parquet).
-            if typed_rows:
-                append_csv_rows(table_name, job_id, typed_rows)
-
-        # Deliberately no commit here -- the caller owns the transaction (see
-        # app.services.execution.run_job, which folds these rows, the ApiJob
-        # update and the ApiJobLog entry into a single commit). Each commit is
-        # a full round-trip to Oracle ADB, measured at ~32ms; committing here
-        # as well made three per job, which at hundreds of jobs per cycle cost
-        # more than the HTTP requests themselves (~24ms each).
-
-        for table_name, count in counts.items():
-            logger.info("{}: saved {} record(s) into {}", self.api.api_id, count, table_name)
-        return counts
+        A login that fails is worth catching here rather than three rows
+        later: ``response_parse_json['expect']`` is a string the reply must
+        contain (e.g. KRX answers a good login with ``"_error_code":"CD001"``
+        and a bad one with a different code, both as HTTP 200), so a wrong
+        password fails the login job instead of quietly failing every job
+        after it."""
+        response = self.fetch()
+        expect = (self.api.response_parse_json or {}).get("expect")
+        if expect and expect not in response.text:
+            raise ValueError(f"{self.api.api_id}: login reply does not contain "
+                             f"{expect!r} -- {response.text[:200]}")
+        logger.info("{}: logged in, session held by the shared client", self.api.api_id)
+        return {}

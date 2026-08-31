@@ -55,13 +55,14 @@ api_job_log       실행 이력                SUCCESS / FAILED
 | `api_id` | ● | 기본키. 대문자·밑줄 관례 (`KIS_FUTOPT_CHART`) |
 | `api_name` | ● | 사람이 읽는 이름 |
 | `api_group` | ● | 묶음 라벨 (`KIS`, `DART`, `KRX`) |
-| `request_type` | ● | `GET` / `POST` |
+| `request_type` | ● | `GET` / `POST` / `BROWSER`(브라우저로 조작, 2.11) |
 | `api_url` | ● | `:KEY`(잡 파라미터)와 `${ENV}`(비밀값) 치환 |
 | `header_json` | ● | 헤더. 값에도 두 치환이 적용된다 |
 | `payload_type` | | `NULL` / `json` / `data` / `content` |
 | `payload_json` | | `payload_type`이 `json`·`data`일 때 본문 |
 | `payload_xml` | | `payload_type`이 `content`일 때 본문 |
-| `response_type` | | `NULL`(자동) / `zip_delimited` / `delimited` / `binary` |
+| `behavior_json` | | `BROWSER` 행의 조작 시나리오 (2.11) |
+| `response_type` | | `NULL`(자동) / `zip_delimited` / `delimited` / `binary` / `html_table` / `xlsx` / `xls`, `BROWSER` 행은 `dom` / `xhr` / `binary`, 로그인 행은 `session`(2.13) |
 | `response_parse_json` | | 위 세 타입의 해석 규칙 |
 | `output_tables_json` | ● | `{selector: 테이블명}` |
 | `merge_fields_json` | | 응답의 다른 가지에서 값 끌어오기 |
@@ -125,6 +126,10 @@ payload_type = 'content'  payload_json = NULL,     payload_xml = '<...>'   원�
 | `zip_delimited` | ZIP 안에 구분자 텍스트 파일 하나 (KIS `.mst.zip` 마스터) |
 | `delimited` | 응답 본문 자체가 구분자 텍스트 (`.csv` 다운로드) |
 | `binary` | 응답이 문서 그 자체 (PDF·ZIP). 통째로 디스크에 저장하고 메타데이터만 행으로 남긴다 |
+
+`session` 은 전송 방식과 무관하게 "로그인만 하고 세션만 남긴다"는 뜻이다 (2.13).
+
+`BROWSER` 행은 같은 칸을 자기 값으로 읽는다 — 조작이 **무엇을 남겼는가**다. `dom`(기본) / `xhr` / `binary` / `session`, 2.11 참고.
 
 **`zip_delimited` / `delimited`의 `response_parse_json`:**
 
@@ -284,6 +289,229 @@ SELECT COUNT(*), COUNT(kospi200_idx) FROM kis_futopt_price;
 각 잡이 자기 프로세스로 돌고 `app.auth_config`가 임포트 때 `.env`를 다시 읽으므로, **갱신 잡을 먼저 스케줄하기만 하면** 이후 잡들의 `${KIS_ACCESS_TOKEN}`이 새 값을 집는다. 따로 배선할 것이 없다.
 
 이 일만 하는 잡은 `output_tables_json`을 비워도 된다.
+
+---
+
+### 2.11 `behavior_json` — 브라우저로 조작해서 얻는 소스
+
+입력하고 눌러야 답을 주는 화면은 요청을 만들 수 없다. `request_type`을 `BROWSER`로 두면 그 행은 httpx 대신 **실제 브라우저(Playwright/chromium)** 로 돌아간다. 나머지는 전부 같다 — 같은 `api_mst` 행, 같은 `:KEY`/`${VAR}` 치환, 같은 `output_tables_json`, 같은 잡·빌더·결과 테이블. **잡 계층은 브라우저인지 아닌지 모른다.**
+
+`api_url`이 시작 페이지다. 먼저 열고 나서 단계를 순서대로 실행한다.
+
+```json
+[
+  {"action": "fill",     "selector": "#isuCd", "value": ":ISIN"},
+  {"action": "select",   "selector": "#trdDd", "value": ":BASDD"},
+  {"action": "click",    "selector": "#searchBtn"},
+  {"action": "wait_for", "selector": "#grid tbody tr"}
+]
+```
+
+| action | 인자 |
+|---|---|
+| `goto` | `url`(생략하면 `api_url`), `wait_until` |
+| `fill` | `selector`, `value` |
+| `select` | `selector`, `value` |
+| `check` | `selector`, `checked`(기본 true) |
+| `click` | `selector` |
+| `press` | `key`, `selector`(없으면 키보드로) |
+| `wait_for` | `selector`, `state`, `timeout`(초) |
+| `wait_load` | `state`(기본 `networkidle`) |
+| `sleep` | `seconds` |
+| `frame` | `selector`·`name`·`url` 중 하나, 또는 `reset: true` |
+| `eval` | `script` |
+| `download` | `selector` — 눌러서 나온 파일을 받는다 |
+
+**값에도 두 치환이 다 적용된다.** 검색창에 넣는 값이 잡 파라미터(`:ISIN`)일 수 있고, 로그인 아이디는 `${KRX_USER_ID}`로 쓴다 — **비밀값은 여기서도 DB에 넣지 않는다.**
+
+**`response_type` — 조작이 무엇을 남겼는가**
+
+| 값 | 언제 | `response_parse_json` |
+|---|---|---|
+| `dom`(기본) | 화면에 표로 그려졌다 | `{"rows": "...", "fields": [...]}` |
+| `xhr` | 화면이 내부적으로 JSON을 불렀다 | `{"url": "getJsonData.cmd"}` |
+| `binary` | 눌렀더니 파일이 떨어졌다 | `binary`와 동일 (`group`/`name`) |
+| `session` | 로그인만 하고 쿠키만 남긴다 | `{"state": "..."}` |
+
+**`xhr`을 먼저 시도할 것.** 화면 개편에 CSS 경로는 다 깨지지만 JSON 본문은 남는다. 잡히면 selector 해석은 HTTP 행과 **완전히 같은 코드**를 탄다 (`{"output": "..."}` 그대로).
+
+**`dom` 추출 규칙** — 화면이 하나면 최상위에, 여러 갈래면 selector 이름별로 둔다. `rows`가 있는 dict가 규칙 블록이라, 옆에 놓인 예약 키(`state`·`login`·`logged_out`·`url`)와 헷갈릴 일이 없다.
+
+```json
+{"rows": "#grid tbody tr", "fields": ["isin", "name", "amount"]}
+```
+
+- `fields`가 **리스트**면 행의 칸(`td, th`)을 순서대로 읽는다 — 구분자 파일·엑셀과 같은 처리(`skip_rows`·`has_header`도 그대로 쓴다)
+- `fields`가 **dict**면 필드마다 css를 준다: `{"url": {"css": "td a", "attr": "href"}}`
+
+**이어받기** — `pagination_json`에 세 모드가 있다. 멈추는 조건은 HTTP 쪽과 같다(빈 페이지 / 직전과 동일 / 버튼 없음 / `max_pages`).
+
+```json
+{"mode": "click", "selector": "a.next", "wait_for": "#grid tbody tr"}
+{"mode": "scroll"}
+{"mode": "page", "param": "PAGE", "start": 1, "max_pages": 60}
+```
+
+`page`는 HTTP 쪽의 그 모드와 같은 뜻(이쪽이 세는 페이지 번호)이고, **페이저가 링크가 아니라 스크립트인 화면**을 위해 있다. `:PAGE`를 `behavior_json` 안에 쓰면(보통 사이트 자신의 페이징 함수를 부르는 `eval` 단계) 페이지마다 시나리오를 처음부터 다시 실행한다. 클릭보다 느리지만, 페이저 마크업이 아예 안 오는 화면에서는 이것만 통한다 — 2.12 참고.
+
+**로그인** — 로그인은 별도 행이다. `response_type: "session"`으로 만들고, 끝나면 쿠키가 `data/state/<호스트>.json`에 저장된다. 데이터 행은 같은 호스트면 자동으로 그 파일을 물고 시작한다.
+
+```json
+// KRX_LOGIN (response_type: "session")
+[{"action": "fill", "selector": "#id", "value": "${KRX_USER_ID}"},
+ {"action": "fill", "selector": "#pw", "value": "${KRX_USER_PW}"},
+ {"action": "click", "selector": "#loginBtn"},
+ {"action": "wait_for", "selector": "#logoutBtn"}]
+
+// 데이터 행의 response_parse_json
+{"login": "KRX_LOGIN", "logged_out": "#loginForm", "rows": "...", "fields": [...]}
+```
+
+**만료는 상태코드로 오지 않는다** (KRX는 400 + 본문 `LOGOUT`). 그래서 `logged_out`에 "로그아웃됐을 때만 보이는 css"를 직접 적어준다. 그게 보이거나 대기가 시간초과되면 **로그인 행을 다시 실행하고 한 번만 재시도한다** — 30분짜리 세션이 한 시간짜리 배치를 못 버티기 때문이다. 이 고리는 브라우저 행에만 있고, HTTP 행의 `fetch()`는 건드리지 않는다.
+
+**쿠키는 프로세스를 못 넘는다.** KIS 토큰처럼 `.env`에 남는 게 아니라 파일이라, 로그인 행과 데이터 행이 **같은 배치 안에** 있어야 한다 — 로그인 행을 같은 `execution_cycle`의 앞선 빌더로 두거나, 데이터 행에 `login`을 적어 알아서 로그인하게 한다(후자가 낫다).
+
+**설치와 배포** — 브라우저 행은 인스턴스에서만 돈다.
+
+```bash
+pip install -e ".[browser]"
+```
+
+```bash
+playwright install --with-deps chromium
+```
+
+FastAPI Cloud 배포에는 chromium이 없다. 엔진이 브라우저 모듈을 **행이 요구할 때만** 임포트하므로 API는 정상 기동하지만, 거기서 `POST /jobs/run/`으로 브라우저 잡을 돌리면 설치 안내가 담긴 `ImportError`로 실패한다. **브라우저 잡의 시험 실행은 인스턴스에서 한다.**
+
+`.env`로 조절할 것: `BROWSER_HEADLESS=0`(창을 띄워 눈으로 보기), `BROWSER_TIMEOUT_MS`(기본 15000), `BROWSER_STATE_DIR`(기본 `data/state`), `BROWSER_LOCALE`(기본 `ko-KR`), `BROWSER_TIMEZONE`(기본 `Asia/Seoul`).
+
+**`BROWSER_LOCALE` 를 비우지 말 것.** headless chromium 은 기본적으로 `Accept-Language` 를 **안 보낸다**. 언어를 밝히지 않은 요청에 서버가 다른 답을 주는 경우가 실제로 있다 — KRX 표준코드 조회는 이때 **깨진 페이지**(결과 5건 중 1건만, 나머지 문서가 그 행의 칸 안에 중첩된 채)를 준다. 값이 무엇이든(`en-US` 도 된다) 있기만 하면 정상이다. 엔진이 컨텍스트에 locale 을 주는 이유가 이것이고, 개별 행은 `header_json` 에 `Accept-Language` 를 직접 넣어 덮을 수 있다.
+
+---
+
+### 2.12 예제 — KRX 표준코드 조회에서 ISIN 뽑기
+
+`https://isin.krx.co.kr/srch/srch.do?method=srchList` 는 입력하고 눌러야 답을 주는 전형적인 화면이다. 표준코드 입력란에 `KR2`를 넣고 **조회**를 누른 뒤, 결과 표(페이지당 5건)의 ISIN을 54페이지까지 훑는 행 두 개.
+
+```sql
+INSERT INTO api_mst (api_id, api_name, api_group, request_type, api_url, header_json,
+                     behavior_json, response_type, response_parse_json,
+                     pagination_json, output_tables_json, key_params_list, description)
+VALUES ('KRX_ISIN_SRCH', 'KRX 표준코드 조회', 'KRX', 'BROWSER',
+        'https://isin.krx.co.kr/srch/srch.do?method=srchList', '{}',
+        '[{"action": "fill",      "selector": "#isur_nm1", "value": ":CODE"},
+          {"action": "eval",      "script": "$(''form[name=JLDINF20000]'').append(\"<input type=''hidden'' name=''pageIndex'' value='':PAGE''>\"); fn_search(2);"},
+          {"action": "wait_load", "state": "networkidle"}]',
+        'dom',
+        '{"rows": "#tbody tr[name=dataTr]:has(a[href*=''onPopupCode''])",
+          "fields": {"isin":      "a[href*=''onPopupCode''] strong",
+                     "prod_type": "td:nth-child(1)",
+                     "kor_name":  "td:nth-child(3)",
+                     "issuer":    "td:nth-child(4)",
+                     "issue_dd":  "td:nth-child(5)",
+                     "grant_dd":  "td:nth-child(9)"}}',
+        '{"mode": "page", "param": "PAGE", "start": 1, "max_pages": 60}',
+        '{"output": "api_rst"}', '["CODE"]', '표준코드 앞자리로 조회');
+
+INSERT INTO api_job_builder (build_id, api_id, macro_params_json, is_active,
+                             save_mode, execution_cycle, description)
+VALUES ('KRX_ISIN_SRCH_KR2', 'KRX_ISIN_SRCH', '{"CODE": "KR2"}', 0,
+        'overwrite', 'test', 'KR2 로 시작하는 표준코드');
+```
+
+```bash
+python -m app.cli generate-builder KRX_ISIN_SRCH_KR2
+```
+
+```bash
+python -m app.cli run-cycle test
+```
+
+`test` 주기에는 타이머가 없다 (5.2 참고) -- 손으로 돌려보는 잡들이 모여 있는 자리다. 확인이 끝나면 빌더의 `execution_cycle` 을 `daily_batch2` 같은 실제 주기로 바꾸고 `is_active = 1` 로 올린다. **주기와 `save_mode` 는 잡 생성 시점에 복사되므로**, 이미 만들어진 잡은 다시 만들거나 직접 고쳐야 한다 (9장 참고).
+
+읽는 순서대로 짚으면:
+
+- **`#isur_nm1`** 이 표준코드/종목명 입력란이다. `:CODE` 라 빌더의 `macro_params_json` 이 값을 정한다 — `{"db": "SELECT ..."}` 로 바꾸면 코드 목록만큼 잡이 펼쳐진다
+- **페이지 번호는 `pageIndex` 다.** 화면의 페이지 버튼이 하는 일이 그대로 `href` 에 적혀 있다 — `document.JLDINF20000.pageIndex.value=2; fn_search(2)`. 그래서 `eval` 로 같은 일을 한다. `fn_search` 의 인자가 **`1` 이 아니어야 한다**는 것이 유일한 함정이다: `fn_search('1')` 은 `pageIndex` 를 1로 되돌리므로, 조회 버튼을 그냥 클릭하면 영원히 1페이지다
+- **`wait_load`** 로 기다린다. 조회가 페이지 이동(POST)이라 이동이 끝나는 것이 곧 결과다. 결과 행을 `wait_for` 로 기다리게 하면 **검색 결과가 없을 때 시간초과로 잡이 실패한다**
+- **`:has(a[href*='onPopupCode'])`** 는 "표준코드 링크가 있는 행"만 남긴다 — 결과가 없을 때 나오는 `검색 결과가 없습니다` 행이 걸러진다
+- `{"mode": "page"}` 로 54페이지를 훑는다. 마지막 페이지를 넘어가면 서버가 같은 답을 되풀이하는데, 엔진이 **직전과 동일한 응답**을 정지 신호로 쓰므로 `max_pages` 는 안전망으로만 둔다
+
+실행 결과 (2026-09-01 확인) — 페이지당 5건, 54페이지를 돌아 270건 전부 고유:
+
+```json
+[{"isin": "KR2001024G92", "prod_type": "채권", "kor_name": "서울도시철도공채증권 26-09",
+  "issuer": "서울특별시", "issue_dd": "2026-09-30", "grant_dd": "2026-08-31"},
+ {"isin": "KR2002022G92", "prod_type": "채권", "kor_name": "강원지역개발채권 26-09",
+  "issuer": "강원도", "issue_dd": "2026-09-30", "grant_dd": "2026-08-31"},
+ ...]
+```
+
+**하루를 잡아먹은 함정을 적어둔다.** 이 화면은 `Accept-Language` 헤더가 **없는** 요청에 깨진 페이지를 준다 — 결과가 5건이 아니라 1건만 오고, 문서의 나머지가 그 행의 `<td>` 안에 통째로 중첩된다(페이지 버튼도 그때는 사라진다). headless chromium 이 기본적으로 이 헤더를 안 보내기 때문에, **선택자는 멀쩡한데 데이터가 1/5만 나오는** 모습으로 나타난다. 엔진이 컨텍스트에 `locale` 을 주면서(2.11) 해결됐다. 브라우저 행이 화면과 다르게 동작하면 **선택자를 의심하기 전에 요청 헤더부터 비교**할 것 — 헤드풀(`BROWSER_HEADLESS=0`)로 한 번 띄워 보면 바로 갈린다.
+
+---
+
+### 2.13 로그인이 필요한 소스 — `session` 행
+
+로그인은 **별도의 `api_mst` 행**이다. 결과를 버리고 세션만 남기는 행이라 `response_type = 'session'` 을 쓰고, 이 행만 `output_tables_json` 을 비워도 된다. HTTP 행이든 브라우저 행이든 같다.
+
+| | HTTP 행 | 브라우저 행 |
+|---|---|---|
+| 세션이 사는 곳 | 프로세스 공유 `httpx.Client` 의 쿠키 항아리 | `data/state/<키>.json` (storage state) |
+| 유효 범위 | **같은 프로세스 안에서만** | 파일이라 프로세스를 넘는다 |
+| 로그아웃 판정 | 응답 본문에 들어 있는 문자열 | 화면에 있는 css 선택자 |
+
+**로그인 행** (KRX 데이터마켓, 실제로 도는 설정):
+
+```json
+// request_type: POST, payload_type: data
+// api_url: https://data.krx.co.kr/contents/MDC/COMS/client/MDCCOMS001D1.cmd
+{"mbrNm": "", "telNo": "", "di": "", "certType": "",
+ "mbrId": "${KRX_DATA_ID}", "pw": "${KRX_DATA_PW}", "skipDup": "Y"}
+
+// response_type: "session"
+// response_parse_json:
+{"expect": "\"_error_code\":\"CD001\""}
+```
+
+- **비밀값은 `${VAR}`** 로 쓴다. DB에 계정이 들어가지 않는다
+- **`expect`** 는 응답에 반드시 들어 있어야 하는 문자열이다. 없으면 로그인 행이 실패한다 — 이게 없으면 비밀번호가 틀려도 로그인 잡은 성공으로 끝나고 **뒤따르는 잡 전부가 이유 없이 실패한다** (KRX는 성공·실패 모두 HTTP 200이다)
+
+**데이터 행**은 자기 로그인 행을 이름으로 가리킨다:
+
+```json
+// response_parse_json
+{"logged_out": "LOGOUT", "login": "KRX_DATA_LOGIN"}
+```
+
+- **`logged_out`** — "로그아웃됐다"는 신호. KRX는 **HTTP 400 + 본문 `LOGOUT`** 으로 답하므로 상태코드로는 못 읽는다. 그래서 행이 직접 적는다
+- **`login`** — 다시 로그인할 때 실행할 행의 `api_id`
+
+### 만료는 순서가 아니라 재로그인으로 푼다
+
+세션은 짧고(KRX 30분) 배치는 길다. 그래서 만료는 배치 **한가운데**서 일어나고, 로그인을 맨 앞에 세우는 것으로는 못 막는다. 실제 장치는 이것이다 (`app.scrapers.base.BaseScraper.collect`):
+
+```
+잡 실행 → logged_out 감지 → login 행 실행 → 같은 잡 1회 재시도
+```
+
+**재시도는 한 번뿐이다.** 비밀번호가 틀렸을 때 로그인 루프로 계정을 잠그지 않기 위해서다. `login` 이 안 적힌 행은 그냥 실패한다.
+
+`run_cycle` 은 그 위에서 **`session` 행의 잡을 먼저 실행한다**(`_login_rows_first`). 새 컬럼은 없다 — 행의 `response_type` 이 이미 "이건 다른 행보다 먼저"라고 말하고 있기 때문이다. 이 정렬이 아끼는 건 "첫 잡의 불필요한 실패 한 번"이고, 만료 자체는 위의 재로그인이 처리한다.
+
+**HTTP 로그인은 같은 프로세스 안에서만 유효하다.** 쿠키가 `.env` 에 남는 KIS 토큰과 달리 프로세스를 못 넘으므로, 로그인 행과 데이터 행은 **같은 `execution_cycle`** 에 있어야 한다. 다른 사이클로 빼면 타이머마다 프로세스가 새로 뜨면서 쿠키가 사라진다.
+
+### 어느 쪽으로 붙일 것인가
+
+로그인 화면이 브라우저를 요구하더라도, **데이터는 HTTP 행으로 받을 수 있는지 먼저 확인할 것.** 브라우저 행의 `response_type: "xhr"` 로 한 번 잡아 보면 화면이 실제로 부르는 요청과 파라미터가 그대로 보인다. KRX ETF 구성종목이 그 예다.
+
+| | 브라우저 행 | HTTP 행 |
+|---|---|---|
+| ETF 1종목 | 약 10초 | **0.5초** (측정치) |
+| 900종목 | 2시간 30분 | **8분** |
+| 필요한 것 | chromium | 없음 |
+
+브라우저가 유일한 답인 경우는 남는다 — 로그인이 캡차나 JS 암호화를 요구하거나, 파라미터를 끝내 알아낼 수 없거나, 응답이 화면에서만 조립되는 경우다.
 
 ---
 
@@ -640,9 +868,10 @@ X-Total-Count 헤더          필터가 걸러낸 수
 app/api/**                              FastAPI Cloud 만
 app/cli.py, scripts/**                  인스턴스 만
 app/db/**, app/services/**, app/scrapers/**   양쪽
+playwright + chromium                   인스턴스 만 (2.11)
 ```
 
-인스턴스는 배치만 돌리고 API 서버를 띄우지 않는다.
+인스턴스는 배치만 돌리고 API 서버를 띄우지 않는다. 반대로 브라우저(`BROWSER` 행)는 인스턴스에서만 돈다 — API 배포에는 chromium이 없다.
 
 ---
 

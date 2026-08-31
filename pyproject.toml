@@ -30,6 +30,15 @@ dependencies = [
     "requests>=2.32.0",
 ]
 
+[project.optional-dependencies]
+# request_type='BROWSER' 행만 쓴다. 브라우저를 실제로 띄우는 배포(Oracle
+# 인스턴스)에서만 설치하고, API 배포는 빼둔다 -- 잡을 만들고 검증하는 쪽은
+# 브라우저 잡을 실행하지 않으므로 chromium 150MB 를 이미지에 넣을 이유가
+# 없다. 설치 후 브라우저 바이너리도 받아야 한다:
+#   pip install -e ".[browser]"
+#   playwright install --with-deps chromium
+browser = ["playwright>=1.48"]
+
 [tool.setuptools.packages.find]
 include = ["app*"]
 

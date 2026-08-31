@@ -9,6 +9,18 @@ pip install -e .
 cp .env.example .env  # 값 채우기
 ```
 
+Sources scraped by driving a browser (`api_mst.request_type = 'BROWSER'`, see
+`docs/TECHNICAL.md` 2.11) need one more step, on the instance that runs the
+batch -- the API deployment never runs them:
+
+```bash
+pip install -e ".[browser]"
+```
+
+```bash
+playwright install --with-deps chromium
+```
+
 ## Run -- batch (systemd timers)
 
 Independently-schedulable steps; see `scripts/` for the matching

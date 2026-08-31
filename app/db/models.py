@@ -31,6 +31,16 @@ class ApiMst(SQLModel, table=True):
             "(payload_type = 'content' AND payload_xml IS NOT NULL AND payload_json IS NULL)",
             name="ck_api_mst_payload_exclusive",
         ),
+        CheckConstraint(
+            # A browser row is driven by behavior_json (steps acted out in a
+            # real browser, see app.scrapers.browser.BrowserScraper); an HTTP
+            # row is driven by a payload. Neither shape can borrow the other's
+            # column by accident, and request_type stays the single thing that
+            # decides which engine a row goes to (see app.scrapers.make_scraper).
+            "(UPPER(request_type) = 'BROWSER' AND behavior_json IS NOT NULL AND payload_type IS NULL) OR "
+            "(UPPER(request_type) <> 'BROWSER' AND behavior_json IS NULL)",
+            name="ck_api_mst_behavior_browser",
+        ),
     )
 
     api_id: str = Field(primary_key=True, max_length=150)
@@ -43,6 +53,17 @@ class ApiMst(SQLModel, table=True):
     payload_json: Optional[dict] = Field(default=None, sa_type=JSONText)
     payload_xml: Optional[str] = Field(default=None, sa_type=XMLText)
 
+    # request_type = 'BROWSER': what to *do* in a real browser, as a list of
+    # {"action": ...} steps run in order before anything is extracted --
+    # goto/fill/select/click/press/wait_for/sleep/frame/eval/download. This is
+    # the browser's counterpart to payload_json/payload_xml (what the request
+    # *is*), which is why it sits with them and is mutually exclusive with
+    # them (see ck_api_mst_behavior_browser above). Step values go through the
+    # same ':KEY' and '${VAR}' substitution as a url or a payload, so a job
+    # parameter can be what gets typed into a search box. See
+    # app.scrapers.browser.BrowserScraper.run_behavior for the step vocabulary.
+    behavior_json: Optional[list] = Field(default=None, sa_type=JSONText)
+
     # NULL -> response is auto-detected as XML or JSON (sniffed from
     # content-type/body, see DynamicApiScraper.parse).
     # 'zip_delimited' -> response is a binary ZIP containing one delimited
@@ -52,13 +73,34 @@ class ApiMst(SQLModel, table=True):
     # 'binary' -> the response is a document (PDF, image, archive) that is
     # itself the result: it's staged to disk whole and only described in the
     # result table, with response_parse_json = {"group": "...", "name":
-    # ":KEY.pdf"} naming where it lands. See DynamicApiScraper._stage_binary
+    # ":KEY.pdf"} naming where it lands. See BaseScraper._stage_binary
     # and app.services.export.stage_file/upload_file.
     # Both share response_parse_json = {"encoding": "...", "delimiter": "...",
     # "fields": ["col1", ...] (or omit + "has_header": true to read column
     # names from the file's own first line), "inner_file": "..." (zip_delimited
     # only, optional, defaults to the zip's first entry)}.
     # See DynamicApiScraper._parse_zip_delimited / _parse_delimited.
+    #
+    # A browser row (request_type = 'BROWSER') reads this the same way, but
+    # its own set of values -- what the behavior left behind is what gets
+    # read: 'dom' (default; extract from the page with the CSS spec in
+    # response_parse_json), 'xhr' (keep the JSON the page itself fetched and
+    # extract from that with the same selectors an HTTP row would use),
+    # 'binary' (a click produced a download -- staged exactly like an HTTP
+    # one). See app.scrapers.browser.
+    #
+    # 'session' belongs to neither engine in particular: it means "log in and
+    # keep nothing but the session", and is the one response_type whose row
+    # may leave output_tables_json empty. The session lands wherever that
+    # transport keeps one -- the process-wide httpx cookie jar for an HTTP
+    # row, a storage-state file for a browser row. A row that needs such a
+    # login names it in response_parse_json: {"login": "<api_id>",
+    # "logged_out": "<the tell that we were logged out>"} -- a body substring
+    # for an HTTP row, a css selector for a browser row -- and the engine logs
+    # in again and retries once when it sees it (see
+    # app.scrapers.base.BaseScraper.collect). A login row itself may carry
+    # {"expect": "<substring>"} so a rejected login fails the login job rather
+    # than every job after it.
     response_type: Optional[str] = Field(default=None, max_length=20)
     response_parse_json: Optional[dict] = Field(default=None, sa_type=JSONText)
 
