@@ -1754,7 +1754,17 @@ class MstEtf(SQLModel, table=True):
     Insert-only for the universe and NULL-fill for the manager columns, the
     same shape as sp_mst_fuopt_sync: a value edited here by hand survives the
     next run, and an ETF whose manager list arrives later still gets its code
-    filled in."""
+    filled in.
+
+    Only four managers are filled by the sync -- KODEX, SOL, PLUS and ACE,
+    the ones that publish a product list as JSON. The other five (TIGER, KB,
+    NH, Kiwoom, TIME) publish theirs as a page whose codes live in link
+    hrefs, in data- attributes, or inside a sentence in a cell, and reading
+    those would mean teaching the engine to walk a DOM rather than read a
+    table. Their rows are filled **by hand** instead, which is affordable
+    because an ETF's code at its manager is set once at listing and does not
+    change afterwards; only newly listed instruments ever need adding.
+    ``amc IS NULL`` is the list of what is still missing."""
 
     __tablename__ = "mst_etf"
 
