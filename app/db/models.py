@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any, Optional
 
-from pydantic import model_validator
+from pydantic import ConfigDict, model_validator
 from sqlalchemy import CheckConstraint, Column, Date, DateTime, Identity, Integer, String, func
 from sqlmodel import Field, SQLModel
 
@@ -627,7 +627,17 @@ class VendorRecordBase(SQLModel):
 
     One before-hook per table rather than a dozen-plus per-field aliases and
     validators each: both quirks are properties of the *source*, so they are
-    dealt with once, where the record enters."""
+    dealt with once, where the record enters.
+
+    ``coerce_numbers_to_str`` is on for a third habit: a vendor may send a
+    date or a code as a *number* where the column wants its digits as text
+    (SOL's product list answers ``WORK_DT: 20260830`` unquoted, and ``0`` for
+    its internal rows). Pydantic v2 refuses int -> str by default, so without
+    this the whole job dies on a field whose value was never in doubt. It
+    only ever widens what a str column accepts; the numeric columns are
+    unaffected."""
+
+    model_config = ConfigDict(coerce_numbers_to_str=True)  # type: ignore[assignment]
 
     @model_validator(mode="before")
     @classmethod
@@ -1408,5 +1418,311 @@ class MstBond(SQLModel, table=True):
     first_seen: Optional[str] = Field(default=None, index=True, max_length=8)
 
     description: Optional[str] = Field(default=None, max_length=100)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+# ---------------------------------------------------------------------------
+# 운용사 ETF 구성종목(PDF)
+#
+# ETF 유니버스는 KRX 오픈API(krx_etf_daily)에 이미 있다. 운용사에서 받는 것은
+# KRX 가 로그인 없이는 주지 않는 **구성종목** 하나뿐이라, 여기 표들은 마스터가
+# 아니라 그 한 조각만 담는다.
+#
+# 운용사마다 표를 따로 두는 이유는 필드 이름이 제각각이어서다(삼성 secNm/itmNo/
+# applyQ, KRX COMPST_ISU_NM/COMPST_ISU_CD/...). 수집 단계에서 이름을 맞추려면
+# 엔진에 없는 장치가 필요하고, 소스 이름을 그대로 두고 DB 쪽에서 뷰로 합치는
+# 편이 ksd_bond_info / ksd_bond_info_api 때와 같은 이유로 낫다.
+#
+# 컬럼명은 삼성이 쓰는 이름을 소문자로 접은 것이다(`fId` -> `fid`,
+# `stkTicker` -> `stkticker`). VendorRecordBase 가 키를 소문자화하므로 그대로
+# 맞아떨어지고, 밑줄을 끼워 넣으면(`f_id`) 매칭이 깨진다.
+# ---------------------------------------------------------------------------
+
+
+class KodexEtf(VendorRecordBase, table=True):
+    """KODEX_ETF_LIST (삼성자산운용 ``/api/v1/kodex/product.do``) -- KODEX ETF
+    상품 목록.
+
+    유니버스가 아니라 **코드 대응표**로 쓴다. 구성종목 엔드포인트가 ISIN 도
+    단축코드도 아닌 삼성 자체 상품코드(``fid``, 예 ``2ETF01``)로만 조회되기
+    때문에, 그 코드를 알 방법이 이 목록뿐이다. ``stkticker``(단축코드)가
+    krx_etf_daily.isu_cd 와 같은 값이라 그쪽으로 이어진다. TIGER 처럼 ISIN 을
+    그대로 받는 운용사에는 이런 표가 필요 없다.
+
+    응답이 봉투 없는 최상위 배열이라 셀렉터가 ``"."`` 이다
+    (app.scrapers.dynamic._extract_json_records 참고).
+
+    38개 필드 중 화면용은 뺐다 -- ``bgColor`` ``iconNm`` ``iconPath``
+    ``visualPath`` ``smallIcon*`` ``mapOrder`` ``likeYn`` ``viewCnt``, 그리고
+    스칼라 컬럼에 담기지 않는 ``chart``(배열). 정의하지 않은 키는 pydantic 이
+    조용히 버리므로 따로 걸러낼 필요가 없다.
+
+    ``totalCnt`` 도 뺐다 -- 행마다 같은 값(241)이 반복되는 페이징 부산물이지
+    상품의 속성이 아니다.
+
+    매번 통째로 갈아끼운다(``save_mode='overwrite'``). 상장/상폐 이력은
+    krx_etf_daily 가 날마다 남기므로 여기서 또 쌓을 이유가 없다."""
+
+    __tablename__ = "kodex_etf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    fid: str = Field(index=True, max_length=20)                        # 삼성 상품코드 (2ETF01)
+    stkticker: Optional[str] = Field(default=None, index=True, max_length=20)  # 단축코드 (069500)
+    fnm: Optional[str] = Field(default=None, max_length=200)           # 상품명
+    listd: Optional[str] = Field(default=None, max_length=8)           # 상장일
+    gijunymd: Optional[str] = Field(default=None, index=True, max_length=8)  # 기준일
+
+    typenm: Optional[str] = Field(default=None, max_length=100)        # 유형 (시장지수 등)
+    typelnm: Optional[str] = Field(default=None, max_length=100)       # 대분류 (국내주식 등)
+    dcyn: Optional[str] = Field(default=None, max_length=20)           # 개인/기관 구분
+    irpyn: Optional[str] = Field(default=None, max_length=20)          # 퇴직연금 편입 가능
+    monthlyyn: Optional[str] = Field(default=None, max_length=20)      # 월배당 여부
+
+    nav: Optional[float] = Field(default=None)                         # 순자산가치
+    curp: Optional[float] = Field(default=None)                        # 현재가
+    basp: Optional[float] = Field(default=None)                        # 기준가
+    basrp: Optional[float] = Field(default=None)                       # 기준가 대비
+    basrprt: Optional[float] = Field(default=None)                     # 기준가 등락률
+    risep: Optional[float] = Field(default=None)                       # 전일대비
+    riseprt: Optional[float] = Field(default=None)                     # 등락률
+
+    yieldweek: Optional[float] = Field(default=None)                   # 1주 수익률
+    yieldmon1: Optional[float] = Field(default=None)                   # 1개월
+    yieldmon3: Optional[float] = Field(default=None)                   # 3개월
+    yieldmon6: Optional[float] = Field(default=None)                   # 6개월
+    yieldyear: Optional[float] = Field(default=None)                   # 연초 이후
+    yieldyear1: Optional[float] = Field(default=None)                  # 1년
+    yieldyear3: Optional[float] = Field(default=None)                  # 3년
+    yieldyear5: Optional[float] = Field(default=None)                  # 5년
+    yieldlist: Optional[float] = Field(default=None)                   # 상장 이후
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KodexEtfPdf(VendorRecordBase, table=True):
+    """KODEX_ETF_PDF (삼성자산운용 ``/api/v1/kodex/product-pdf/{fId}.do``) --
+    KODEX ETF 구성종목. ETF 하나·하루에 구성종목 한 행씩.
+
+    ``itmno`` 가 구성종목 코드인데 주식이면 단축코드(``005930``), 현금성이면
+    별도 코드(``KRD010010001`` 원화예금)가 와서 길이가 다르다. 그 현금 행은
+    ``ratio``/``curp`` 가 비어 있는데, 빈 문자열을 NULL 로 접는 것이
+    VendorRecordBase 를 쓰는 이유다.
+
+    ``fid`` 와 ``gijunymd`` 는 응답 행에 없고 잡 파라미터에서 찍는다
+    (ApiMst.key_params_list). 어느 ETF 의 언제치인지는 이 두 컬럼으로만 알 수
+    있다. ``gijunymd`` 가 점 찍힌 ``2026.08.28`` 인 것은 조회 파라미터 형식이
+    그렇기 때문이고, 잡 파라미터를 그대로 남긴다는 원칙을 따랐다 --
+    krx_etf_daily.bas_dd(``20260828``) 와 조인할 때는 한쪽을 변환해야 한다.
+
+    ETF 의 ISIN 은 여기 없다. ``fid`` -> kodex_etf.stkticker ->
+    krx_etf_daily.isu_cd 로 이어진다."""
+
+    __tablename__ = "kodex_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    fid: str = Field(index=True, max_length=20)                        # 삼성 상품코드 (잡 파라미터에서)
+    gijunymd: Optional[str] = Field(default=None, index=True, max_length=10)  # 기준일 (2026.08.28)
+
+    # 12자로 잡았다가 해외 편입분에서 터졌다 -- 국내는 단축코드 6자,
+    # 현금성은 KRD010010001(12자)인데 해외는 블룸버그 티커가 그대로 온다
+    # ('939 HK Equity', 'TATACONS IN Equity' 18자). 표본 648행의 최대가 18이라
+    # 여유를 둔다.
+    itmno: Optional[str] = Field(default=None, index=True, max_length=50)  # 구성종목 코드
+    secnm: Optional[str] = Field(default=None, max_length=200)         # 구성종목명
+    applyq: Optional[float] = Field(default=None)                      # 수량 (CU 1좌당)
+    evala: Optional[float] = Field(default=None)                       # 평가금액
+    ratio: Optional[float] = Field(default=None)                       # 비중(%)
+    curp: Optional[float] = Field(default=None)                        # 현재가
+    risep: Optional[float] = Field(default=None)                       # 전일대비
+    basrprt: Optional[float] = Field(default=None)                     # 기준가 등락률
+    pdftype: Optional[str] = Field(default=None, max_length=20)        # 구분
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class SolEtf(VendorRecordBase, table=True):
+    """SOL_ETF_LIST (신한자산운용 ``/api/common/searchByEtfNameOrFilter``) --
+    SOL ETF 상품 목록.
+
+    kodex_etf 와 같은 역할이다: 구성종목 조회가 신한 내부 펀드코드
+    (``fund_cd``, 예 ``211096``)로만 되기 때문에 그 코드를 얻으려고 받는다.
+    다른 점은 ``etf_cd6`` 가 **KRX 단축코드 그대로**라는 것 -- ``0092B0`` 이
+    krx_etf_daily.isu_cd 에 그대로 있다. 그래서 KRX 유니버스와의 연결에 별도
+    변환이 필요 없다.
+
+    ``viewCount`` 를 크게 주면 한 번에 전량이 온다(86행). 응답에 ``etf_cd6``
+    가 빈 행이 두어 개 섞이는데(내부용으로 보인다), 빈 문자열은
+    VendorRecordBase 가 NULL 로 접으므로 구성종목 빌더가 ``IS NOT NULL`` 로
+    걸러낸다.
+
+    53개 필드 중 화면/태그용 배열(``pensionNameList`` 등)과 벤치마크 대비
+    지표(``BM_*``)는 뺐다 -- 이 표의 쓸모가 코드 대응이라 수익률 몇 개면
+    충분하다."""
+
+    __tablename__ = "sol_etf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    fund_cd: str = Field(index=True, max_length=20)                     # 신한 펀드코드 (211096)
+    etf_cd6: Optional[str] = Field(default=None, index=True, max_length=20)  # KRX 단축코드 (0092B0)
+    name: Optional[str] = Field(default=None, max_length=200)           # 상품명
+    engname: Optional[str] = Field(default=None, max_length=200)        # 영문명
+    work_dt: Optional[str] = Field(default=None, index=True, max_length=8)   # 기준일
+    list_dt: Optional[str] = Field(default=None, max_length=8)          # 상장일
+
+    tot_asset: Optional[float] = Field(default=None)                    # 순자산총액
+    fund_pri: Optional[float] = Field(default=None)                     # 기준가
+    total_fee: Optional[float] = Field(default=None)                    # 총보수
+
+    asset_tag: Optional[str] = Field(default=None, max_length=50)       # 자산 분류
+    theme_tag: Optional[str] = Field(default=None, max_length=50)       # 테마 분류
+    pension_tag: Optional[str] = Field(default=None, max_length=50)     # 연금 분류
+
+    d_rtn: Optional[float] = Field(default=None)                        # 1일 수익률
+    w_rtn: Optional[float] = Field(default=None)                        # 1주
+    m1_rtn: Optional[float] = Field(default=None)                       # 1개월
+    m3_rtn: Optional[float] = Field(default=None)                       # 3개월
+    m6_rtn: Optional[float] = Field(default=None)                       # 6개월
+    m12_rtn: Optional[float] = Field(default=None)                      # 1년
+    ytd: Optional[float] = Field(default=None)                          # 연초 이후
+    cum_rtn: Optional[float] = Field(default=None)                      # 누적
+    list_rtn: Optional[float] = Field(default=None)                     # 상장 이후
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class SolEtfPdf(VendorRecordBase, table=True):
+    """SOL_ETF_PDF (신한자산운용 ``/api/fund/pdfList``) -- SOL ETF 구성종목.
+
+    ``fund_cd`` 와 ``work_dt`` 가 응답 행에 이미 들어 있어(삼성과 달리) 잡
+    파라미터로 찍을 필요가 없다. ``etf_cd6`` 도 행마다 오므로 KRX 와의 조인이
+    이 표 하나로 끝난다.
+
+    봉투 없는 최상위 배열이라 셀렉터가 ``"."`` 이다. 페이징이 없고 한 번에
+    전량이 온다(202행짜리 확인).
+
+    ``wt_disp`` 가 ``'19.18%'`` 처럼 **% 기호가 붙은 문자열**이다. 소스 그대로
+    두고 숫자 변환은 통합 뷰에서 한다 -- 운용사마다 비중 표기가 달라서
+    (삼성 33.68, 한화 0.0725 아닌 퍼센트값, 신한 문자열) 변환 규칙이 소스별로
+    다르고, 그건 수집이 아니라 해석의 몫이다."""
+
+    __tablename__ = "sol_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    fund_cd: Optional[str] = Field(default=None, index=True, max_length=20)  # 신한 펀드코드
+    etf_cd6: Optional[str] = Field(default=None, index=True, max_length=20)  # KRX 단축코드
+    work_dt: Optional[str] = Field(default=None, index=True, max_length=8)   # 기준일
+    seq_no: Optional[int] = Field(default=None)                         # 순번
+
+    stock_code: Optional[str] = Field(default=None, index=True, max_length=20)  # 구성종목 코드
+    sec_nm: Optional[str] = Field(default=None, max_length=200)         # 구성종목명
+    qty: Optional[float] = Field(default=None)                          # 수량
+    price: Optional[float] = Field(default=None)                        # 평가금액
+    wt_disp: Optional[str] = Field(default=None, max_length=20)         # 비중 ('19.18%')
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class PlusEtf(VendorRecordBase, table=True):
+    """PLUS_ETF_LIST (한화자산운용 ``/api/v1/product/find/list``) -- PLUS ETF
+    상품 목록.
+
+    ``id``(``006184``)가 구성종목 조회키이고 ``namecode``(``152100``)가 KRX
+    단축코드다 -- 후자가 krx_etf_daily.isu_cd 와 그대로 맞는 것을 확인했다
+    (152100 = PLUS 200). ``krfundcd`` 는 펀드 표준코드로 또 다르다.
+
+    Spring 페이징(``content``/``last``)이고 page 가 **0부터** 시작한다 --
+    ApiMst.pagination_json 에 ``start: 0`` 을 적어 둔 이유다.
+
+    ``optionList`` ``fileInfo`` ``etfPriceList`` ``prList`` 같은 중첩 배열은
+    뺐다. 스칼라 컬럼에 담기지 않고, 이 표의 쓸모와도 무관하다."""
+
+    __tablename__ = "plus_etf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    prod_id: str = Field(index=True, max_length=20)                     # 한화 상품코드 (006184)
+    namecode: Optional[str] = Field(default=None, index=True, max_length=20)  # KRX 단축코드 (152100)
+    krfundcd: Optional[str] = Field(default=None, max_length=20)        # 펀드 표준코드
+    displayname: Optional[str] = Field(default=None, max_length=200)    # 상품명
+    basicinfo: Optional[str] = Field(default=None, max_length=200)      # 기초지수
+    fundtype: Optional[str] = Field(default=None, max_length=50)        # 유형
+    productoption: Optional[str] = Field(default=None, max_length=50)   # 국내/해외
+    wkdate: Optional[str] = Field(default=None, index=True, max_length=8)  # 기준일
+
+    marketprice: Optional[float] = Field(default=None)                  # 시장가
+    navprice: Optional[float] = Field(default=None)                     # NAV
+    etfprice: Optional[float] = Field(default=None)                     # 기준가
+    disparateratio: Optional[float] = Field(default=None)               # 괴리율
+    returnrate: Optional[float] = Field(default=None)                   # 수익률
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _rename_id(cls, data: Any) -> Any:
+        """소스의 ``id``(상품코드)를 ``prod_id`` 로 옮기고 원래 키는 버린다.
+
+        이 표의 대리키 이름도 ``id`` 라, 그대로 두면 ``006184`` 가 기본키
+        자리로 들어가려 한다. 검증 전에 손대는 훅이라 대리키는 여느 때처럼
+        비어 온 것으로 취급되고 시퀀스가 채운다."""
+        if isinstance(data, dict) and "id" in data and "prod_id" not in data:
+            data = {**data, "prod_id": data["id"]}
+            data.pop("id", None)
+        return data
+
+
+class PlusEtfPdf(VendorRecordBase, table=True):
+    """PLUS_ETF_PDF (한화자산운용 ``/api/v1/product/pdf/list``) -- PLUS ETF
+    구성종목.
+
+    운용사 중 유일하게 **구성종목의 ISIN**(``krjmcd``)을 준다. 나머지는
+    단축코드뿐이라, 구성종목을 ISIN 으로 다뤄야 하는 분석에는 이쪽이 편하다.
+
+    ``ratio`` 는 이미 퍼센트값이다 -- 201행 전체 합이 100.0002 인 것을 확인했다.
+    (앞 100행만 합치면 3.0 이 나와 소수 비율처럼 보이는데, 뒤쪽에 큰 비중이
+    몰려 있어서 생긴 착시다.)
+
+    ``n``(상품코드)과 기준일 ``d`` 는 잡 파라미터에서 찍는다 -- 응답 행에는
+    ``wkdate`` 만 있고 어느 ETF 인지가 없다.
+
+    Spring 페이징이고 page 가 0부터다. ``pageSize=100`` 에 201행짜리가 있어
+    페이징이 실제로 필요하다."""
+
+    __tablename__ = "plus_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    prod_id: str = Field(index=True, max_length=20)                     # 한화 상품코드 (잡 파라미터에서)
+    wkdate: Optional[str] = Field(default=None, index=True, max_length=8)  # 기준일
+    num: Optional[int] = Field(default=None)                            # 순번
+
+    jmcd: Optional[str] = Field(default=None, index=True, max_length=20)   # 구성종목 단축코드
+    krjmcd: Optional[str] = Field(default=None, index=True, max_length=20)  # 구성종목 ISIN
+    jmnm: Optional[str] = Field(default=None, max_length=200)           # 구성종목명
+    amount: Optional[float] = Field(default=None)                       # 수량
+    ratio: Optional[float] = Field(default=None)                        # 비중(%)
+
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

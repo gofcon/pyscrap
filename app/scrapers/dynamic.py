@@ -81,6 +81,10 @@ _REQUEST_MIN_INTERVAL_SEC = float(os.environ.get("REQUEST_MIN_INTERVAL_SEC", "0.
 # default was measured for. 0.5s holds it to 2 req/s.
 _HOST_INTERVALS: dict[str, float] = {
     "seibro.or.kr": 0.5,
+    # 0.2s 로 43개 ETF 를 훑었더니 22개가 JSON 이 아닌 응답으로 돌아왔다 --
+    # 오류 코드가 아니라 본문이 바뀌는 형태라, 세는 쪽이 아니라 받는 쪽이
+    # 밀린 것으로 보인다. 여기도 metered API 가 아니다.
+    "samsungfund.com": 0.5,
     **json.loads(os.environ.get("REQUEST_MIN_INTERVAL_HOSTS", "{}")),
 }
 
@@ -249,7 +253,15 @@ def _extract_xml_records(root: ET.Element, selector: str) -> list[dict[str, Any]
 def _extract_json_records(data: Any, selector: str) -> list[dict[str, Any]]:
     """Dot-notation path into a JSON document, e.g. 'data.items' ->
     data["data"]["items"]. A dict at the target path is wrapped as a
-    single-record list; missing/non-dict intermediate steps yield []."""
+    single-record list; missing/non-dict intermediate steps yield [].
+
+    ``"."`` means the document already *is* the record list -- some APIs
+    answer with a bare array and no envelope at all (KODEX's product list).
+    Spelled the same way as for XML, where ``"."`` picks the root element
+    itself rather than a descendant of it, so one convention covers both."""
+    if selector == ".":
+        return list(data) if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+
     for part in selector.split("."):
         if not isinstance(data, dict):
             return []
