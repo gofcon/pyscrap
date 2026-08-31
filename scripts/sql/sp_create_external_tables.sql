@@ -90,4 +90,11 @@ BEGIN
   attach('krx_opt_daily');
   attach('krx_fut_daily');
   attach('krx_etf_daily');
+  attach('kis_etf');
+  attach('kis_etf_pdf');
+  attach('amc_etf_pdf');
+  attach('ace_etf_pdf');
+  attach('plus_etf_pdf');
+  attach('sol_etf_pdf');
+  attach('kodex_etf_pdf');
 END;

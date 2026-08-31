@@ -49,6 +49,17 @@ BEGIN
   sp_export_parquet(p_name => 'krx_fut_daily', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'krx_etf_daily', p_to => p_to, p_from => p_from, p_rows => n);
 
+  -- ETF 구성종목. 하루 한 번(daily_batch2) 이라 위의 것들보다 뒤에 둔다.
+  -- 목록 테이블(ace_etf, sol_etf, plus_etf, kodex_etf)은 여기 없다 -- overwrite
+  -- 라 총량이 곧 현재 한 벌이고 하루치라는 게 없다. 위의 기준 그대로다.
+  sp_export_parquet(p_name => 'kis_etf', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'kis_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'amc_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'ace_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'plus_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'sol_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+  sp_export_parquet(p_name => 'kodex_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면
   -- 경로와 내용이 어긋나고, 재실행 시 프리픽스 단위 정리도 어긋난다.

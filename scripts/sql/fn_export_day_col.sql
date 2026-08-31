@@ -18,6 +18,17 @@ BEGIN
              WHEN 'krx_opt_daily'    THEN 'bas_dd'
              WHEN 'krx_etf_daily'    THEN 'bas_dd'
              WHEN 'kis_futopt_price' THEN 'SUBSTR(trade_at, 1, 8)'
+             -- ETF 구성종목: 운용사마다 자기 이름과 표기를 쓴다. 이름은 여기서
+             -- 맞추고, 표기까지 어긋나는 곳(KODEX 는 '2026.08.31')은 식을 준다.
+             WHEN 'ace_etf_pdf'      THEN 'std_dt'
+             WHEN 'amc_etf_pdf'      THEN 'std_dt'
+             WHEN 'plus_etf_pdf'     THEN 'wkdate'
+             WHEN 'sol_etf_pdf'      THEN 'work_dt'
+             WHEN 'kodex_etf_pdf'    THEN 'REPLACE(gijunymd, ''.'')'
+             -- KIS 는 조회일을 받지도 돌려주지도 않는 스냅샷이라 관측 시각을
+             -- 초까지 적어 둔다. 하루로 자르는 것은 그 앞 8 자리다.
+             WHEN 'kis_etf'          THEN 'SUBSTR(snap_at, 1, 8)'
+             WHEN 'kis_etf_pdf'      THEN 'SUBSTR(snap_at, 1, 8)'
            END;
   IF v_col IS NULL THEN
     raise_application_error(-20001,
