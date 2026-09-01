@@ -41,6 +41,7 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
   v_targets t_names := t_names('kis_futopt_chart', 'kis_futopt_price', 'kis_futopt_daily');
   v_name    VARCHAR2(30);
   v_col     VARCHAR2(200);
+  v_kst     DATE;
   v_month   VARCHAR2(6);
   v_from    VARCHAR2(8);
   v_to      VARCHAR2(8);
@@ -51,8 +52,13 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
   v_del     NUMBER;
 BEGIN
   p_deleted := 0;
-  -- KST 기준. 이 프로젝트가 모으는 것은 전부 한국 시장이고, 인스턴스는 UTC 다.
-  v_month := NVL(p_month, TO_CHAR(ADD_MONTHS(TRUNC(SYSDATE + 9/24, 'MM'), -1), 'YYYYMM'));
+  -- '직전월' 은 한국 기준이다. SYSDATE 는 DB 서버의 OS 시각이라 지금은 UTC 를
+  -- 돌려주지만(DBTIMEZONE +00:00) 그것은 설정이지 약속이 아니다 -- 9/24 를
+  -- 더하는 식은 그 설정이 바뀌면 조용히 어긋나고, 하필 매월 1일 04:00 KST 는
+  -- UTC 로 전달 19:00 이라 달이 통째로 밀린다. 이름 붙은 시간대로 변환하면
+  -- 서버가 어디에 있든 같은 답이 나온다 (sp_export_parquet 도 같은 식이다).
+  v_kst   := CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE);
+  v_month := NVL(p_month, TO_CHAR(ADD_MONTHS(TRUNC(v_kst, 'MM'), -1), 'YYYYMM'));
   -- 날짜 컬럼은 전부 YYYYMMDD 문자열이라 문자 비교로 한 달이 잘린다. '31' 은
   -- 그 달에 31일이 있든 없든 상한으로 맞는다 -- 없는 날짜는 데이터에도 없다.
   v_from  := v_month || '01';

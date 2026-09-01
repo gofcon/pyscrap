@@ -266,7 +266,9 @@ def finalize_exports_cmd():
             SELECT prev_mat_date FROM meta_maturity
              WHERE prod_type = 'K2I'
                AND mat_date = (SELECT MIN(mat_date) FROM meta_maturity
-                                WHERE prod_type = 'K2I' AND mat_date >= TRUNC(SYSDATE))""")).one()[0]
+                                WHERE prod_type = 'K2I'
+                                  AND mat_date >= TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul'
+                                                             AS DATE)))""")).one()[0]
 
     typer.echo(f"finalized {len(results)} document upload(s)")
     for name, key in results.items():
