@@ -32,7 +32,7 @@ python -m app.cli run-cycle 5m         # execute whatever's currently pending
 python -m app.cli sync-index-his       # index bars -> stock_index_his, refreshes v_k2i_atm
 python -m app.cli run-export           # the day's rows -> Parquet in object storage
 python -m app.cli finalize-exports     # upload staged documents, purge old CSV buffers
-python -m app.cli archive-exported     # rows older than a month -> Parquet, then delete
+python -m app.cli archive-exported     # last month's rows -> Parquet, then delete
 python -m app.cli check-sql            # scripts/sql vs the compiled procedures
 ```
 
@@ -40,7 +40,7 @@ Rows reach object storage from the database itself (`scripts/sql/`), not
 through this process: `run-export` calls `sp_run_export`, which exports each
 target for a given day. `finalize-exports` is left with what the database
 cannot hold -- a scrape whose result is a file. `archive-exported` runs the
-other way once a month: the minute-bar tables are already readable as Parquet
+other way on the 1st of each month: the minute-bar tables are already readable as Parquet
 through the `xt_*` external tables, so the copy in the database is what costs,
 and it is dropped once the external table proves it can read the range back.
 

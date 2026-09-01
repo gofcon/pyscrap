@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap Monthly Archive (매월 1일, 오래된 수집분을 Parquet 으로 밀어냄)
+Description=pyscrap Monthly Archive (매월 1일 04:00, 직전월 수집분을 Parquet 으로 밀어냄)
 After=network.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
-# 한 달 넘은 행을 Parquet 으로 옮기고 DB 에서 지운다
+# 직전월 한 달치를 Parquet 으로 옮기고 DB 에서 지운다
 # (scripts/sql/sp_archive_exported.sql). 지우기 전에 외부 테이블이 그 구간을
 # 읽어내는지 확인하고, 못 읽으면 아무것도 지우지 않고 0 이 아닌 코드로 끝난다
 # -- systemctl --failed 에 남는 것이 조용히 넘어가는 것보다 낫다.

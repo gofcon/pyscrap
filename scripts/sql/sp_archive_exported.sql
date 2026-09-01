@@ -1,8 +1,8 @@
 CREATE OR REPLACE PROCEDURE sp_archive_exported (
-  p_keep_days IN  NUMBER DEFAULT 31,     -- DB 에 남겨둘 일수 (이보다 오래된 것을 옮긴다)
-  p_deleted   OUT NUMBER                 -- 지운 행 수 합계
+  p_month     IN  VARCHAR2 DEFAULT NULL,  -- 대상 월 YYYYMM (NULL 이면 직전월)
+  p_deleted   OUT NUMBER                  -- 지운 행 수 합계
 ) AS
--- 오래된 수집분을 Parquet 으로 옮기고 원본에서 지운다. 월 1회 도는 작업이다.
+-- 한 달치 수집분을 Parquet 으로 옮기고 원본에서 지운다. 매월 1일에 도는 작업이다.
 --
 -- 왜 필요한가: kis_futopt_price 는 하루 87,000 행, kis_futopt_chart 는 33,000
 -- 행씩 쌓인다. 한 달이면 각각 1GB, 0.5GB 다. 값은 Parquet 으로 이미 나가 있고
@@ -10,12 +10,21 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
 -- 2026-09-01 에 이 셋을 손으로 비워 4.48GB 를 0.85GB 로 줄였고, 그 절차를
 -- 그대로 옮겨 놓은 것이 이 프로시저다.
 --
+-- 기준이 '며칠 지난 것' 이 아니라 '어느 달' 이다. 1일에 돌면서 직전월을
+-- 통째로 가져가므로 아카이브 파일 하나가 달력의 한 달과 정확히 맞고, 언제
+-- 돌리든 -- 다시 돌리든 -- 같은 구간을 본다. 일수로 자르면 실행 시각에 따라
+-- 경계가 흔들려 한 달이 두 파일에 걸친다.
+--
+-- 그 대신 못 돌고 지나간 달은 저절로 따라잡히지 않는다. 두 달을 건너뛰었다면
+-- p_month 에 그 달을 주고 한 번 더 부른다. 자동으로 '남은 것 전부' 를 쓸어가게
+-- 하지 않는 이유는, 그 동작이 필요한 상황이 곧 뭔가 잘못된 상황이라서다 --
+-- 사람이 보고 부르는 편이 낫다.
+--
 -- sp_export_bulk 를 쓰지 않는다. 그쪽은 대상의 _bulk 폴더를 통째로 비우고 다시
 -- 쓰는데, DB 에 최근 한 달치만 남은 상태에서 그러면 지난달까지의 아카이브가
--- 사라진다. 여기서는 실행할 때마다 <대상>/_arch/<시작>_<끝>_part... 로 새
--- 폴더를 하나씩 더한다. 외부 테이블이 '<대상>/*/*.parquet' 로 읽으므로 -- 날짜
--- 폴더든 _bulk 든 _arch 든 한 겹은 와일드카드에 걸린다 -- 새 폴더는 만들자마자
--- 읽힌다.
+-- 사라진다. 여기서는 달마다 <대상>/_arch/<YYYYMM>_part... 로 새 폴더를 하나씩
+-- 더한다. 외부 테이블이 '<대상>/*/*.parquet' 로 읽으므로 -- 날짜 폴더든 _bulk
+-- 든 _arch 든 한 겹은 와일드카드에 걸린다 -- 새 폴더는 만들자마자 읽힌다.
 --
 -- 지우기 전에 반드시 확인한다: 내보낸 구간을 외부 테이블에서 세어 원본과 같은
 -- 수인지 본다. 이 확인이 통과하지 못하면 아무것도 지우지 않고 오류를 낸다.
@@ -32,27 +41,33 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
   v_targets t_names := t_names('kis_futopt_chart', 'kis_futopt_price', 'kis_futopt_daily');
   v_name    VARCHAR2(30);
   v_col     VARCHAR2(200);
-  v_cut     VARCHAR2(8);
+  v_month   VARCHAR2(6);
   v_from    VARCHAR2(8);
   v_to      VARCHAR2(8);
+  v_min     VARCHAR2(8);
+  v_max     VARCHAR2(8);
   v_src     NUMBER;
   v_xt      NUMBER;
   v_del     NUMBER;
 BEGIN
   p_deleted := 0;
   -- KST 기준. 이 프로젝트가 모으는 것은 전부 한국 시장이고, 인스턴스는 UTC 다.
-  v_cut := TO_CHAR(SYSDATE + 9/24 - p_keep_days, 'YYYYMMDD');
+  v_month := NVL(p_month, TO_CHAR(ADD_MONTHS(TRUNC(SYSDATE + 9/24, 'MM'), -1), 'YYYYMM'));
+  -- 날짜 컬럼은 전부 YYYYMMDD 문자열이라 문자 비교로 한 달이 잘린다. '31' 은
+  -- 그 달에 31일이 있든 없든 상한으로 맞는다 -- 없는 날짜는 데이터에도 없다.
+  v_from  := v_month || '01';
+  v_to    := v_month || '31';
 
   FOR i IN 1 .. v_targets.COUNT LOOP
     v_name := v_targets(i);
     v_col  := fn_export_day_col(v_name);
 
     EXECUTE IMMEDIATE 'SELECT MIN(' || v_col || '), MAX(' || v_col || '), COUNT(*) FROM '
-                      || v_name || ' WHERE ' || v_col || ' < :1'
-      INTO v_from, v_to, v_src USING v_cut;
+                      || v_name || ' WHERE ' || v_col || ' BETWEEN :1 AND :2'
+      INTO v_min, v_max, v_src USING v_from, v_to;
 
     IF v_src = 0 THEN
-      DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || '< ' || v_cut || '  없음, 건너뜀');
+      DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || v_month || '  없음, 건너뜀');
       CONTINUE;
     END IF;
 
@@ -60,10 +75,10 @@ BEGIN
     EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL QUERY';
     DBMS_CLOUD.EXPORT_DATA(
       credential_name => c_cred,
-      file_uri_list   => c_base || LOWER(v_name) || '/_arch/' || v_from || '_' || v_to || '_part',
+      file_uri_list   => c_base || LOWER(v_name) || '/_arch/' || v_month || '_part',
       format          => JSON_OBJECT('type' VALUE 'parquet'),
       query           => 'SELECT * FROM ' || v_name
-                         || ' WHERE ' || v_col || ' < ''' || v_cut || ''''
+                         || ' WHERE ' || v_col || ' BETWEEN ''' || v_from || ''' AND ''' || v_to || ''''
                          || ' ORDER BY ' || v_col);
     EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL QUERY';
 
@@ -75,15 +90,15 @@ BEGIN
     IF v_xt < v_src THEN
       raise_application_error(-20010,
         v_name || ': 외부 테이블이 ' || v_xt || ' 행만 읽는데 원본은 ' || v_src
-        || ' 행이다 (' || v_from || '..' || v_to || '). 삭제하지 않았다.');
+        || ' 행이다 (' || v_month || '). 삭제하지 않았다.');
     END IF;
 
     EXECUTE IMMEDIATE 'DELETE /*+ NO_PARALLEL */ FROM ' || v_name
-                      || ' WHERE ' || v_col || ' < :1' USING v_cut;
+                      || ' WHERE ' || v_col || ' BETWEEN :1 AND :2' USING v_from, v_to;
     v_del := SQL%ROWCOUNT;
     p_deleted := p_deleted + v_del;
 
-    DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || v_from || '..' || v_to || '  '
+    DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || v_month || ' (' || v_min || '..' || v_max || ')  '
       || TO_CHAR(v_src, 'FM999,999,999') || ' rows -> _arch, '
       || TO_CHAR(v_del, 'FM999,999,999') || ' deleted (xt reads '
       || TO_CHAR(v_xt, 'FM999,999,999') || ')');

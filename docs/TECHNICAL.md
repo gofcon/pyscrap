@@ -687,7 +687,7 @@ python -m app.cli sync-index-his              # 지수 → 시계열, MV 갱신
 python -m app.cli run-export [DAY] [--from D] # Parquet 내보내기
 python -m app.cli finalize-exports            # 문서 업로드 + 버퍼 정리
 python -m app.cli purge-jobs [--days N]       # 끝난 잡 정리
-python -m app.cli archive-exported [--keep-days N]  # 오래된 행 → Parquet, DB 에서 삭제
+python -m app.cli archive-exported [YYYYMM]   # 직전월 → Parquet, DB 에서 삭제
 python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 ```
 
@@ -705,8 +705,8 @@ python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 23:00  check-sql          DB 프로시저와 저장소 파일 대조
 ```
 
-매월 1일 23:30 에 `archive`(`pyscrap-archive.timer`)가 한 번 더 돈다. 한 달
-넘은 3분봉·1분봉·일봉을 Parquet 으로 밀어내고 DB 에서 지운다 --
+매월 1일 04:00 에 `archive`(`pyscrap-archive.timer`)가 한 번 더 돈다. 직전월
+3분봉·1분봉·일봉을 Parquet 으로 밀어내고 DB 에서 지운다 --
 `kis_futopt_price` 한 표만 하루 87,000 행씩 늘고, 값은 `xt_*` 외부 테이블로
 이미 읽히므로 DB 에 둔 쪽이 용량만 먹는다. 지우기 전에 외부 테이블이 그
 구간을 읽어내는지 확인하고, 못 읽으면 그 표는 손대지 않고 실패한다.
