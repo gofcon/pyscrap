@@ -315,6 +315,32 @@ def run_export_cmd(
     typer.echo("export complete")
 
 
+@app.command("archive-exported")
+def archive_exported_cmd(
+    keep_days: int = typer.Option(31, "--keep-days", min=1,
+                                  help="Days of rows to leave in the database"),
+):
+    """Move rows older than --keep-days out of the big result tables into
+    Parquet, and delete them from the database (sp_archive_exported).
+
+    The tables that carry a minute bar or a three-minute snapshot grow by tens
+    of thousands of rows a day -- kis_futopt_price alone by ~87,000 -- and the
+    values are already in object storage, read back through the xt_* external
+    tables. Keeping both copies is what fills the database; this drops the one
+    that costs.
+
+    Deleting is refused unless the external table can read back at least as
+    many rows as the range being removed. Writing a file and being able to
+    read it are different claims, and only the second one makes a delete safe.
+
+    Register as a monthly timer, after the day's export."""
+    setup_logging()
+
+    typer.echo(f"archiving rows older than {keep_days} day(s)")
+    deleted = _call_procedure("sp_archive_exported", keep_days)
+    typer.echo(f"archive complete: {deleted or 0} row(s) deleted")
+
+
 @app.command("purge-jobs")
 def purge_jobs_cmd(
     days: int = typer.Option(90, "--days", min=1, help="Keep jobs whose last run is newer than this"),

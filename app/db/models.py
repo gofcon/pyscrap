@@ -1010,10 +1010,15 @@ _MDC_NUMERIC_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
 class MdcRecordBase(VendorRecordBase):
     """VendorRecordBase 에 data.krx.co.kr 화면의 습관 둘을 더한 것.
 
-    오픈 API(data-dbg.krx.co.kr)는 숫자를 그대로 보내지만, 로그인해서 보는
-    화면은 표에 그리던 문자열을 그대로 준다. 소스의 성질이므로 표마다
+    오픈 API(data-dbg.krx.co.kr)는 대체로 숫자를 그대로 보내지만, 로그인해서
+    보는 화면은 표에 그리던 문자열을 그대로 준다. 소스의 성질이므로 표마다
     검증기를 다는 대신 여기서 한 번에 접는다 -- VendorRecordBase 가 대문자
-    키와 빈칸을 접는 것과 같은 자리다."""
+    키와 빈칸을 접는 것과 같은 자리다.
+
+    이름은 화면(MDC)에서 왔지만 오픈 API 에도 예외가 하나 있다:
+    ``idx/kospi_dd_trd`` 는 지수값을 '1,313.00' 으로 보낸다. 그래서
+    KrxIndexDaily 도 이 베이스를 쓴다 -- 규칙은 '어느 호스트냐'가 아니라
+    '숫자를 사람이 읽는 모양으로 보내느냐'다."""
 
     @model_validator(mode="before")
     @classmethod
@@ -1206,6 +1211,123 @@ class KrxDerivExpyy(MdcRecordBase, table=True):
     prod_id: str = Field(index=True, max_length=20)                    # 상품구분 (잡 파라미터)
     value: Optional[str] = Field(default=None, max_length=4)           # 만기연도
     name: Optional[str] = Field(default=None, max_length=20)           # 표시명
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class MstIndex(SQLModel, table=True):
+    """Curated index master -- the indices this project actually follows, one
+    row per internal id.
+
+    Reference data like MstEtf/MstFuopt: no job_id, so it stays out of
+    TABLE_REGISTRY, and it is maintained by hand rather than by a job.
+
+    ``mv_id`` is the key because this table is the *common* one: it is what
+    stock_index_his and v_k2i_atm are keyed by, and what anything downstream
+    means when it says "the index". A source's own identifiers stay in that
+    source's master -- KRX numbers an index by a (family, number) pair, which
+    lives in krx_index_mst along with the mv_id it maps to.
+
+    So the two tables divide as sources and vocabulary do: krx_index_mst
+    holds all 168 indices the exchange publishes, this holds the handful that
+    have an internal name."""
+
+    __tablename__ = "mst_index"
+
+    mv_id: str = Field(primary_key=True, max_length=10)                # 내부 지수 id (K2I, KOSPI ...)
+
+    idx_nm: str = Field(index=True, max_length=100)                    # 지수명 -- 시세는 이름으로만 온다
+    idx_eng_nm: Optional[str] = Field(default=None, max_length=150)    # 영문 지수명
+    bas_tm: Optional[str] = Field(default=None, max_length=10)         # 기준시점
+    annc_tm: Optional[str] = Field(default=None, max_length=10)        # 발표일
+    bas_idx: Optional[float] = Field(default=None)                     # 기준지수
+
+    # KIS 가 같은 지수를 부르는 이름 (FID_INPUT_ISCD). 코스피200 이 '2001' 인
+    # 것을 29일치 OHLC 전건 대조로 확인했다 -- 코스피/코스피100 과는 한 칸도
+    # 맞지 않는다. 시세는 이제 거래소에서 받지만(sp_stock_index_his_sync),
+    # kis_index_daily 로 들어온 과거분과 잇는 열쇠는 이 값뿐이다.
+    kis_short_cd: Optional[str] = Field(default=None, index=True, max_length=10)
+
+    description: Optional[str] = Field(default=None, max_length=200)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KrxIndexMst(SQLModel, table=True):
+    """KRX's own index master -- every index the exchange publishes, as it
+    numbers them (전체지수 기본정보, MDCSTAT00401).
+
+    Reference data, maintained by hand: 168 rows that change only when the
+    exchange adds or retires an index. An index is identified by the pair --
+    ``ind_tp_cd`` names the family, ``idx_ind_cd`` numbers it within that
+    family -- and neither is unique alone.
+
+    This is also where the exchange's vocabulary meets ours: ``mv_id`` is
+    filled on the indices that have an internal name, and MstIndex is keyed
+    by that. Left NULL on the rest, which is most of them.
+
+    Price feeds carry neither code -- the open API (``idx/kospi_dd_trd``) and
+    the screen (MDCSTAT00101) both name an index and stop -- so ``idx_nm`` is
+    what a price row joins on."""
+
+    __tablename__ = "krx_index_mst"
+
+    ind_tp_cd: str = Field(primary_key=True, max_length=4)             # 계열코드
+    idx_ind_cd: str = Field(primary_key=True, max_length=4)            # 지수코드
+
+    idx_nm: str = Field(index=True, max_length=100)                    # 지수명
+    idx_eng_nm: Optional[str] = Field(default=None, max_length=150)    # 영문 지수명
+    mid_clss_cd: Optional[str] = Field(default=None, max_length=2)     # 화면의 계열 구분 (01~04)
+
+    bas_tm: Optional[str] = Field(default=None, max_length=10)         # 기준시점
+    annc_tm: Optional[str] = Field(default=None, max_length=10)        # 발표일
+    bas_idx: Optional[float] = Field(default=None)                     # 기준지수
+    calc_cycle: Optional[str] = Field(default=None, max_length=20)     # 산출주기
+    calc_tm: Optional[str] = Field(default=None, max_length=40)        # 산출시간
+    compst_isu_cnt: Optional[int] = Field(default=None)                # 구성종목수
+
+    mv_id: Optional[str] = Field(default=None, index=True, max_length=10)  # 내부 지수 id (mst_index)
+
+    description: Optional[str] = Field(default=None, max_length=200)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KrxIndexDaily(MdcRecordBase, table=True):
+    """Typed output table for KRX_INDEX_KOSPI (``idx/kospi_dd_trd``) -- one
+    row per KOSPI-family index per trading day, field names kept as KRX's own.
+
+    KOSPI family only, which is what the key is authorised for: idx/krx_dd_trd
+    and idx/kosdaq_dd_trd answer 401. The screen (MDCSTAT00101) covers all
+    four families if that is ever needed, at the cost of a login.
+
+    No index code -- the feed names an index and nothing more, which is what
+    mst_index exists to resolve. Join on ``idx_nm``.
+
+    The 외국주포함 rows carry volume and market cap with no index value at
+    all, so every price column is nullable; blanks fold to NULL through
+    VendorRecordBase."""
+
+    __tablename__ = "krx_index_daily"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    bas_dd: str = Field(index=True, max_length=8)                      # 기준일자
+    idx_clss: Optional[str] = Field(default=None, max_length=20)       # 계열 (KOSPI)
+    idx_nm: str = Field(index=True, max_length=100)                    # 지수명
+
+    clsprc_idx: Optional[float] = Field(default=None)                  # 종가
+    cmpprevdd_idx: Optional[float] = Field(default=None)               # 대비
+    fluc_rt: Optional[float] = Field(default=None)                     # 등락률
+    opnprc_idx: Optional[float] = Field(default=None)                  # 시가
+    hgprc_idx: Optional[float] = Field(default=None)                   # 고가
+    lwprc_idx: Optional[float] = Field(default=None)                   # 저가
+    acc_trdvol: Optional[int] = Field(default=None)                    # 거래량
+    acc_trdval: Optional[int] = Field(default=None)                    # 거래대금
+    mktcap: Optional[int] = Field(default=None)                        # 시가총액
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

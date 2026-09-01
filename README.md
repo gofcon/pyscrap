@@ -32,13 +32,17 @@ python -m app.cli run-cycle 5m         # execute whatever's currently pending
 python -m app.cli sync-index-his       # index bars -> stock_index_his, refreshes v_k2i_atm
 python -m app.cli run-export           # the day's rows -> Parquet in object storage
 python -m app.cli finalize-exports     # upload staged documents, purge old CSV buffers
+python -m app.cli archive-exported     # rows older than a month -> Parquet, then delete
 python -m app.cli check-sql            # scripts/sql vs the compiled procedures
 ```
 
 Rows reach object storage from the database itself (`scripts/sql/`), not
 through this process: `run-export` calls `sp_run_export`, which exports each
 target for a given day. `finalize-exports` is left with what the database
-cannot hold -- a scrape whose result is a file.
+cannot hold -- a scrape whose result is a file. `archive-exported` runs the
+other way once a month: the minute-bar tables are already readable as Parquet
+through the `xt_*` external tables, so the copy in the database is what costs,
+and it is dropped once the external table proves it can read the range back.
 
 ### Deploying the units
 
@@ -58,7 +62,7 @@ sudo systemctl daemon-reload
 ```
 
 ```bash
-sudo systemctl enable --now pyscrap-daily-start.timer pyscrap-generate-3m.timer pyscrap-3m-call.timer pyscrap-3m-put.timer pyscrap-5m.timer pyscrap-1h.timer pyscrap-daily-close.timer pyscrap-daily-batch1.timer pyscrap-daily-batch2.timer pyscrap-export.timer pyscrap-finalize-exports.timer pyscrap-check-sql.timer
+sudo systemctl enable --now pyscrap-daily-start.timer pyscrap-generate-3m.timer pyscrap-3m-call.timer pyscrap-3m-put.timer pyscrap-5m.timer pyscrap-1h.timer pyscrap-daily-close.timer pyscrap-daily-batch1.timer pyscrap-daily-batch2.timer pyscrap-export.timer pyscrap-finalize-exports.timer pyscrap-check-sql.timer pyscrap-archive.timer
 ```
 
 Only the timers are enabled -- each starts its own `.service`, so enabling
