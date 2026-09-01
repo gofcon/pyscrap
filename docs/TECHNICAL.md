@@ -684,6 +684,8 @@ python -m app.cli run-cycle <cycle>           # 대기 중인 잡 실행
 python -m app.cli generate-builder <build_id> # 한 빌더만, 비활성이어도
 python -m app.cli sync-mst-fuopt              # 원본 → 정제 마스터
 python -m app.cli sync-index-his              # 지수 → 시계열, MV 갱신
+python -m app.cli dedup-stock-base            # 주식 기본정보 → 종목당 1행
+python -m app.cli sync-mst-stock              # → mst_stock 정제 마스터
 python -m app.cli run-export [DAY] [--from D] # Parquet 내보내기
 python -m app.cli finalize-exports            # 문서 업로드 + 버퍼 정리
 python -m app.cli purge-jobs [--days N]       # 끝난 잡 정리
@@ -694,7 +696,7 @@ python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 ### 5.2 하루 일정 (systemd)
 
 ```
-08:35  daily-start        토큰 갱신, 원본 마스터 재적재
+08:35  daily-start        토큰 갱신, 원본 마스터 재적재 (+ 주식 마스터 접기·이관)
 08:38  generate-3m        마스터 동기화 → 3분 잡 생성
 08:40~ 3m-call / 3m-put / 5m / 1h    장중 수집
 16:00  daily-close        장 마감 직후 확정되는 것

@@ -33,6 +33,8 @@ python -m app.cli sync-index-his       # index bars -> stock_index_his, refreshe
 python -m app.cli run-export           # the day's rows -> Parquet in object storage
 python -m app.cli finalize-exports     # upload staged documents, purge old CSV buffers
 python -m app.cli archive-exported     # last month's rows -> Parquet, then delete
+python -m app.cli dedup-stock-base     # krx_stock_base -> one row per share
+python -m app.cli sync-mst-stock       # that, folded into the mst_stock master
 python -m app.cli check-sql            # scripts/sql vs the compiled procedures
 ```
 

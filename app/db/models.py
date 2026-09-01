@@ -2275,6 +2275,63 @@ class PlusEtfPdf(VendorRecordBase, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
+class MstStock(SQLModel, table=True):
+    """Curated share instrument master -- every share the exchange has listed
+    since 2010, one row each, including the ones that no longer trade.
+
+    Reference data like MstEtf and MstFuopt: derived DB-side by
+    sp_mst_stock_sync from krx_stock_base, not written by the scraping
+    engine, and kept out of TABLE_REGISTRY by having no job_id.
+
+    **The key is the short code, as in MstEtf** -- which is worth saying
+    because the source table calls the *other* one ``isu_cd``. KRX names the
+    ISIN ``isu_cd`` and the short code ``isu_srt_cd``; the masters here have
+    used ``isu_cd`` for the short code since MstEtf, since that is the code
+    every other source asks a question with. The sync crosses the two over,
+    and this is the only place the swap happens.
+
+    Accumulates and is never emptied, which is the point: the exchange's
+    per-day listing only shows what was listed *that* day, so a share that
+    delisted in 2014 exists in exactly one place -- an old day's response. The
+    backfill walks backwards through those days and each new code lands here
+    with the last state it was ever published in.
+
+    ``last_seen_dd`` is that basis date, and doubles as the listed/delisted
+    signal: a row whose ``last_seen_dd`` is the most recent trading day is
+    still listed, and one that stopped years ago is not. Recorded rather than
+    inferred -- KRX publishes no delisting date on this feed.
+
+    It also decides what an update may overwrite. The backfill runs newest to
+    oldest, so most rows it offers are *older* than what is already here; the
+    sync only takes a row whose ``bas_dd`` is newer, and an old day can add a
+    share but never rewrite a current one. ``description`` is left alone
+    either way -- it is the hand-edited column, the same arrangement as
+    MstEtf's manager codes."""
+
+    __tablename__ = "mst_stock"
+
+    isu_cd: str = Field(primary_key=True, max_length=20)                 # KRX 단축코드
+    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # 표준코드
+    isu_nm: Optional[str] = Field(default=None, max_length=100)          # 한글 종목명
+    isu_abbrv: Optional[str] = Field(default=None, max_length=60)        # 한글 종목약명
+    isu_eng_nm: Optional[str] = Field(default=None, max_length=120)      # 영문 종목명
+
+    list_dd: Optional[str] = Field(default=None, max_length=8)           # 상장일
+    mkt_tp_nm: Optional[str] = Field(default=None, index=True, max_length=20)   # 시장구분
+    secugrp_nm: Optional[str] = Field(default=None, max_length=40)       # 증권구분
+    sect_tp_nm: Optional[str] = Field(default=None, max_length=40)       # 소속부
+    kind_stkcert_tp_nm: Optional[str] = Field(default=None, max_length=20)      # 주식종류
+    parval: Optional[str] = Field(default=None, max_length=20)           # 액면가 ('무액면' 이 온다)
+    list_shrs: Optional[int] = Field(default=None)                       # 상장주식수
+
+    # 마지막으로 거래소 목록에 있던 기준일. 상장/폐지 여부가 여기서 읽힌다.
+    last_seen_dd: Optional[str] = Field(default=None, index=True, max_length=8)
+
+    description: Optional[str] = Field(default=None, max_length=200)
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
 class MstEtf(SQLModel, table=True):
     """Curated ETF instrument master -- the universe with each manager's own
     lookup code beside it.

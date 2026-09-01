@@ -9,6 +9,16 @@ Group=opc
 WorkingDirectory=/home/opc/pyscrap
 # ExecStart calls the wrapper script with cycle argument
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_start
+# 그 다음 krx_stock_base 를 종목당 한 행으로 접는다. 이 사이클이 그 표를
+# 채우는 유일한 자리라서 여기 붙였다 -- 별도 타이머로 시각을 맞추면 수집이
+# 길어진 날 조용히 어긋나고, 그 사이 표는 943 행씩 늘어난다.
+#
+# 앞 단계가 실패하면 돌지 않는다(oneshot 의 기본 동작). 새로 들어온 것이
+# 없으면 접을 것도 없으므로 그것으로 맞다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh dedup-stock-base
+# 그리고 정제 마스터로 옮긴다. 접기 전에 부르면 MERGE 가 소스 키 중복으로
+# 죽으므로(ORA-30926) 순서가 뒤집히면 안 된다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-mst-stock
 
 [Install]
 WantedBy=multi-user.target

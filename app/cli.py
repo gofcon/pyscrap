@@ -315,6 +315,42 @@ def run_export_cmd(
     typer.echo("export complete")
 
 
+@app.command("sync-mst-stock")
+def sync_mst_stock_cmd():
+    """Fold krx_stock_base into mst_stock, by calling sp_mst_stock_sync.
+
+    The same shape as sync-mst-fuopt: the raw table is refreshed by the
+    daily_start cycle, so "whenever rows arrive" and "once a day, after the
+    refresh" are the same moment. Run it after dedup-stock-base -- the MERGE
+    dies with ORA-30926 on a duplicated source key, which is exactly what the
+    raw table looks like before it is folded.
+
+    Accumulates: a share that delisted years ago is only in an old day's
+    response, so the backfill's walk through those days is what puts it here,
+    and nothing removes it afterwards."""
+    setup_logging()
+    typer.echo(f"mst_stock: {_call_procedure('sp_mst_stock_sync')} row(s) merged")
+
+
+@app.command("dedup-stock-base")
+def dedup_stock_base_cmd():
+    """Fold krx_stock_base back to one row per share, keeping the most recent
+    basis date, by calling sp_krx_stock_base_dedup.
+
+    The table says what a share *is* -- listing date, board, kind, par value,
+    shares outstanding -- and the exchange publishes it per day, so the
+    collection is per day too. The content is not: outside a capital
+    increase, today's row equals yesterday's. Left alone it grows by 943
+    identical rows a day, and the backfill to 2010 would add 2GB of them.
+
+    Run after the daily_start cycle, which is what fills it. The backfill
+    calls it as it goes for the same reason, so the table only grows by
+    shares it has not seen before -- delisted ones, which is the whole
+    reason to look at old dates at all."""
+    setup_logging()
+    typer.echo(f"krx_stock_base: {_call_procedure('sp_krx_stock_base_dedup')} duplicate row(s) removed")
+
+
 @app.command("archive-exported")
 def archive_exported_cmd(
     month: str = typer.Argument(None, help="Month to archive, YYYYMM (default: last month in KST)"),
