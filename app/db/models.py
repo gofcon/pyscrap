@@ -1000,6 +1000,217 @@ class KrxStockBase(VendorRecordBase, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
+# data.krx.co.kr 화면이 숫자를 사람이 읽는 모양으로 보낸다: 천 단위 콤마
+# ("1,163"), 없는 값은 '-'. 콤마가 붙은 것만 골라 떼는 이유는 종목명 안에도
+# 콤마가 있기 때문이다 ("코스피200 C 202609 1,000.0" -- 행사가가 이름에 박혀
+# 있다). 그래서 값 전체를 훑지 않고 숫자로만 이뤄진 문자열에만 손댄다.
+_MDC_NUMERIC_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
+
+
+class MdcRecordBase(VendorRecordBase):
+    """VendorRecordBase 에 data.krx.co.kr 화면의 습관 둘을 더한 것.
+
+    오픈 API(data-dbg.krx.co.kr)는 숫자를 그대로 보내지만, 로그인해서 보는
+    화면은 표에 그리던 문자열을 그대로 준다. 소스의 성질이므로 표마다
+    검증기를 다는 대신 여기서 한 번에 접는다 -- VendorRecordBase 가 대문자
+    키와 빈칸을 접는 것과 같은 자리다."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_mdc_record(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = {}
+        for k, v in data.items():
+            if isinstance(v, str):
+                s = v.strip()
+                if s == "-":
+                    v = None
+                elif "," in s and _MDC_NUMERIC_RE.match(s):
+                    v = s.replace(",", "")
+            out[k] = v
+        return out
+
+
+class KrxStockDaily(VendorRecordBase, table=True):
+    """Typed output table for KRX_STOCK_INFO (``sto/stk_bydd_trd``) -- one row
+    per listed share per trading day, field names kept as KRX's own.
+
+    The share-price counterpart to krx_etf_daily/krx_etn_daily. KOSPI only:
+    the KOSDAQ and KONEX endpoints answer 401 for this key (see
+    KrxStockBase), so ``mkt_nm`` carries one value today and would simply
+    carry more if that changed."""
+
+    __tablename__ = "krx_stock_daily"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    bas_dd: str = Field(index=True, max_length=8)                     # 기준일자
+    isu_cd: str = Field(index=True, max_length=20)                    # 단축코드
+    isu_nm: Optional[str] = Field(default=None, max_length=100)       # 종목명
+    mkt_nm: Optional[str] = Field(default=None, max_length=20)        # 시장구분
+    sect_tp_nm: Optional[str] = Field(default=None, max_length=40)    # 소속부
+
+    tdd_clsprc: Optional[float] = Field(default=None)                 # 종가
+    cmpprevdd_prc: Optional[float] = Field(default=None)              # 대비
+    fluc_rt: Optional[float] = Field(default=None)                    # 등락률
+    tdd_opnprc: Optional[float] = Field(default=None)                 # 시가
+    tdd_hgprc: Optional[float] = Field(default=None)                  # 고가
+    tdd_lwprc: Optional[float] = Field(default=None)                  # 저가
+    acc_trdvol: Optional[int] = Field(default=None)                   # 거래량
+    acc_trdval: Optional[int] = Field(default=None)                   # 거래대금
+    mktcap: Optional[int] = Field(default=None)                       # 시가총액
+    list_shrs: Optional[int] = Field(default=None)                    # 상장주식수
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KrxEtnDaily(VendorRecordBase, table=True):
+    """Typed output table for KRX_ETN_INFO (``etp/etn_bydd_trd``) -- one row
+    per ETN per trading day, field names kept as KRX's own.
+
+    Same shape as krx_etf_daily with the ETN's own two: ``per1secu_indic_val``
+    (증권당 지표가치) and ``indic_val_amt`` (지표가치총액), which are what an
+    ETN has instead of a fund's NAV."""
+
+    __tablename__ = "krx_etn_daily"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    bas_dd: str = Field(index=True, max_length=8)                     # 기준일자
+    isu_cd: str = Field(index=True, max_length=20)                    # 단축코드
+    isu_nm: Optional[str] = Field(default=None, max_length=100)       # 종목명
+
+    tdd_clsprc: Optional[float] = Field(default=None)                 # 종가
+    cmpprevdd_prc: Optional[float] = Field(default=None)              # 대비
+    fluc_rt: Optional[float] = Field(default=None)                    # 등락률
+    per1secu_indic_val: Optional[float] = Field(default=None)         # 증권당 지표가치
+    tdd_opnprc: Optional[float] = Field(default=None)                 # 시가
+    tdd_hgprc: Optional[float] = Field(default=None)                  # 고가
+    tdd_lwprc: Optional[float] = Field(default=None)                  # 저가
+    acc_trdvol: Optional[int] = Field(default=None)                   # 거래량
+    acc_trdval: Optional[int] = Field(default=None)                   # 거래대금
+    mktcap: Optional[int] = Field(default=None)                       # 시가총액
+    indic_val_amt: Optional[int] = Field(default=None)                # 지표가치총액
+    list_shrs: Optional[int] = Field(default=None)                    # 상장증권수
+    idx_ind_nm: Optional[str] = Field(default=None, max_length=200)   # 기초지수명
+    obj_stkprc_idx: Optional[float] = Field(default=None)             # 지수 종가
+    cmpprevdd_idx: Optional[float] = Field(default=None)              # 지수 대비
+    fluc_rt_idx: Optional[float] = Field(default=None)                # 지수 등락률
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KrxEtfList(MdcRecordBase, table=True):
+    """Typed output table for KRX_ETF_LIST (MDCSTAT04601, ETF 종목 목록) --
+    one row per listed ETF per query date.
+
+    The open API's ETF feed (krx_etf_daily) has prices but no ISIN, and no
+    ISIN is why 1,051 of mst_etf's 1,163 rows could not be asked for by the
+    holdings endpoint. This screen gives both codes side by side, which is
+    what sp_mst_etf_sync now folds into mst_etf.isin.
+
+    Carries the fund's own facts as well -- manager, index, replication
+    method, total fee, CU size -- which no other source collected here has."""
+
+    __tablename__ = "krx_etf_list"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    bas_dd: str = Field(index=True, max_length=8)                     # 기준일자 (잡 파라미터)
+    isu_cd: str = Field(max_length=12)                                # 표준코드 (ISIN)
+    isu_srt_cd: str = Field(index=True, max_length=10)                # 단축코드
+    isu_nm: Optional[str] = Field(default=None, max_length=200)       # 한글 종목명
+    isu_abbrv: Optional[str] = Field(default=None, max_length=100)    # 한글 종목약명
+    isu_eng_nm: Optional[str] = Field(default=None, max_length=200)   # 영문 종목명
+    list_dd: Optional[str] = Field(default=None, max_length=10)       # 상장일
+    etf_obj_idx_nm: Optional[str] = Field(default=None, max_length=200)      # 기초지수명
+    idx_calc_inst_nm1: Optional[str] = Field(default=None, max_length=100)   # 지수 산출기관
+    idx_calc_inst_nm2: Optional[str] = Field(default=None, max_length=100)   # 지수 구분
+    etf_replica_methd_tp_cd: Optional[str] = Field(default=None, max_length=40)  # 복제방법
+    idx_mkt_clss_nm: Optional[str] = Field(default=None, max_length=40)      # 지수 시장분류
+    idx_asst_clss_nm: Optional[str] = Field(default=None, max_length=40)     # 지수 자산분류
+    com_abbrv: Optional[str] = Field(default=None, max_length=100)     # 운용사
+    cu_qty: Optional[int] = Field(default=None)                        # CU 수량
+    list_shrs: Optional[int] = Field(default=None)                     # 상장좌수
+    etf_tot_fee: Optional[float] = Field(default=None)                 # 총보수
+    tax_tp_cd: Optional[str] = Field(default=None, max_length=20)      # 과세유형
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KrxEtfPdf(MdcRecordBase, table=True):
+    """Typed output table for KRX_ETF_PDF (MDCSTAT05001) -- one row per
+    constituent of one ETF on one date (Portfolio Deposit File).
+
+    Keyed by the ETF being asked about (``isu_cd``, stamped from the job's
+    own parameters) and the constituent (``compst_isu_cd``): the response
+    only describes the holding, not whose holding it is.
+
+    Values a screen leaves blank arrive as '-' rather than empty, which is
+    what MdcRecordBase folds to NULL -- common here, since an ETF that has
+    not published its weights yet still lists its constituents."""
+
+    __tablename__ = "krx_etf_pdf"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    bas_dd: str = Field(index=True, max_length=8)                     # 기준일자 (잡 파라미터)
+    isu_cd: str = Field(index=True, max_length=12)                    # 대상 ETF 의 표준코드 (잡 파라미터)
+
+    compst_isu_cd: Optional[str] = Field(default=None, max_length=20)   # 구성종목 단축코드
+    compst_isu_cd2: Optional[str] = Field(default=None, max_length=12)  # 구성종목 표준코드
+    compst_isu_nm: Optional[str] = Field(default=None, max_length=200)  # 구성종목명
+    mkt_id: Optional[str] = Field(default=None, max_length=10)          # 시장
+    secugrp_id: Optional[str] = Field(default=None, max_length=10)      # 증권구분
+    compst_isu_cu1_shrs: Optional[float] = Field(default=None)          # CU 1좌당 구성수량
+    valu_amt: Optional[int] = Field(default=None)                       # 평가금액
+    compst_amt: Optional[int] = Field(default=None)                     # 구성금액
+    compst_rto: Optional[float] = Field(default=None)                   # 구성비중
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+class KrxDerivExpyy(MdcRecordBase, table=True):
+    """Typed output table for KRX_DERIV_EXPYY (``dbms/comm/component/drv_exp_yy``)
+    -- which expiry years a derivative product can be asked about.
+
+    A dropdown's contents rather than data in its own right, and that is
+    exactly its use: KRX_DERIV_HIST fans out over (product x year), and the
+    years differ per product (KOSPI200 options go back to 1997, the Monday
+    weekly to 2023). Kept as a table so that fan-out reads a query instead of
+    a list someone pasted.
+
+    ``value`` and ``name`` are the finder's own field names, both carrying
+    the year; ``value`` is empty on the leading 전체 row, which
+    VendorRecordBase folds to NULL."""
+
+    __tablename__ = "krx_deriv_expyy"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    prod_id: str = Field(index=True, max_length=20)                    # 상품구분 (잡 파라미터)
+    value: Optional[str] = Field(default=None, max_length=4)           # 만기연도
+    name: Optional[str] = Field(default=None, max_length=20)           # 표시명
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
 class KsdKacdCode(VendorRecordBase, table=True):
     """Typed output table for KSD_KACD_LIST (SEIBRO's ``searchBondList``) --
     the 채권 종류 코드 tree, field names kept as SEIBRO's own (lower-cased).
