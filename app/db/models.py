@@ -513,8 +513,8 @@ class MstFuopt(SQLModel, table=True):
     written by the scraping engine, and kept out of TABLE_REGISTRY by having
     no job_id (see app.services.export._discover_table_registry). So no
     id/api_id/job_id: ``short_cd`` is the natural key, and it is the same
-    code FoIdxCodeMst.short_code and KisFutoptPrice.short_code use, so this
-    table joins straight to both.
+    code the *exchange* issues -- KIS spells the same contract differently, so
+    joining to FoIdxCodeMst/KisFutoptPrice goes through ``kis_short_cd``.
     ``is_active`` is what makes it a *filter* rather than a copy -- a contract
     drops out of polling by being flipped to 'N' here, which is also how a
     matured contract stops being polled without deleting the history that
@@ -529,6 +529,17 @@ class MstFuopt(SQLModel, table=True):
     __tablename__ = "mst_fuopt"
 
     short_code: str = Field(primary_key=True, max_length=10)
+    # 거래소가 발급한 코드가 아니라 KIS 가 자기 마스터에 쓰는 표기. 두 코드는
+    # 만기 칸의 자릿수만 다르다 -- KIS 는 월을 두 자리로(202609 -> '609'),
+    # 위클리는 뒤에 'W' 를 붙이고, 선물은 행사가 자리가 아예 없다:
+    #   월물   KRX B0169335 <-> KIS B01609335
+    #   위클리 KRX B09FB892 <-> KIS B09FBW892
+    #   선물   KRX A0166000 <-> KIS A01606
+    # KIS 로 나가는 요청은 전부 이 값을 쓰고(빌더들의 SELECT f.kis_short_cd),
+    # kis_futopt_chart/price/daily 의 short_code 도 이 코드다. 거래소 기준으로
+    # 옮기면서 둘을 갈랐다 -- 과거 종목까지 KRX 가 목록으로 주므로 코드를
+    # 추론할 필요가 없어졌기 때문이다 (app.db.models.KrxDerivHist 참고).
+    kis_short_cd: Optional[str] = Field(default=None, index=True, max_length=10)
     prod_nm: str = Field(max_length=100)                                  # 종목명
     prod_type: str = Field(max_length=20)                                 # 상품구분 (지수월물, 위클리목, 위클리월, 지수미니)
     call_put_cd :str = Field(max_length=20)                               # 콜/풋/선물구분 (  CALL/PUT/FUT )
@@ -825,6 +836,120 @@ class KrxEtfDaily(VendorRecordBase, table=True):
     obj_stkprc_idx: Optional[float] = Field(default=None)          # 기초지수 종가
     cmpprevdd_idx: Optional[float] = Field(default=None)           # 기초지수 대비
     fluc_rt_idx: Optional[float] = Field(default=None)             # 기초지수 등락률
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
+# krx_deriv_info 의 두 숫자 칸은 MDC 화면이 천 단위 콤마를 넣어 보낸다
+# ("250,000", "1,000.00"). 이름 칸에도 콤마가 있으므로(행사가가 이름 안에
+# 박혀 있다) 값 전체를 훑을 수는 없고, 숫자로 받을 칸만 골라 떼어낸다.
+_KRX_DERIV_NUMERIC = {"setlmult", "exer_prc"}
+
+
+class KrxDerivInfo(VendorRecordBase, table=True):
+    """Typed output table for KRX_DERIV_INFO ([15004] 전종목 기본정보,
+    ``dbms/MDC/STAT/standard/MDCSTAT12801``) -- one row per *currently
+    listed* derivative contract, field names kept as KRX's own (lower-cased).
+
+    Why this table exists: KIS publishes only what is listed today and spells
+    a contract its own way, which is what app.services.discovery has to walk
+    a strike ladder to reconstruct. This endpoint hands over the same set as
+    a list -- short code, both dates, multiplier, right type and strike -- so
+    the parts that were being guessed are simply read.
+
+    Overwritten rather than accumulated (save_mode='overwrite' against a
+    job_id fixed per product), the way the ETF manager lists are: the table
+    is one current copy of what is listed, and the history lives in mst_fuopt,
+    which sp_mst_fuopt_sync merges into.
+
+    ``prod_id`` is the request's own ``prodId`` (stamped from the job's
+    params, see ApiMst.key_params_list), not a response field -- the reply
+    does not say which product it answered for.
+
+    Dates arrive as ``2026/09/10`` and are kept that way rather than folded to
+    YYYYMMDD: this is the source's record, and the sync that reads it is where
+    a real DATE belongs."""
+
+    __tablename__ = "krx_deriv_info"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    # 요청 파라미터에서 각인된다 (응답에는 없다)
+    prod_id: str = Field(index=True, max_length=20)                 # 상품구분 (KRDRVOPK2I ...)
+
+    isu_cd: str = Field(max_length=12)                              # 표준코드 (ISIN)
+    # mst_fuopt 와 잇는 열쇠다. KRX 표기이고 KIS 의 단축코드와 다르다
+    # (12월을 C 로 쓰는 등) -- mst_fuopt.short_code 주석 참고.
+    isu_srt_cd: str = Field(index=True, max_length=20)              # 단축코드
+    isu_nm: Optional[str] = Field(default=None, max_length=200)     # 한글종목명
+    isu_abbrv: Optional[str] = Field(default=None, max_length=100)  # 한글종목약명
+    isu_eng_nm: Optional[str] = Field(default=None, max_length=200) # 영문종목명
+
+    list_dd: Optional[str] = Field(default=None, max_length=10)     # 상장일
+    lsttrd_dd: Optional[str] = Field(default=None, max_length=10)   # 최종거래일 (만기)
+    lst_setl_dd: Optional[str] = Field(default=None, max_length=10) # 최종결제일
+    uly_tp_nm: Optional[str] = Field(default=None, max_length=30)   # 기초자산유형
+    setlmult: Optional[float] = Field(default=None)                 # 거래승수
+    rght_tp_nm: Optional[str] = Field(default=None, max_length=10)  # 권리유형 (콜옵션/풋옵션/-)
+    exer_prc: Optional[float] = Field(default=None)                 # 행사가격
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_thousands(cls, data: Any) -> Any:
+        """Drop the thousands separators the MDC screens send inside numbers.
+
+        VendorRecordBase deals with the two habits every KRX source has; this
+        one is particular to the screens behind data.krx.co.kr, so it stays
+        with the table that reads them rather than widening the shared base."""
+        if not isinstance(data, dict):
+            return data
+        return {k: (v.replace(",", "") if k.lower() in _KRX_DERIV_NUMERIC and isinstance(v, str) else v)
+                for k, v in data.items()}
+
+
+class KrxDerivHist(VendorRecordBase, table=True):
+    """Typed output table for KRX_DERIV_HIST -- the contract finder behind the
+    derivatives screens (``dbms/comm/finder/finder_drvprodisu``), asked one
+    (product, expiry year) at a time.
+
+    This is the table that ends the guessing. [15004] 전종목 기본정보
+    (krx_deriv_info) lists only what is listed *today*, and KIS publishes only
+    the same, which is why app.services.discovery had to walk a strike ladder
+    to rebuild an expired contract's code -- 38,700 of mst_fuopt's 62,919 rows
+    were reconstructed that way. This endpoint answers for expiries going back
+    to 1996 (KOSPI200 futures) and 1997 (options), so the code, the name and
+    the strike are read rather than inferred.
+
+    Four fields is all it gives -- no dates, no multiplier -- so it is the
+    identity half of a contract; krx_deriv_info carries the rest for whatever
+    is currently listed, and mst_fuopt keeps what history already established.
+
+    Field names are the finder's own, lower-cased by VendorRecordBase: hence
+    ``codename`` and ``expmm`` rather than code_name/exp_mm.
+
+    A past year's answer never changes, so its builder runs on the 'once'
+    cycle: the daily feed of newly listed contracts is krx_deriv_info's job."""
+
+    __tablename__ = "krx_deriv_hist"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    # 요청 파라미터에서 각인된다 (응답에는 없다)
+    prod_id: str = Field(index=True, max_length=20)                 # 상품구분
+    exp_yy: Optional[str] = Field(default=None, max_length=4)       # 만기 연도
+
+    full_code: Optional[str] = Field(default=None, max_length=12)   # 표준코드 (ISIN)
+    short_code: str = Field(index=True, max_length=20)              # 단축코드 (KRX 표기)
+    codename: Optional[str] = Field(default=None, max_length=200)   # 종목명 (행사가 포함)
+    expmm: Optional[str] = Field(default=None, index=True, max_length=7)  # 만기 (YYYY/MM)
 
     updated_at: Optional[datetime] = Field(default=None,
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))

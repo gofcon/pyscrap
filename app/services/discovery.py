@@ -1,5 +1,11 @@
 """Backfills contracts for periods that predate the instrument master files.
 
+SUPERSEDED, and refuses to run -- see :func:`discover_period`. KRX publishes
+the contracts themselves now (api_mst KRX_DERIV_HIST, back to 1996), so
+nothing has to be guessed. Kept for the record of how the reconstruction
+worked, and because the maturity-code notes below are still the only written
+account of that scheme.
+
 KIS publishes only *currently listed* instruments in its master file, so a
 contract that has already expired cannot be looked up -- its short_code has to
 be reconstructed. That code is not opaque: it is
@@ -314,6 +320,16 @@ def discover_period(session: Session, period: str) -> dict[str, dict[str, Any]]:
     MKI is excluded from the scan and filled by mirroring K2I -- the two share
     an expiry calendar and a ladder, so searching both would double the cost
     for an identical answer."""
+    raise RuntimeError(
+        "discover_period is superseded and would corrupt mst_fuopt. It writes "
+        "the KIS spelling into short_code, which now holds the exchange's own "
+        "code (KIS's lives in kis_short_cd). The contracts it used to guess "
+        "are published: see the KRX_DERIV_HIST rows in api_mst, whose finder "
+        "answers for every expiry back to 1996. 1,794 of the 38,700 rows this "
+        "produced were contracts that never existed -- not one of them ever "
+        "returned a bar."
+    )
+
     like = f"{period}%" if len(period) == 4 else f"{period[:4]}-{period[5:7]}%"
     rows = session.exec(text("""
         SELECT m.prod_type, m.mat_code, m.mat_scd, m.mat_date, m.prev_mat_date,
