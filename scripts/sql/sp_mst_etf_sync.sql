@@ -1,4 +1,8 @@
 CREATE OR REPLACE PROCEDURE sp_mst_etf_sync (p_inserted OUT NUMBER) AS
+-- 이름이 바뀌는 자리다. s 쪽(수집물)은 소스가 쓰는 이름 그대로고, t 쪽
+-- (mst_etf)은 내부 시스템 이름이다 -- isu_cd -> short_code, isu_nm -> prod_nm.
+-- mst_* 가 층으로 존재하는 이유가 그 번역이라, MERGE 의 ON 절이 매번 두 어휘를
+-- 마주 놓는다. 옛 이름의 표는 mst_etf_old 로 남아 있다.
 -- krx_etf_daily(거래소 유니버스)와 운용사 상품목록들에서 mst_etf(정제 마스터)를
 -- 채운다. sp_mst_fuopt_sync / sp_mst_bond_sync 와 같은 방식이다: 유니버스는
 -- 신규만 INSERT, 운용사 코드는 비어 있을 때만 채움. 사람이 손댄 값은 살아남는다.
@@ -28,9 +32,9 @@ BEGIN
      WHERE isu_cd IS NOT NULL
      GROUP BY isu_cd
   ) s
-  ON (t.isu_cd = s.isu_cd)
+  ON (t.short_code = s.isu_cd)
   WHEN NOT MATCHED THEN
-    INSERT (isu_cd, isu_nm, first_seen)
+    INSERT (short_code, prod_nm, first_seen)
     VALUES (s.isu_cd, s.isu_nm, s.first_seen);
 
   p_inserted := SQL%ROWCOUNT;
@@ -72,7 +76,7 @@ BEGIN
       )
      GROUP BY isu_cd
   ) s
-  ON (t.isu_cd = s.isu_cd)
+  ON (t.short_code = s.isu_cd)
   WHEN MATCHED THEN
     UPDATE SET t.amc = s.amc, t.amc_etf_cd = s.amc_etf_cd
     WHERE t.amc_etf_cd IS NULL;
@@ -90,7 +94,7 @@ BEGIN
      WHERE amc IS NOT NULL AND amc_etf_cd IS NOT NULL
      GROUP BY isu_cd
   ) s
-  ON (t.isu_cd = s.isu_cd)
+  ON (t.short_code = s.isu_cd)
   WHEN MATCHED THEN
     UPDATE SET t.amc = s.amc, t.amc_etf_cd = s.amc_etf_cd;
 
@@ -108,7 +112,7 @@ BEGIN
      WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
      GROUP BY SUBSTR(stockcd, 4, 6)
   ) s
-  ON (t.isu_cd = s.isu_cd)
+  ON (t.short_code = s.isu_cd)
   WHEN MATCHED THEN
     UPDATE SET t.isin = s.isin
     WHERE t.isin IS NULL;
@@ -139,7 +143,7 @@ BEGIN
        AND JSON_VALUE(result_json, '$.ISU_CD') IS NOT NULL
      GROUP BY JSON_VALUE(result_json, '$.ISU_SRT_CD')
   ) s
-  ON (t.isu_cd = s.isu_cd)
+  ON (t.short_code = s.isu_cd)
   WHEN MATCHED THEN
     UPDATE SET t.isin = s.isin
     WHERE t.isin IS NULL;

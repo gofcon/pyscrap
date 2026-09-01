@@ -2283,21 +2283,26 @@ class MstStock(SQLModel, table=True):
     sp_mst_stock_sync from krx_stock_base, not written by the scraping
     engine, and kept out of TABLE_REGISTRY by having no job_id.
 
-    **The key is the short code, as in MstEtf** -- which is worth saying
-    because the source table calls the *other* one ``isu_cd``. KRX names the
-    ISIN ``isu_cd`` and the short code ``isu_srt_cd``; the masters here have
-    used ``isu_cd`` for the short code since MstEtf, since that is the code
-    every other source asks a question with. The sync crosses the two over,
-    and this is the only place the swap happens.
+    **Column names are the internal system's, not the exchange's.** The
+    downstream systems that read the mst_* tables have their own vocabulary
+    -- short_code, prod_nm, list_dt -- and these masters answer to it, which
+    is what makes them worth having as a layer at all. The raw feed's own
+    names stay in krx_stock_base; sp_mst_stock_sync is where the two
+    vocabularies meet, and it is the only place the mapping is written down.
+    The previous naming is kept as mst_stock_old.
+
+    The key crossing over is part of that. KRX names the ISIN ``isu_cd`` and
+    the short code ``isu_srt_cd``; here the short code is ``short_code`` and
+    the ISIN is ``isin``, each under the name that says what it is.
 
     Accumulates and is never emptied, which is the point: the exchange's
     per-day listing only shows what was listed *that* day, so a share that
-    delisted in 2014 exists in exactly one place -- an old day's response. The
-    backfill walks backwards through those days and each new code lands here
-    with the last state it was ever published in.
+    delisted in 2014 exists in exactly one place -- an old day's response.
+    The backfill walks backwards through those days and each new code lands
+    here with the last state it was ever published in.
 
-    ``last_seen_dd`` is that basis date, and doubles as the listed/delisted
-    signal: a row whose ``last_seen_dd`` is the most recent trading day is
+    ``last_seen_dt`` is that basis date, and doubles as the listed/delisted
+    signal: a row whose ``last_seen_dt`` is the most recent trading day is
     still listed, and one that stopped years ago is not. Recorded rather than
     inferred -- KRX publishes no delisting date on this feed.
 
@@ -2310,25 +2315,25 @@ class MstStock(SQLModel, table=True):
 
     __tablename__ = "mst_stock"
 
-    isu_cd: str = Field(primary_key=True, max_length=20)                 # KRX 단축코드
-    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # 표준코드
-    isu_nm: Optional[str] = Field(default=None, max_length=100)          # 한글 종목명
-    isu_abbrv: Optional[str] = Field(default=None, max_length=60)        # 한글 종목약명
-    isu_eng_nm: Optional[str] = Field(default=None, max_length=120)      # 영문 종목명
+    short_code: str = Field(primary_key=True, max_length=20)             # 단축코드
+    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # ISIN
+    prod_nm: Optional[str] = Field(default=None, max_length=100)         # 종목명
+    prod_snm: Optional[str] = Field(default=None, max_length=60)         # 종목단축명
+    prod_enm: Optional[str] = Field(default=None, max_length=120)        # 종목영문명
 
-    list_dd: Optional[str] = Field(default=None, max_length=8)           # 상장일
-    mkt_tp_nm: Optional[str] = Field(default=None, index=True, max_length=20)   # 시장구분
-    secugrp_nm: Optional[str] = Field(default=None, max_length=40)       # 증권구분
-    sect_tp_nm: Optional[str] = Field(default=None, max_length=40)       # 소속부
-    kind_stkcert_tp_nm: Optional[str] = Field(default=None, max_length=20)      # 주식종류
-    parval: Optional[str] = Field(default=None, max_length=20)           # 액면가 ('무액면' 이 온다)
-    list_shrs: Optional[int] = Field(default=None)                       # 상장주식수
+    list_dt: Optional[str] = Field(default=None, max_length=8)           # 상장일
+    mkt_div: Optional[str] = Field(default=None, index=True, max_length=20)   # 시장구분
+    secu_grp: Optional[str] = Field(default=None, max_length=40)         # 증권그룹
+    secu_type: Optional[str] = Field(default=None, max_length=40)        # 증권유형
+    stock_kind_type: Optional[str] = Field(default=None, max_length=20)  # 종류주식
+    face_amt: Optional[str] = Field(default=None, max_length=20)         # 액면가 ('무액면' 이 온다)
+    list_cnt: Optional[int] = Field(default=None)                        # 상장주수
 
     # 마지막으로 거래소 목록에 있던 기준일. 상장/폐지 여부가 여기서 읽힌다.
-    last_seen_dd: Optional[str] = Field(default=None, index=True, max_length=8)
+    last_seen_dt: Optional[str] = Field(default=None, index=True, max_length=8)
 
-    description: Optional[str] = Field(default=None, max_length=200)
-    updated_at: Optional[datetime] = Field(default=None,
+    description: Optional[str] = Field(default=None, max_length=200)     # 설명
+    updated_at: Optional[datetime] = Field(default=None,                 # 수정일시
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
@@ -2347,7 +2352,12 @@ class MstEtf(SQLModel, table=True):
     here turns "which instruments does this manager have" into one column and
     lets every holdings builder select from the same place.
 
-    ``isu_cd`` is the key rather than ``isin`` because no source collected
+    Column names are the internal system's rather than the exchange's, as
+    in MstStock -- the mst_* layer exists to speak the downstream systems'
+    vocabulary, and sp_mst_etf_sync is where that mapping is written down.
+    The previous naming is kept as mst_etf_old.
+
+    ``short_code`` is the key rather than ``isin`` because no source collected
     today publishes an ETF's ISIN -- krx_etf_daily has no such column, PLUS's
     ``krfundcd`` is null on all 84 rows, and the rest give the short code
     alone. It could be *derived* (KR7 + code + check digit) but that would be
@@ -2372,20 +2382,20 @@ class MstEtf(SQLModel, table=True):
 
     __tablename__ = "mst_etf"
 
-    isu_cd: str = Field(primary_key=True, max_length=20)                 # KRX 단축코드
-    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # 표준코드 (소스 확보 시)
-    isu_nm: Optional[str] = Field(default=None, max_length=200)          # 종목명
+    short_code: str = Field(primary_key=True, max_length=20)             # 단축코드
+    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # ISIN (소스 확보 시)
+    prod_nm: Optional[str] = Field(default=None, max_length=200)         # 종목명
 
     # 운용사와, 그 운용사가 이 ETF 에 부여한 코드. 구성종목 빌더는 이 둘만 본다.
-    # 이름에 amc 를 붙인 것은 isu_cd(거래소가 부여) 와 대비시키기 위해서다 --
+    # 이름에 amc 를 붙인 것은 short_code(거래소가 부여) 와 대비시키기 위해서다 --
     # 같은 ETF 에 코드가 둘이고, 어느 쪽이 누구 것인지가 늘 헷갈리는 지점이다.
-    amc: Optional[str] = Field(default=None, index=True, max_length=20)   # KODEX / SOL / PLUS ...
-    amc_etf_cd: Optional[str] = Field(default=None, max_length=30)        # 2ETF01 / 211096 / 006184
+    amc: Optional[str] = Field(default=None, index=True, max_length=20)   # 운용사명: KODEX / SOL / PLUS ...
+    amc_etf_cd: Optional[str] = Field(default=None, max_length=30)        # 운용사 ETF 코드: 2ETF01 / 211096
 
-    first_seen: Optional[str] = Field(default=None, index=True, max_length=8)  # 최초 관측일
+    first_seen: Optional[str] = Field(default=None, index=True, max_length=8)  # 최초관찰일
 
-    description: Optional[str] = Field(default=None, max_length=100)
-    updated_at: Optional[datetime] = Field(default=None,
+    description: Optional[str] = Field(default=None, max_length=100)     # 설명
+    updated_at: Optional[datetime] = Field(default=None,                 # 수정일시
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
@@ -2547,7 +2557,7 @@ class UserEtf(SQLModel, table=True):
     수집 엔진이 건드리지 않는 참조 데이터라 job_id 가 없다(TABLE_REGISTRY 에서
     빠진다). 채울 대상은 이 질의로 나온다::
 
-        SELECT isu_cd, isu_nm FROM mst_etf WHERE amc IS NULL ORDER BY isu_nm;
+        SELECT short_code, prod_nm FROM mst_etf WHERE amc IS NULL ORDER BY prod_nm;
     """
 
     __tablename__ = "user_etf"
