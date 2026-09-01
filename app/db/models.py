@@ -2345,8 +2345,18 @@ class MstEtf(SQLModel, table=True):
     sp_mst_etf_sync, not written by the scraping engine, and kept out of
     TABLE_REGISTRY by having no job_id.
 
-    Exists because the holdings endpoints are keyed on codes nobody else
-    uses. KODEX asks for ``2ETF01``, SOL for ``211096``, PLUS for ``006184``,
+    Filled from krx_etf_list -- the exchange's own ETF listing, which
+    carries the fund's facts as well as its codes: what index it tracks and
+    how (``trace_mtd`` says 일반 / 2X 레버리지 / 1X 인버스), whether it holds
+    the assets or a swap (``replica_mtd``), its CU size, its total fee, how
+    it is taxed. The earlier source, krx_etf_daily, has prices and a name and
+    nothing else, so it stays only as the fallback that keeps a delisted
+    fund's row from vanishing when the listing stops showing it.
+
+    ``amc`` is the exchange's manager name (삼성자산운용), not a brand key.
+    ``amc_etf_cd`` is the one column no exchange feed can supply, and it is
+    why this table exists: the holdings endpoints are keyed on codes nobody
+    else uses. KODEX asks for ``2ETF01``, SOL for ``211096``, PLUS for ``006184``,
     and none of those appear anywhere in KRX's data. Each manager's product
     list carries the KRX short code beside its own, so folding the lists in
     here turns "which instruments does this manager have" into one column and
@@ -2378,19 +2388,35 @@ class MstEtf(SQLModel, table=True):
     table. Their rows are filled **by hand** instead, which is affordable
     because an ETF's code at its manager is set once at listing and does not
     change afterwards; only newly listed instruments ever need adding.
-    ``amc IS NULL`` is the list of what is still missing."""
+    ``amc_etf_cd IS NULL`` is the list of what is still missing -- ``amc``
+    itself now comes from the exchange and is never blank."""
 
     __tablename__ = "mst_etf"
 
     short_code: str = Field(primary_key=True, max_length=20)             # 단축코드
-    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # ISIN (소스 확보 시)
+    isin: Optional[str] = Field(default=None, index=True, max_length=12)  # ISIN
     prod_nm: Optional[str] = Field(default=None, max_length=200)         # 종목명
+    prod_snm: Optional[str] = Field(default=None, max_length=100)        # 종목단축명
+    prod_enm: Optional[str] = Field(default=None, max_length=200)        # 종목영문명
+    list_dt: Optional[str] = Field(default=None, max_length=8)           # 상장일
+
+    # 이 펀드가 무엇을 어떻게 따라가는가. 전부 거래소 목록에서 온다.
+    target_idx_nm: Optional[str] = Field(default=None, max_length=200)   # 타겟 지수명
+    trace_mtd: Optional[str] = Field(default=None, max_length=20)        # 추종 방법: 일반 / 2X 레버리지 / 1X 인버스
+    replica_mtd: Optional[str] = Field(default=None, max_length=40)      # ETF 복제방법: 실물(패시브) / 합성(액티브)
+    mkt_div: Optional[str] = Field(default=None, max_length=20)          # 시장구분: 국내 / 해외 / 국내&해외
+    idx_asst_class: Optional[str] = Field(default=None, max_length=20)   # 추종 자산클래스: 주식 / 채권 / 원자재
 
     # 운용사와, 그 운용사가 이 ETF 에 부여한 코드. 구성종목 빌더는 이 둘만 본다.
-    # 이름에 amc 를 붙인 것은 short_code(거래소가 부여) 와 대비시키기 위해서다 --
-    # 같은 ETF 에 코드가 둘이고, 어느 쪽이 누구 것인지가 늘 헷갈리는 지점이다.
-    amc: Optional[str] = Field(default=None, index=True, max_length=20)   # 운용사명: KODEX / SOL / PLUS ...
+    # 출처가 다르다: amc 는 거래소가 적은 운용사명이고, amc_etf_cd 는 그 운용사
+    # 자신의 목록에서만 얻을 수 있다 -- 거래소 데이터 어디에도 없는 값이다.
+    amc: Optional[str] = Field(default=None, index=True, max_length=40)   # 운용사: 삼성자산운용 / 미래에셋자산운용
     amc_etf_cd: Optional[str] = Field(default=None, max_length=30)        # 운용사 ETF 코드: 2ETF01 / 211096
+
+    cu_qty: Optional[int] = Field(default=None)                          # CU당주수
+    list_cnt: Optional[int] = Field(default=None)                        # 상장주수
+    etf_tot_fee: Optional[float] = Field(default=None)                   # 총수수료
+    tax_div: Optional[str] = Field(default=None, max_length=40)          # 세금구분
 
     first_seen: Optional[str] = Field(default=None, index=True, max_length=8)  # 최초관찰일
 
@@ -2557,7 +2583,8 @@ class UserEtf(SQLModel, table=True):
     수집 엔진이 건드리지 않는 참조 데이터라 job_id 가 없다(TABLE_REGISTRY 에서
     빠진다). 채울 대상은 이 질의로 나온다::
 
-        SELECT short_code, prod_nm FROM mst_etf WHERE amc IS NULL ORDER BY prod_nm;
+        SELECT short_code, prod_nm, amc FROM mst_etf
+         WHERE amc_etf_cd IS NULL ORDER BY amc, prod_nm;
     """
 
     __tablename__ = "user_etf"
