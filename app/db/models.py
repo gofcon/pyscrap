@@ -955,6 +955,51 @@ class KrxDerivHist(VendorRecordBase, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
+class KrxStockBase(VendorRecordBase, table=True):
+    """Typed output table for KRX_STOCK_BASE_INFO (``sto/stk_isu_base_info``)
+    -- one row per listed share per query date, field names kept as KRX's own
+    (lower-cased).
+
+    The instrument side of what krx_etf_daily is for funds: no prices, just
+    what the share *is* -- when it listed, which board, what kind of stock,
+    par value and how many are outstanding. Dated rather than static because
+    the last of those moves (a capital increase changes list_shrs), so a row
+    is only true as of its ``bas_dd``.
+
+    KOSPI only, which is what the key is authorised for: the sibling
+    endpoints for KOSDAQ (``sto/ksq_bydd_trd``) and KONEX answer 401. Nothing
+    in the shape assumes it, so a widened key just starts filling
+    ``mkt_tp_nm`` with more than one value.
+
+    ``parval`` is text, not a number: a share with no par value comes back as
+    '무액면' rather than 0 or blank."""
+
+    __tablename__ = "krx_stock_base"
+
+    id: Optional[int] = Field(default=None, sa_column=Column(Integer, Identity(start=1), primary_key=True))
+    api_id: str = Field(max_length=150)
+    job_id: str = Field(index=True, max_length=150)
+
+    bas_dd: str = Field(index=True, max_length=8)                      # 기준일자 (잡 파라미터)
+
+    isu_cd: str = Field(max_length=12)                                 # 표준코드 (ISIN)
+    isu_srt_cd: str = Field(index=True, max_length=10)                 # 단축코드
+    isu_nm: Optional[str] = Field(default=None, max_length=100)        # 한글 종목명
+    isu_abbrv: Optional[str] = Field(default=None, max_length=60)      # 한글 종목약명
+    isu_eng_nm: Optional[str] = Field(default=None, max_length=120)    # 영문 종목명
+
+    list_dd: Optional[str] = Field(default=None, max_length=8)         # 상장일
+    mkt_tp_nm: Optional[str] = Field(default=None, max_length=20)      # 시장구분 (KOSPI)
+    secugrp_nm: Optional[str] = Field(default=None, max_length=40)     # 증권구분 (주권/외국주권/투자회사 ...)
+    sect_tp_nm: Optional[str] = Field(default=None, max_length=40)     # 소속부
+    kind_stkcert_tp_nm: Optional[str] = Field(default=None, max_length=20)  # 주식종류 (보통주/우선주 ...)
+    parval: Optional[str] = Field(default=None, max_length=20)         # 액면가 ('무액면' 이 온다)
+    list_shrs: Optional[int] = Field(default=None)                     # 상장주식수
+
+    updated_at: Optional[datetime] = Field(default=None,
+                sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
+
+
 class KsdKacdCode(VendorRecordBase, table=True):
     """Typed output table for KSD_KACD_LIST (SEIBRO's ``searchBondList``) --
     the 채권 종류 코드 tree, field names kept as SEIBRO's own (lower-cased).
