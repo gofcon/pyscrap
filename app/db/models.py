@@ -2289,7 +2289,6 @@ class MstStock(SQLModel, table=True):
     is what makes them worth having as a layer at all. The raw feed's own
     names stay in krx_stock_base; sp_mst_stock_sync is where the two
     vocabularies meet, and it is the only place the mapping is written down.
-    The previous naming is kept as mst_stock_old.
 
     The key crossing over is part of that. KRX names the ISIN ``isu_cd`` and
     the short code ``isu_srt_cd``; here the short code is ``short_code`` and
@@ -2365,7 +2364,6 @@ class MstEtf(SQLModel, table=True):
     Column names are the internal system's rather than the exchange's, as
     in MstStock -- the mst_* layer exists to speak the downstream systems'
     vocabulary, and sp_mst_etf_sync is where that mapping is written down.
-    The previous naming is kept as mst_etf_old.
 
     ``short_code`` is the key rather than ``isin`` because no source collected
     today publishes an ETF's ISIN -- krx_etf_daily has no such column, PLUS's
