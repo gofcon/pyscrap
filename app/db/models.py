@@ -488,11 +488,15 @@ class MetaFuoptInfo(SQLModel, table=True):
     the scraping engine's reach. Four rows, entered by hand, read by
     sp_mst_fuopt_sync to stamp the master.
 
-    ``krx_prod_ids`` and ``kis_info_types`` are how the two listings spell
-    the family -- the exchange's prodId and the KIS master's info_type --
-    and the sync procedures read prod_type off them, so a new family is one
-    row here and no change in SQL. Comma-separated lists, matched with
-    INSTR; a few codes per family, never more.
+    ``code_key`` is what ties a contract to its row: the second and third
+    characters of its short code, which name the product-and-underlying in
+    both the exchange's and KIS's code -- 01 for KOSPI200 monthlies, 05
+    mini, 09 and AF the two weeklies, 11 Samsung Electronics options -- and
+    which no two of the 64 listed stock families share. The sync procedures
+    join on it, so a new family is one row here and no change in SQL. The
+    exchange's prodId is not enough for that: KRDRVOPEQU names every stock
+    option of every underlying. ``krx_prod_ids`` and ``kis_info_types``
+    record how the two listings spell the family, for the reader.
 
     ``krx_idx_nm`` and ``mv_id`` are the underlying's names in the two spot
     series (krx_index_daily, stock_index_his), so that a join from a contract
@@ -506,6 +510,7 @@ class MetaFuoptInfo(SQLModel, table=True):
     krx_idx_nm: Optional[str] = Field(default=None, max_length=100)      # krx_index_daily.idx_nm (지수 계열만)
     mv_id: Optional[str] = Field(default=None, max_length=20)            # stock_index_his.mv_id
     cont_mult: float = Field()                                           # 거래승수
+    code_key: str = Field(unique=True, max_length=2)                     # 단축코드 2~3번째 글자 -- 계열×기초자산의 코드
     krx_prod_ids: Optional[str] = Field(default=None, max_length=100)    # 이 계열의 거래소 prodId 들 (쉼표 구분)
     kis_info_types: Optional[str] = Field(default=None, max_length=100)  # 이 계열의 KIS 마스터 info_type 들 (쉼표 구분)
     description: Optional[str] = Field(default=None, max_length=100)

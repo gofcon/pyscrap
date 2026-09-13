@@ -69,9 +69,8 @@ BEGIN
                               ELSE '0' || SUBSTR(k.isu_srt_cd, 5, 1) END
                END AS mat_scd
           FROM krx_deriv_info k
-          -- 어떤 prodId 가 어느 계열인지는 meta_fuopt_info 가 말한다
-          JOIN (SELECT DISTINCT prod_type, krx_prod_ids FROM meta_fuopt_info) u
-            ON INSTR(',' || u.krx_prod_ids || ',', ',' || k.prod_id || ',') > 0
+          -- 계열은 단축코드 2~3번째 글자로 찾는다 (meta_fuopt_info.code_key)
+          JOIN meta_fuopt_info u ON u.code_key = SUBSTR(k.isu_srt_cd, 2, 2)
            -- 스프레드는 만기가 둘이라 달력의 한 행이 아니다.
          WHERE SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
            AND k.lsttrd_dd IS NOT NULL
@@ -103,8 +102,7 @@ BEGIN
                    REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                    f.short_code
               FROM fo_idx_code_mst f
-              JOIN (SELECT DISTINCT prod_type, kis_info_types FROM meta_fuopt_info) u
-                ON INSTR(',' || u.kis_info_types || ',', ',' || f.info_type || ',') > 0
+              JOIN meta_fuopt_info u ON u.code_key = SUBSTR(f.short_code, 2, 2)
              WHERE f.trade_at = (SELECT MAX(trade_at) FROM fo_idx_code_mst)
           ) r
          WHERE r.mat_code IS NOT NULL

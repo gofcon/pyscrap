@@ -38,8 +38,9 @@ BEGIN
                   || CASE WHEN k.rght_tp_nm = '-' THEN '' ELSE SUBSTR(k.isu_srt_cd,6,3) END
            END AS kis_short_cd,
            k.isu_abbrv AS prod_nm,
-           -- meta_maturity.prod_type 과 같은 어휘. 어떤 prodId 가 어느 계열인지는
-           -- meta_fuopt_info.krx_prod_ids 가 말한다 -- 새 계열은 거기 한 행이다.
+           -- meta_maturity.prod_type 과 같은 어휘. 계열은 단축코드 2~3번째 글자로
+           -- 찾는다(meta_fuopt_info.code_key) -- 새 계열은 거기 한 행이다. prodId 로는
+           -- 안 된다: KRDRVOPEQU 하나가 개별옵션 64개 기초자산을 다 담는다.
            u.prod_type,
            CASE k.rght_tp_nm WHEN '콜옵션' THEN 'CALL' WHEN '풋옵션' THEN 'PUT'
                              ELSE 'FUT' END AS call_put_cd,
@@ -49,8 +50,7 @@ BEGIN
            TO_DATE(k.lsttrd_dd, 'YYYY/MM/DD') AS mat_date,
            NULLIF(k.exer_prc, 0) AS strike_prc
       FROM krx_deriv_info k
-      JOIN (SELECT DISTINCT prod_type, krx_prod_ids FROM meta_fuopt_info) u
-        ON INSTR(',' || u.krx_prod_ids || ',', ',' || k.prod_id || ',') > 0
+      JOIN meta_fuopt_info u ON u.code_key = SUBSTR(k.isu_srt_cd, 2, 2)
        -- 스프레드(SP)는 제외한다. 두 만기를 한 코드에 담아 mat_code 가 하나로
        -- 정해지지 않고, KIS 쪽에도 대응이 없다.
      WHERE SUBSTR(k.isu_srt_cd,1,1) NOT IN ('D','4')
@@ -98,8 +98,7 @@ BEGIN
                NULLIF(f.acpr, 0) AS strike_prc,
                ROW_NUMBER() OVER (PARTITION BY f.short_code ORDER BY f.id DESC) AS rn
           FROM fo_idx_code_mst f
-          JOIN (SELECT DISTINCT prod_type, kis_info_types, cont_mult FROM meta_fuopt_info) u
-            ON INSTR(',' || u.kis_info_types || ',', ',' || f.info_type || ',') > 0
+          JOIN meta_fuopt_info u ON u.code_key = SUBSTR(f.short_code, 2, 2)
          WHERE f.trade_at = (SELECT MAX(trade_at) FROM fo_idx_code_mst)
       ) b
       LEFT JOIN meta_maturity m ON m.prod_type = b.prod_type AND m.mat_code = b.mat_code
@@ -115,22 +114,15 @@ BEGIN
 
   p_inserted := p_inserted + SQL%ROWCOUNT;
 
-  -- 기초자산은 지수 계열에서는 상품 계열의 성질이다: 코스피200 계열은 전부
-  -- KOSPI200 위에 있다. 그래서 meta_fuopt_info 에서 prod_type 으로 붙인다 --
+  -- 기초자산은 종목이 아니라 계열×기초자산의 성질이고, 그 짝은 단축코드
+  -- 2~3번째 글자가 말한다. 그래서 meta_fuopt_info 에서 code_key 로 붙인다 --
   -- 만기가 meta_maturity 에서 오는 것과 같은 길이다. 예전엔 KIS 마스터에서
   -- 종목마다 옮겨 적어, 같은 사실이 6만 번 반복되고 마스터에 없던 4만 3천
-  -- 종목(만기 지난 과거분)은 비어 있었다.
-  --
-  -- 기초자산이 하나뿐인 계열만 이렇게 찍는다(HAVING). 개별주식 선물·옵션은
-  -- 한 계열에 기초자산이 수백이라 계약마다 원천에서 와야 하고, 이 표는 그때
-  -- (prod_type, ul_code) 로 이름과 승수를 줄 뿐이다. 비어 있는 것만 채우므로
-  -- 사람이 넣은 값은 그대로다.
+  -- 종목(만기 지난 과거분)은 비어 있었다. 비어 있는 것만 채우므로 사람이 넣은
+  -- 값은 그대로다.
   MERGE /*+ NO_PARALLEL */ INTO mst_fuopt t
-  USING (SELECT prod_type, MIN(ul_code) AS ul_code, MIN(ul_nm) AS ul_nm
-           FROM meta_fuopt_info
-          GROUP BY prod_type
-         HAVING COUNT(*) = 1) u
-     ON (t.prod_type = u.prod_type)
+  USING meta_fuopt_info u
+     ON (SUBSTR(t.short_code, 2, 2) = u.code_key)
   WHEN MATCHED THEN UPDATE SET t.ul_code = u.ul_code, t.ul_nm = u.ul_nm
                    WHERE t.ul_code IS NULL;
 
