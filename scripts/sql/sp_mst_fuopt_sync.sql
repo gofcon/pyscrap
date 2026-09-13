@@ -98,8 +98,6 @@ BEGIN
                CASE WHEN f.info_type IN ('5','D','L','N') THEN 'CALL'
                     WHEN f.info_type IN ('6','E','M','O') THEN 'PUT'
                     ELSE 'FUT' END AS call_put_cd,
-               f.unas_short_code AS ul_code,
-               f.unas_kor_name   AS ul_nm,
                CASE WHEN f.info_type IN ('B','D','E') THEN 50000 ELSE 250000 END AS cont_mult,
                REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                NULLIF(f.acpr, 0) AS strike_prc,
@@ -113,28 +111,24 @@ BEGIN
   ) s
   ON (t.short_code = s.short_code)
   WHEN NOT MATCHED THEN
-    INSERT (short_code, kis_short_cd, prod_nm, prod_type, call_put_cd, ul_code, ul_nm,
+    INSERT (short_code, kis_short_cd, prod_nm, prod_type, call_put_cd,
             cont_mult, mat_code, mat_date, front_date, strike_prc, description)
-    VALUES (s.short_code, s.kis_short_cd, s.prod_nm, s.prod_type, s.call_put_cd, s.ul_code, s.ul_nm,
+    VALUES (s.short_code, s.kis_short_cd, s.prod_nm, s.prod_type, s.call_put_cd,
             s.cont_mult, s.mat_code, s.mat_date, s.front_date, s.strike_prc,
             'from fo_idx_code_mst; expiry unconfirmed');
 
   p_inserted := p_inserted + SQL%ROWCOUNT;
 
-  -- 기초자산은 거래소 목록에 없다. KIS 마스터에서 kis_short_cd 로 붙여 채운다.
-  -- 비어 있는 것만 채우므로 사람이 넣은 값은 그대로다.
+  -- 기초자산은 종목이 아니라 상품 계열의 성질이다: 코스피200 계열은 전부
+  -- KOSPI200 위에 있다. 그래서 meta_underlying 에서 prod_type 으로 붙인다 --
+  -- 만기가 meta_maturity 에서 오는 것과 같은 길이다. 예전엔 KIS 마스터에서
+  -- 종목마다 옮겨 적어, 같은 사실이 6만 번 반복되고 마스터에 없던 4만 3천
+  -- 종목(만기 지난 과거분)은 비어 있었다. 비어 있는 것만 채우므로 사람이
+  -- 넣은 값은 그대로다.
   MERGE /*+ NO_PARALLEL */ INTO mst_fuopt t
-  USING (
-    SELECT short_code AS kis_short_cd,
-           MAX(unas_short_code) KEEP (DENSE_RANK LAST ORDER BY trade_at, id) AS ul_code,
-           MAX(unas_kor_name)   KEEP (DENSE_RANK LAST ORDER BY trade_at, id) AS ul_nm
-      FROM fo_idx_code_mst
-     WHERE info_type IN ('1','5','6','L','M','N','O','D','E')
-       AND unas_short_code IS NOT NULL
-     GROUP BY short_code
-  ) s
-  ON (t.kis_short_cd = s.kis_short_cd)
-  WHEN MATCHED THEN UPDATE SET t.ul_code = s.ul_code, t.ul_nm = s.ul_nm
+  USING meta_underlying u
+     ON (t.prod_type = u.prod_type)
+  WHEN MATCHED THEN UPDATE SET t.ul_code = u.ul_code, t.ul_nm = u.ul_nm
                    WHERE t.ul_code IS NULL;
 
   -- 만기 달력이 뒤늦게 채워진 종목의 만기일을 메운다.
