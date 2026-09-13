@@ -466,30 +466,38 @@ class StockIndexHis(SQLModel, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
-class MetaUnderlying(SQLModel, table=True):
-    """What each product type is written on: one row per ``prod_type``, the
-    same vocabulary MetaMaturity and MstFuopt key on, so a contract reaches
-    its underlying the way it reaches its expiry -- through prod_type, not
-    through a value copied onto every one of its rows. Until this table the
-    underlying lived on mst_fuopt as ul_code/ul_nm, filled from the KIS
-    master per contract, which meant one fact (the KOSPI200 family is written
-    on KOSPI200) repeated 60,000 times and missing on the 43,000 rows the
-    KIS master never listed.
+class MetaFuoptInfo(SQLModel, table=True):
+    """What each product family is written on: one row per (``prod_type``,
+    ``ul_code``), prod_type being the vocabulary MetaMaturity and MstFuopt
+    key on, so a contract reaches its underlying and its multiplier the way
+    it reaches its expiry. The key is the pair, not prod_type alone, because
+    an index family has one underlying while a single-stock family has
+    hundreds -- the day stock futures and options are collected, the same
+    prod_type will carry one row per stock, each with its own multiplier.
+    For a family with a single underlying, sp_mst_fuopt_sync stamps the
+    master by prod_type; for the others the underlying must come with the
+    contract from its listing, and this table supplies the name and the
+    multiplier for the pair. Until this table the underlying lived on
+    mst_fuopt as ul_code/ul_nm, filled from the KIS master per contract,
+    which meant one fact (the KOSPI200 family is written on KOSPI200)
+    repeated 60,000 times and missing on the 43,000 rows the KIS master
+    never listed.
 
-    Reference data like MetaMaturity: no api_id/job_id/id, which keeps it out
-    of TABLE_REGISTRY and the scraping engine's reach. Populated by hand --
-    four rows -- and read by sp_mst_fuopt_sync to stamp the master.
+    META_ names what is managed outside the system: like MetaMaturity it
+    carries no api_id/job_id/id, which keeps it out of TABLE_REGISTRY and
+    the scraping engine's reach. Four rows, entered by hand, read by
+    sp_mst_fuopt_sync to stamp the master.
 
     ``krx_idx_nm`` and ``mv_id`` are the underlying's names in the two spot
     series (krx_index_daily, stock_index_his), so that a join from a contract
     to its spot needs no string literal. ``cont_mult`` is per product type
-    here because it is one: the mini family is 50,000, the rest 250,000."""
-    __tablename__ = "meta_underlying"
+    because it is one: the mini family is 50,000, the rest 250,000."""
+    __tablename__ = "meta_fuopt_info"
 
     prod_type: str = Field(primary_key=True, max_length=20)
-    ul_code: str = Field(index=True, max_length=20)                      # 기초자산 코드 (KIS unas_short_code)
+    ul_code: str = Field(primary_key=True, max_length=20)                # 기초자산 코드 (KIS unas_short_code)
     ul_nm: str = Field(max_length=100)                                   # 기초자산명
-    krx_idx_nm: Optional[str] = Field(default=None, max_length=100)      # krx_index_daily.idx_nm
+    krx_idx_nm: Optional[str] = Field(default=None, max_length=100)      # krx_index_daily.idx_nm (지수 계열만)
     mv_id: Optional[str] = Field(default=None, max_length=20)            # stock_index_his.mv_id
     cont_mult: float = Field()                                           # 거래승수
     krx_prod_ids: Optional[str] = Field(default=None, max_length=100)    # 이 계열을 이루는 거래소 prodId 들

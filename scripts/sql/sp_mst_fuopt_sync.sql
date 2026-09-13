@@ -119,14 +119,21 @@ BEGIN
 
   p_inserted := p_inserted + SQL%ROWCOUNT;
 
-  -- 기초자산은 종목이 아니라 상품 계열의 성질이다: 코스피200 계열은 전부
-  -- KOSPI200 위에 있다. 그래서 meta_underlying 에서 prod_type 으로 붙인다 --
+  -- 기초자산은 지수 계열에서는 상품 계열의 성질이다: 코스피200 계열은 전부
+  -- KOSPI200 위에 있다. 그래서 meta_fuopt_info 에서 prod_type 으로 붙인다 --
   -- 만기가 meta_maturity 에서 오는 것과 같은 길이다. 예전엔 KIS 마스터에서
   -- 종목마다 옮겨 적어, 같은 사실이 6만 번 반복되고 마스터에 없던 4만 3천
-  -- 종목(만기 지난 과거분)은 비어 있었다. 비어 있는 것만 채우므로 사람이
-  -- 넣은 값은 그대로다.
+  -- 종목(만기 지난 과거분)은 비어 있었다.
+  --
+  -- 기초자산이 하나뿐인 계열만 이렇게 찍는다(HAVING). 개별주식 선물·옵션은
+  -- 한 계열에 기초자산이 수백이라 계약마다 원천에서 와야 하고, 이 표는 그때
+  -- (prod_type, ul_code) 로 이름과 승수를 줄 뿐이다. 비어 있는 것만 채우므로
+  -- 사람이 넣은 값은 그대로다.
   MERGE /*+ NO_PARALLEL */ INTO mst_fuopt t
-  USING meta_underlying u
+  USING (SELECT prod_type, MIN(ul_code) AS ul_code, MIN(ul_nm) AS ul_nm
+           FROM meta_fuopt_info
+          GROUP BY prod_type
+         HAVING COUNT(*) = 1) u
      ON (t.prod_type = u.prod_type)
   WHEN MATCHED THEN UPDATE SET t.ul_code = u.ul_code, t.ul_nm = u.ul_nm
                    WHERE t.ul_code IS NULL;
