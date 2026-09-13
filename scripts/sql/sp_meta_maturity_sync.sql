@@ -31,9 +31,12 @@ CREATE OR REPLACE PROCEDURE sp_meta_maturity_sync (p_inserted OUT NUMBER) AS
 --      계열 전체가 빠지는 것보다는 낫다.
 --
 --   mat_code  종목약명의 만기 부분: 'C 202609 335.0' -> 202609, 'C 2609W1 945.0' -> 2609W1
---   mat_scd   단축코드 안의 만기 자리. 월물은 연도 끝자리+월 두 자리(202610 -> 610),
---             위클리는 코드 4~5번째 글자+'W' (B09FA892 -> FAW). mst_fuopt 의 값과
---             같은 규칙이다.
+--   mat_scd   KIS 코드의 4~6번째 글자: 101W12 -> W12, A01609 -> 609, B09FCW945 -> FCW.
+--             거래소 코드에서 만들 때는 월이 한 글자(9, A, B, C)라 두 자리로 되돌려야
+--             한다 -- A0169000 -> 6 + 09, 101WC000 -> W + 12. 위클리는 두 코드의
+--             4~5번째가 같아 거기에 'W' 만 붙인다. 만기코드(202609)에서 만들면 안
+--             된다: 연도 자리가 KIS 의 글자(W)가 아니라 숫자가 되어 2026년 이전이
+--             전부 틀린다. 기존 626행으로 대조해 손으로 잘못 넣은 둘 빼고 일치.
 --   prev_mat_date  같은 계열의 직전 만기. (직전만기, 만기] 가 그 계약이 덮는 기간이라
 --             v_k2i_atm 이 "그날 기준 가장 가까운 만기" 를 이 구간으로 찾는다.
 --             목요일 위클리(WKI)는 월물 만기 주에 상장되지 않아 그 주를 건너뛰는데,
@@ -51,9 +54,9 @@ BEGIN
            MIN(src) AS src,
            COALESCE(MIN(CASE WHEN src = 1 THEN mat_date END),
                     MIN(CASE WHEN src = 2 THEN mat_date END)) AS mat_date,
-           MIN(CASE WHEN mat_code LIKE '%W%' THEN SUBSTR(short_code, 4, 2) || 'W'
-                    ELSE SUBSTR(mat_code, 4, 3) END) AS mat_scd
+           MIN(mat_scd) AS mat_scd
       FROM (
+        -- 거래소 코드에서: 위클리는 4~5번째+'W', 월물은 연도 글자 + 두 자리 월
         SELECT 1 AS src,
                CASE k.prod_id
                  WHEN 'KRDRVFUK2I' THEN 'K2I' WHEN 'KRDRVOPK2I' THEN 'K2I'
@@ -62,7 +65,13 @@ BEGIN
                END AS prod_type,
                REGEXP_SUBSTR(k.isu_abbrv, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                TO_DATE(k.lsttrd_dd, 'YYYY/MM/DD') AS mat_date,
-               k.isu_srt_cd AS short_code
+               CASE WHEN k.prod_id IN ('KRDRVOPWKI','KRDRVOPWKM')
+                      THEN SUBSTR(k.isu_srt_cd, 4, 2) || 'W'
+                    ELSE SUBSTR(k.isu_srt_cd, 4, 1)
+                         || CASE SUBSTR(k.isu_srt_cd, 5, 1)
+                              WHEN 'A' THEN '10' WHEN 'B' THEN '11' WHEN 'C' THEN '12'
+                              ELSE '0' || SUBSTR(k.isu_srt_cd, 5, 1) END
+               END AS mat_scd
           FROM krx_deriv_info k
          WHERE k.prod_id IN ('KRDRVFUK2I','KRDRVOPK2I','KRDRVFUMKI',
                              'KRDRVOPMKI','KRDRVOPWKI','KRDRVOPWKM')
@@ -70,12 +79,21 @@ BEGIN
            AND SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
            AND k.lsttrd_dd IS NOT NULL
         UNION ALL
-        SELECT 1, f.prod_type, f.mat_code, f.mat_date, f.short_code
+        -- 마스터의 거래소 코드에서, 위와 같은 규칙
+        SELECT 1, f.prod_type, f.mat_code, f.mat_date,
+               CASE WHEN f.prod_type IN ('WKI','WKM')
+                      THEN SUBSTR(f.short_code, 4, 2) || 'W'
+                    ELSE SUBSTR(f.short_code, 4, 1)
+                         || CASE SUBSTR(f.short_code, 5, 1)
+                              WHEN 'A' THEN '10' WHEN 'B' THEN '11' WHEN 'C' THEN '12'
+                              ELSE '0' || SUBSTR(f.short_code, 5, 1) END
+               END
           FROM mst_fuopt f
          WHERE f.prod_type IN ('K2I','MKI','WKI','WKM')
            AND f.mat_date IS NOT NULL
            AND (f.description IS NULL OR f.description NOT LIKE 'from fo_idx_code_mst%')
         UNION ALL
+        -- KIS 코드에서: 월이 이미 두 자리라 4~6번째를 그대로 쓴다
         SELECT 2, r.prod_type, r.mat_code,
                CASE WHEN r.mat_code LIKE '%W%'
                     THEN NEXT_DAY(TO_DATE('20' || SUBSTR(r.mat_code, 1, 4) || '01', 'YYYYMMDD') - 1,
@@ -83,8 +101,7 @@ BEGIN
                          + 7 * (TO_NUMBER(SUBSTR(r.mat_code, 6, 1)) - 1)
                     ELSE NEXT_DAY(TO_DATE(r.mat_code || '01', 'YYYYMMDD') - 1, 'THURSDAY') + 7
                END,
-               -- KIS 코드의 4~5번째 글자는 거래소 단축코드와 같다 (B09FCW945 / B09FC945)
-               r.short_code
+               SUBSTR(r.short_code, 4, 3)
           FROM (
             SELECT CASE WHEN f.info_type IN ('1','5','6') THEN 'K2I'
                         WHEN f.info_type IN ('B','D','E') THEN 'MKI'
