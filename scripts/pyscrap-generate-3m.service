@@ -7,16 +7,19 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
-# Ordered: refresh the curated master first, then generate against it.
-# Multiple ExecStart= lines on a Type=oneshot service run sequentially, and
-# the unit stops at the first one that fails -- so a failed sync won't let
-# job generation fan out over a stale contract list.
+# Ordered: bring the expiry calendar and the curated master up to date
+# first, then generate against them. Which DB-side steps, and in what
+# order, is scripts/sql/sp_run_generate_3m.sql, top to bottom; this unit
+# only knows when. Multiple ExecStart= lines on a Type=oneshot service run
+# sequentially, and the unit stops at the first one that fails -- so a
+# failed sync won't let job generation fan out over a stale contract list.
 #
-# All of this must run *after* the raw master (fo_idx_code_mst) has been
-# reloaded by the daily_start cycle: sync_mst_fuopt reads it, and the shards'
-# db macro selects from what that sync produces, so generating first would
-# use yesterday's contract list and miss the front-month roll.
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-mst-fuopt
+# All of this must run *after* the raw listings (krx_deriv_info, and the
+# KIS master fo_idx_code_mst as fallback) have been reloaded by the
+# daily_start cycle: the sync reads them, and the shards' db macro selects
+# from what that sync produces, so generating first would use yesterday's
+# contract list and miss the front-month roll.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh call-proc sp_run_generate_3m
 # generate-only for both shards, in one process each so the two stay in step.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_call generate-only
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_put generate-only

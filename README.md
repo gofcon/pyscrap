@@ -29,6 +29,7 @@ Independently-schedulable steps; see `scripts/` for the matching
 ```bash
 python -m app.cli generate-jobs 5m     # create pending ApiJob rows for this execution_cycle
 python -m app.cli run-cycle 5m         # execute whatever's currently pending
+python -m app.cli call-proc sp_run_daily_start   # a cycle's DB-side steps, in order (what the batch calls)
 python -m app.cli sync-index-his       # index bars -> stock_index_his, refreshes v_k2i_atm
 python -m app.cli run-export           # the day's rows -> Parquet in object storage
 python -m app.cli finalize-exports     # upload staged documents, purge old CSV buffers

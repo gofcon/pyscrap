@@ -13,11 +13,11 @@ WorkingDirectory=/home/opc/pyscrap
 # yesterday's issues and miss today's.
 #
 # daily_batch1 (18:00) appended today's full bond listing to ksd_bond_isin
-# and refreshed krx_etf_daily with the three managers' product lists; these
-# two fold what is new in them into mst_bond and mst_etf, and the cycle
-# below then generates detail jobs from those masters.
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-mst-bond
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh sync-mst-etf
+# and refreshed krx_etf_daily with the managers' product lists; the DB-side
+# steps listed in scripts/sql/sp_run_daily_batch2.sql fold what is new in
+# them into mst_bond and mst_etf, and the cycle below then generates detail
+# jobs from those masters. This unit only knows when.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh call-proc sp_run_daily_batch2
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_batch2
 
 [Install]

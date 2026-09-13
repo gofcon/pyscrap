@@ -41,6 +41,13 @@ CREATE OR REPLACE PROCEDURE sp_run_export (
   -- 군데 적히고 언젠가 한쪽만 고쳐진다.
   n  NUMBER;
 BEGIN
+  -- 지수 시계열과 v_k2i_atm 을 먼저 최신으로. 내보내는 것 중 v_fuopt_price 가
+  -- 그 MV 를 읽으므로 순서가 실제 의존이고, 예전엔 서비스 파일이 두 명령을
+  -- 차례로 불러 지켰다. 여기 두면 그 순서가 코드에 있다. 날짜 범위로 과거를 다시
+  -- 내보낼 때도 같이 도는데, MERGE 와 MV 갱신은 멱등이라 몇 초의 값이다.
+  sp_stock_index_his_sync(n);
+  DBMS_OUTPUT.PUT_LINE('sp_stock_index_his_sync: ' || n || ' row(s) merged');
+
   -- 결과 테이블: 날짜 컬럼이 sp_export_parquet 에 매핑돼 있어 이름만 주면 된다.
   sp_export_parquet(p_name => 'kis_futopt_price', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'kis_futopt_chart', p_to => p_to, p_from => p_from, p_rows => n);

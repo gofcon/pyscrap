@@ -175,6 +175,28 @@ def _call_procedure(name: str, *args: object, out_count: bool = True) -> int | N
     return result
 
 
+@app.command("call-proc")
+def call_proc_cmd(
+    name: str = typer.Argument(..., help="DB-side procedure to run, e.g. sp_run_daily_start"),
+):
+    """Run one parameterless DB-side procedure and log what it reports.
+
+    This is how the batch calls its orchestrators (sp_run_daily_start,
+    sp_run_generate_3m, sp_run_daily_batch2): each is a list of the steps
+    that follow or precede one cycle, in order, the way sp_run_export lists
+    the export targets. The order of the DB-side steps then lives in one
+    SQL file per cycle rather than across service files and cli commands,
+    and adding or moving a step is a change to that file alone -- compiled
+    into the database, with nothing to pull on the instance. The service
+    files call this command with a name and know nothing else.
+
+    The procedures take no parameters and return no count; each step
+    writes its own line to DBMS_OUTPUT, which lands in the batch log."""
+    setup_logging()
+    _call_procedure(name, out_count=False)
+    typer.echo(f"{name}: done")
+
+
 @app.command("sync-index-his")
 def sync_index_his_cmd():
     """Fold scraped index bars (kis_index_daily) into the stock_index_his
