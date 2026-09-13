@@ -61,7 +61,7 @@ BEGIN
                u.prod_type,
                REGEXP_SUBSTR(k.isu_abbrv, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                TO_DATE(k.lsttrd_dd, 'YYYY/MM/DD') AS mat_date,
-               CASE WHEN u.prod_type IN ('WKI','WKM')
+               CASE WHEN REGEXP_LIKE(k.isu_abbrv, '[0-9]{4}W[0-9]')
                       THEN SUBSTR(k.isu_srt_cd, 4, 2) || 'W'
                     ELSE SUBSTR(k.isu_srt_cd, 4, 1)
                          || CASE SUBSTR(k.isu_srt_cd, 5, 1)
@@ -77,7 +77,7 @@ BEGIN
         UNION ALL
         -- 마스터의 거래소 코드에서, 위와 같은 규칙
         SELECT 1, f.prod_type, f.mat_code, f.mat_date,
-               CASE WHEN f.prod_type IN ('WKI','WKM')
+               CASE WHEN f.mat_code LIKE '%W%'
                       THEN SUBSTR(f.short_code, 4, 2) || 'W'
                     ELSE SUBSTR(f.short_code, 4, 1)
                          || CASE SUBSTR(f.short_code, 5, 1)
@@ -89,16 +89,16 @@ BEGIN
            AND (f.description IS NULL OR f.description NOT LIKE 'from fo_idx_code_mst%')
         UNION ALL
         -- KIS 코드에서: 월이 이미 두 자리라 4~6번째를 그대로 쓴다
+        -- 그 달 첫 exp_dow 에서 (주차 - 1) 주 뒤. 주차는 월물이면 표의 exp_week,
+        -- 위클리면 코드의 n (2609W3 -> 3).
         SELECT 2, r.prod_type, r.mat_code,
-               CASE WHEN r.mat_code LIKE '%W%'
-                    THEN NEXT_DAY(TO_DATE('20' || SUBSTR(r.mat_code, 1, 4) || '01', 'YYYYMMDD') - 1,
-                                  CASE r.prod_type WHEN 'WKM' THEN 'MONDAY' ELSE 'THURSDAY' END)
-                         + 7 * (TO_NUMBER(SUBSTR(r.mat_code, 6, 1)) - 1)
-                    ELSE NEXT_DAY(TO_DATE(r.mat_code || '01', 'YYYYMMDD') - 1, 'THURSDAY') + 7
-               END,
+               NEXT_DAY(TO_DATE(CASE WHEN r.mat_code LIKE '%W%' THEN '20' || SUBSTR(r.mat_code, 1, 4)
+                                     ELSE r.mat_code END || '01', 'YYYYMMDD') - 1,
+                        r.exp_dow)
+                 + 7 * (NVL(r.exp_week, TO_NUMBER(SUBSTR(r.mat_code, 6, 1))) - 1),
                SUBSTR(r.short_code, 4, 3)
           FROM (
-            SELECT u.prod_type,
+            SELECT u.prod_type, u.exp_dow, u.exp_week,
                    REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                    f.short_code
               FROM fo_idx_code_mst f

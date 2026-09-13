@@ -29,7 +29,7 @@ BEGIN
            -- 자리('000')를 뗀다. mst_fuopt 의 마스터 출처 21,643행으로 대조해
            -- 전건 일치를 확인한 식이다.
            CASE
-             WHEN u.prod_type IN ('WKI','WKM')
+             WHEN REGEXP_LIKE(k.isu_abbrv, '[0-9]{4}W[0-9]')
                THEN SUBSTR(k.isu_srt_cd,1,5)||'W'||SUBSTR(k.isu_srt_cd,6,3)
              ELSE SUBSTR(k.isu_srt_cd,1,4)
                   || CASE SUBSTR(k.isu_srt_cd,5,1)
@@ -77,7 +77,7 @@ BEGIN
   USING (
     SELECT b.*, m.mat_date, m.prev_mat_date AS front_date
       FROM (
-        SELECT CASE WHEN u.prod_type IN ('WKI','WKM')
+        SELECT CASE WHEN SUBSTR(f.short_code, 6, 1) = 'W'
                       THEN SUBSTR(f.short_code, 1, 5) || SUBSTR(f.short_code, 7, 3)
                     ELSE SUBSTR(f.short_code, 1, 4)
                          || CASE SUBSTR(f.short_code, 5, 2)

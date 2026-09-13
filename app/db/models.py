@@ -498,6 +498,13 @@ class MetaFuoptInfo(SQLModel, table=True):
     option of every underlying. ``krx_prod_ids`` and ``kis_info_types``
     record how the two listings spell the family, for the reader.
 
+    ``exp_dow`` and ``exp_week`` are the family's expiry rule -- the weekday
+    it expires on and, for a monthly, which one of the month (the second
+    Thursday); a weekly's week number is in its own code, so exp_week is
+    NULL there. sp_meta_maturity_sync derives a date from these when
+    neither listing knows one. Whether a code is weekly is not a column:
+    the code says so itself (2609W3, and a W in KIS's sixth position).
+
     ``krx_idx_nm`` and ``mv_id`` are the underlying's names in the two spot
     series (krx_index_daily, stock_index_his), so that a join from a contract
     to its spot needs no string literal. ``cont_mult`` is per product type
@@ -511,6 +518,8 @@ class MetaFuoptInfo(SQLModel, table=True):
     mv_id: Optional[str] = Field(default=None, max_length=20)            # stock_index_his.mv_id
     cont_mult: float = Field()                                           # 거래승수
     code_key: str = Field(unique=True, max_length=2)                     # 단축코드 2~3번째 글자 -- 계열×기초자산의 코드
+    exp_dow: str = Field(max_length=9)                                   # 만기 요일 (THURSDAY / MONDAY)
+    exp_week: Optional[int] = Field(default=None)                        # 월물: 그 달의 몇째 exp_dow (2); 위클리: NULL (코드의 n)
     krx_prod_ids: Optional[str] = Field(default=None, max_length=100)    # 이 계열의 거래소 prodId 들 (쉼표 구분)
     kis_info_types: Optional[str] = Field(default=None, max_length=100)  # 이 계열의 KIS 마스터 info_type 들 (쉼표 구분)
     description: Optional[str] = Field(default=None, max_length=100)
