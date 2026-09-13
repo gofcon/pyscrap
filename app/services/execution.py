@@ -24,6 +24,7 @@ from typing import Any, cast
 from loguru import logger
 from sqlalchemy import Column, delete as sa_delete, func
 from sqlmodel import Session, select
+from tenacity import RetryError
 
 from app.db.models import ApiJob, ApiJobBuilder, ApiJobLog, ApiMst
 from app.scrapers import make_scraper
@@ -179,6 +180,15 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         # a single session, so one failure would otherwise spread down the
         # rest of the run.
         session.rollback()
+        # fetch() retries through tenacity, and a request that failed three
+        # times comes out wrapped: str(exc) is "RetryError[<Future ... raised
+        # HTTPStatusError>]", the class name and nothing else. Ten days of
+        # TIGER_ETF_PDF failures read exactly that and could not say whether
+        # the site answered 403, 429 or 500 -- the one thing the log needed
+        # to record. Log the last attempt's own exception instead, which
+        # for httpx carries the status and the URL.
+        if isinstance(exc, RetryError) and exc.last_attempt.failed:
+            exc = exc.last_attempt.exception()
         _log(session, job.job_id, "FAILED", error_message=str(exc)[:4000])
 
     return job

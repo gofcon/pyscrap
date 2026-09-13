@@ -1735,8 +1735,10 @@ class KsdBondPrin(VendorRecordBase, table=True):
     설정으로는 종목당 최근 10건까지만 들어온다.
 
     ``int_sum_amt2`` 는 소수점 이하가 30자리 넘게 오는 단가성 값이라 float 에
-    담으면 유효숫자 16자리 밖은 잃는다. 금액 자체는 ``int_sum_amt`` 가 정수로
-    갖고 있으므로 실무상 문제는 없다."""
+    담으면 유효숫자 16자리 밖은 잃는다. 금액 ``int_sum_amt`` 는 원 단위 소수
+    둘째 자리까지 온다 -- 대부분 정수지만 단가 x 수량이 원 아래로 떨어지는
+    종목(1264788.89 같은)이 8,600건 중 37건 있어, 정수로 받으면 그 종목만
+    검증에서 떨어진다. 컬럼은 NUMBER 로 소수를 그대로 갖는다."""
 
     __tablename__ = "ksd_bond_prin"
 
@@ -1752,7 +1754,7 @@ class KsdBondPrin(VendorRecordBase, table=True):
     prin_tpcd_nm: Optional[str] = Field(default=None, max_length=20)    # 이자/원리금
     coupon_rate: Optional[float] = Field(default=None)                  # 적용금리
     prcp: Optional[int] = Field(default=None)                           # 원금
-    int_sum_amt: Optional[int] = Field(default=None)                    # 이자합계
+    int_sum_amt: Optional[float] = Field(default=None)                  # 이자합계 (원, 소수 2자리까지)
     int_sum_amt2: Optional[float] = Field(default=None)                 # 단가당 이자
     depo_qty: Optional[int] = Field(default=None)                       # 예탁수량
 
