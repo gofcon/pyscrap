@@ -1,0 +1,82 @@
+CREATE OR REPLACE PROCEDURE sp_meta_maturity_sync (p_inserted OUT NUMBER) AS
+-- krx_deriv_info(거래소 전종목 기본정보, 매일 재적재)에서 meta_maturity(만기 달력)로
+-- 새 만기만 적재. 기존 행은 건드리지 않는다.
+--
+-- 달력은 원래 손으로, 또는 KIS 에 마지막 거래일을 물어 채웠고 그래서 늘 뒤처졌다.
+-- 2026-09 에 위클리 달력이 08-27/08-31 에서 끊긴 채로 있어 9월 위클리는 만기가
+-- 안 붙었고, 만기로 조인하는 종목 선택 쿼리가 그것들을 전부 떨어뜨려 열흘간
+-- 위클리가 하나도 수집되지 않았다. 거래소 목록은 종목마다 최종거래일
+-- (lsttrd_dd)을 주므로, 상장되는 순간 달력도 같이 온다 -- 위클리는 한 주 앞,
+-- 월물은 몇 년 앞.
+--
+-- sp_mst_fuopt_sync 보다 먼저 돈다. 그쪽 마지막 MERGE 가 만기 없는 종목의
+-- 만기를 이 달력에서 메우므로, 달력이 먼저 늘어나 있어야 같은 날 그 자리가
+-- 채워진다.
+--
+-- 원천은 둘을 합친다. 거래소 목록은 지금 상장된 것만 주므로, 하루라도 거르면
+-- (로그인이 막혔던 2026-09-02~13 이 그랬다) 그 사이 상장되고 만기된 위클리는
+-- 목록에서 영영 사라진다. mst_fuopt 는 한 번 본 종목을 지우지 않으므로 거기
+-- 남은 만기로 그 구멍을 메운다 -- 만기일은 두 곳 다 거래소 최종거래일이다.
+--
+--   mat_code  종목약명의 만기 부분: 'C 202609 335.0' -> 202609, 'C 2609W1 945.0' -> 2609W1
+--   mat_scd   단축코드 안의 만기 자리. 월물은 연도 끝자리+월 두 자리(202610 -> 610),
+--             위클리는 코드 4~5번째 글자+'W' (B09FA892 -> FAW). mst_fuopt 의 값과
+--             같은 규칙이다.
+--   prev_mat_date  같은 계열의 직전 만기. (직전만기, 만기] 가 그 계약이 덮는 기간이라
+--             v_k2i_atm 이 "그날 기준 가장 가까운 만기" 를 이 구간으로 찾는다.
+--             목요일 위클리(WKI)는 월물 만기 주에 상장되지 않아 그 주를 건너뛰는데,
+--             직전을 자기 계열에서만 구하면 월물 주도 다음 위클리의 구간에 들어가
+--             그 주에도 "가장 가까운 위클리" 가 답이 된다. 달력에서 계산되는 값이라
+--             매번 전체를 다시 구한다 -- 202712 의 직전이 202709 상장 전에 202706 으로
+--             적힌 채 남는 식의 묵은 값을 없애기 위해서다. 다만 계열의 첫 행은 계산이
+--             NULL 이므로 손으로 넣어 둔 값을 지킨다: 그게 없으면 v_k2i_atm 에서 그
+--             첫 만기 이전 날짜가 전부 빠진다.
+BEGIN
+  MERGE /*+ NO_PARALLEL */ INTO meta_maturity t
+  USING (
+    SELECT prod_type, mat_code,
+           MIN(mat_date) AS mat_date,
+           MIN(CASE WHEN mat_code LIKE '%W%' THEN SUBSTR(short_code, 4, 2) || 'W'
+                    ELSE SUBSTR(mat_code, 4, 3) END) AS mat_scd
+      FROM (
+        SELECT CASE k.prod_id
+                 WHEN 'KRDRVFUK2I' THEN 'K2I' WHEN 'KRDRVOPK2I' THEN 'K2I'
+                 WHEN 'KRDRVFUMKI' THEN 'MKI' WHEN 'KRDRVOPMKI' THEN 'MKI'
+                 WHEN 'KRDRVOPWKI' THEN 'WKI' WHEN 'KRDRVOPWKM' THEN 'WKM'
+               END AS prod_type,
+               REGEXP_SUBSTR(k.isu_abbrv, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
+               TO_DATE(k.lsttrd_dd, 'YYYY/MM/DD') AS mat_date,
+               k.isu_srt_cd AS short_code
+          FROM krx_deriv_info k
+         WHERE k.prod_id IN ('KRDRVFUK2I','KRDRVOPK2I','KRDRVFUMKI',
+                             'KRDRVOPMKI','KRDRVOPWKI','KRDRVOPWKM')
+           -- 스프레드는 만기가 둘이라 달력의 한 행이 아니다.
+           AND SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
+           AND k.lsttrd_dd IS NOT NULL
+        UNION ALL
+        SELECT f.prod_type, f.mat_code, f.mat_date, f.short_code
+          FROM mst_fuopt f
+         WHERE f.prod_type IN ('K2I','MKI','WKI','WKM')
+           AND f.mat_date IS NOT NULL
+      )
+     WHERE mat_code IS NOT NULL
+     GROUP BY prod_type, mat_code
+  ) s
+  ON (t.prod_type = s.prod_type AND t.mat_code = s.mat_code)
+  WHEN NOT MATCHED THEN
+    INSERT (prod_type, mat_code, mat_date, mat_scd, description)
+    VALUES (s.prod_type, s.mat_code, s.mat_date, s.mat_scd, 'from krx_deriv_info (lsttrd_dd)');
+
+  p_inserted := SQL%ROWCOUNT;
+
+  -- 직전 만기를 달력 전체에서 다시 구한다 (위 설명). NO_PARALLEL 은 필수:
+  -- 자동 병렬 DML 이 갱신 중인 표를 서브쿼리로 다시 읽다가 형제 슬레이브끼리
+  -- 행 잠금으로 교착한다 (ORA-12860).
+  UPDATE /*+ NO_PARALLEL */ meta_maturity t
+     SET t.prev_mat_date = NVL((SELECT MAX(m.mat_date)
+                                  FROM meta_maturity m
+                                 WHERE m.prod_type = t.prod_type
+                                   AND m.mat_date  < t.mat_date),
+                               t.prev_mat_date)
+   WHERE t.mat_date IS NOT NULL;
+END;

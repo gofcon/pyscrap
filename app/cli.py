@@ -190,19 +190,28 @@ def sync_index_his_cmd():
 
 @app.command("sync-mst-fuopt")
 def sync_mst_fuopt_cmd():
-    """Fold any newly-listed contracts from fo_idx_code_mst into mst_fuopt, by
+    """Fold any newly-listed contracts from krx_deriv_info into mst_fuopt, by
     calling the DB-side procedure sp_mst_fuopt_sync (a MERGE that inserts
     unseen short_codes and leaves existing rows alone).
 
-    Belongs to the batch rather than to a trigger on fo_idx_code_mst: the raw
-    master is only ever refreshed by the daily_start cycle, so "whenever rows
+    The expiry calendar is extended first, from the same listing
+    (sp_meta_maturity_sync): the exchange gives every contract its last
+    trading day, so a maturity is known the day its contracts list. The order
+    is a real dependency -- sp_mst_fuopt_sync's last step fills the expiry
+    of any contract that has none from that calendar, and the job builders
+    select by expiry, so a contract whose maturity the calendar lacks is
+    invisible to collection. The weekly options went uncollected for ten
+    days in 2026-09 exactly that way, with the calendar stopped at 08-31.
+
+    Belongs to the batch rather than to a trigger on krx_deriv_info: the raw
+    listing is only ever refreshed by the daily_start cycle, so "whenever rows
     arrive" and "once a day, after the refresh" are the same moment -- and a
     trigger paid for that equivalence, re-running the whole MERGE once per
-    INSERT statement of the ~9k-row reload (measured at 0.8ms per row, ~7s a
-    day) while making failures land somewhere with no log. Schedule this
-    after the daily_start cycle and before any job generation that selects
-    from mst_fuopt."""
+    INSERT statement of the reload while making failures land somewhere with
+    no log. Schedule this after the daily_start cycle and before any job
+    generation that selects from mst_fuopt."""
     setup_logging()
+    typer.echo(f"meta_maturity: {_call_procedure('sp_meta_maturity_sync')} new maturity(ies)")
     typer.echo(f"mst_fuopt: {_call_procedure('sp_mst_fuopt_sync')} new contract(s)")
 
 
