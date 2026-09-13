@@ -58,14 +58,10 @@ BEGIN
       FROM (
         -- 거래소 코드에서: 위클리는 4~5번째+'W', 월물은 연도 글자 + 두 자리 월
         SELECT 1 AS src,
-               CASE k.prod_id
-                 WHEN 'KRDRVFUK2I' THEN 'K2I' WHEN 'KRDRVOPK2I' THEN 'K2I'
-                 WHEN 'KRDRVFUMKI' THEN 'MKI' WHEN 'KRDRVOPMKI' THEN 'MKI'
-                 WHEN 'KRDRVOPWKI' THEN 'WKI' WHEN 'KRDRVOPWKM' THEN 'WKM'
-               END AS prod_type,
+               u.prod_type,
                REGEXP_SUBSTR(k.isu_abbrv, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                TO_DATE(k.lsttrd_dd, 'YYYY/MM/DD') AS mat_date,
-               CASE WHEN k.prod_id IN ('KRDRVOPWKI','KRDRVOPWKM')
+               CASE WHEN u.prod_type IN ('WKI','WKM')
                       THEN SUBSTR(k.isu_srt_cd, 4, 2) || 'W'
                     ELSE SUBSTR(k.isu_srt_cd, 4, 1)
                          || CASE SUBSTR(k.isu_srt_cd, 5, 1)
@@ -73,10 +69,11 @@ BEGIN
                               ELSE '0' || SUBSTR(k.isu_srt_cd, 5, 1) END
                END AS mat_scd
           FROM krx_deriv_info k
-         WHERE k.prod_id IN ('KRDRVFUK2I','KRDRVOPK2I','KRDRVFUMKI',
-                             'KRDRVOPMKI','KRDRVOPWKI','KRDRVOPWKM')
+          -- 어떤 prodId 가 어느 계열인지는 meta_fuopt_info 가 말한다
+          JOIN (SELECT DISTINCT prod_type, krx_prod_ids FROM meta_fuopt_info) u
+            ON INSTR(',' || u.krx_prod_ids || ',', ',' || k.prod_id || ',') > 0
            -- 스프레드는 만기가 둘이라 달력의 한 행이 아니다.
-           AND SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
+         WHERE SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
            AND k.lsttrd_dd IS NOT NULL
         UNION ALL
         -- 마스터의 거래소 코드에서, 위와 같은 규칙
@@ -89,8 +86,7 @@ BEGIN
                               ELSE '0' || SUBSTR(f.short_code, 5, 1) END
                END
           FROM mst_fuopt f
-         WHERE f.prod_type IN ('K2I','MKI','WKI','WKM')
-           AND f.mat_date IS NOT NULL
+         WHERE f.mat_date IS NOT NULL
            AND (f.description IS NULL OR f.description NOT LIKE 'from fo_idx_code_mst%')
         UNION ALL
         -- KIS 코드에서: 월이 이미 두 자리라 4~6번째를 그대로 쓴다
@@ -103,15 +99,13 @@ BEGIN
                END,
                SUBSTR(r.short_code, 4, 3)
           FROM (
-            SELECT CASE WHEN f.info_type IN ('1','5','6') THEN 'K2I'
-                        WHEN f.info_type IN ('B','D','E') THEN 'MKI'
-                        WHEN f.info_type IN ('L','M')     THEN 'WKI'
-                        WHEN f.info_type IN ('N','O')     THEN 'WKM' END AS prod_type,
+            SELECT u.prod_type,
                    REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                    f.short_code
               FROM fo_idx_code_mst f
+              JOIN (SELECT DISTINCT prod_type, kis_info_types FROM meta_fuopt_info) u
+                ON INSTR(',' || u.kis_info_types || ',', ',' || f.info_type || ',') > 0
              WHERE f.trade_at = (SELECT MAX(trade_at) FROM fo_idx_code_mst)
-               AND f.info_type IN ('1','5','6','B','D','E','L','M','N','O')
           ) r
          WHERE r.mat_code IS NOT NULL
       )

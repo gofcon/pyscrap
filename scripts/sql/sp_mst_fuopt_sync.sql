@@ -29,7 +29,7 @@ BEGIN
            -- 자리('000')를 뗀다. mst_fuopt 의 마스터 출처 21,643행으로 대조해
            -- 전건 일치를 확인한 식이다.
            CASE
-             WHEN k.prod_id IN ('KRDRVOPWKI','KRDRVOPWKM')
+             WHEN u.prod_type IN ('WKI','WKM')
                THEN SUBSTR(k.isu_srt_cd,1,5)||'W'||SUBSTR(k.isu_srt_cd,6,3)
              ELSE SUBSTR(k.isu_srt_cd,1,4)
                   || CASE SUBSTR(k.isu_srt_cd,5,1)
@@ -38,12 +38,9 @@ BEGIN
                   || CASE WHEN k.rght_tp_nm = '-' THEN '' ELSE SUBSTR(k.isu_srt_cd,6,3) END
            END AS kis_short_cd,
            k.isu_abbrv AS prod_nm,
-           -- meta_maturity.prod_type 과 같은 어휘. 어긋나면 만기일이 안 붙는다.
-           CASE k.prod_id
-             WHEN 'KRDRVFUK2I' THEN 'K2I' WHEN 'KRDRVOPK2I' THEN 'K2I'
-             WHEN 'KRDRVFUMKI' THEN 'MKI' WHEN 'KRDRVOPMKI' THEN 'MKI'
-             WHEN 'KRDRVOPWKI' THEN 'WKI' WHEN 'KRDRVOPWKM' THEN 'WKM'
-           END AS prod_type,
+           -- meta_maturity.prod_type 과 같은 어휘. 어떤 prodId 가 어느 계열인지는
+           -- meta_fuopt_info.krx_prod_ids 가 말한다 -- 새 계열은 거기 한 행이다.
+           u.prod_type,
            CASE k.rght_tp_nm WHEN '콜옵션' THEN 'CALL' WHEN '풋옵션' THEN 'PUT'
                              ELSE 'FUT' END AS call_put_cd,
            k.setlmult AS cont_mult,
@@ -52,11 +49,11 @@ BEGIN
            TO_DATE(k.lsttrd_dd, 'YYYY/MM/DD') AS mat_date,
            NULLIF(k.exer_prc, 0) AS strike_prc
       FROM krx_deriv_info k
-     WHERE k.prod_id IN ('KRDRVFUK2I','KRDRVOPK2I','KRDRVFUMKI',
-                         'KRDRVOPMKI','KRDRVOPWKI','KRDRVOPWKM')
+      JOIN (SELECT DISTINCT prod_type, krx_prod_ids FROM meta_fuopt_info) u
+        ON INSTR(',' || u.krx_prod_ids || ',', ',' || k.prod_id || ',') > 0
        -- 스프레드(SP)는 제외한다. 두 만기를 한 코드에 담아 mat_code 가 하나로
        -- 정해지지 않고, KIS 쪽에도 대응이 없다.
-       AND SUBSTR(k.isu_srt_cd,1,1) NOT IN ('D','4')
+     WHERE SUBSTR(k.isu_srt_cd,1,1) NOT IN ('D','4')
        AND REGEXP_SUBSTR(k.isu_abbrv, '[0-9]{6}|[0-9]{4}W[0-9]') IS NOT NULL
   ) s
   ON (t.short_code = s.short_code)
@@ -80,31 +77,30 @@ BEGIN
   USING (
     SELECT b.*, m.mat_date, m.prev_mat_date AS front_date
       FROM (
-        SELECT CASE WHEN f.info_type IN ('L','M','N','O')
+        SELECT CASE WHEN u.prod_type IN ('WKI','WKM')
                       THEN SUBSTR(f.short_code, 1, 5) || SUBSTR(f.short_code, 7, 3)
                     ELSE SUBSTR(f.short_code, 1, 4)
                          || CASE SUBSTR(f.short_code, 5, 2)
                               WHEN '10' THEN 'A' WHEN '11' THEN 'B' WHEN '12' THEN 'C'
                               ELSE SUBSTR(f.short_code, 6, 1) END
-                         || CASE WHEN f.info_type IN ('1','B') THEN '000'
+                         || CASE WHEN SUBSTR(f.short_code, 1, 1) = 'A' THEN '000'
                                  ELSE SUBSTR(f.short_code, 7, 3) END
                END AS short_code,
                f.short_code AS kis_short_cd,
                f.kor_name   AS prod_nm,
-               CASE WHEN f.info_type IN ('1','5','6') THEN 'K2I'
-                    WHEN f.info_type IN ('B','D','E') THEN 'MKI'
-                    WHEN f.info_type IN ('L','M')     THEN 'WKI'
-                    WHEN f.info_type IN ('N','O')     THEN 'WKM' END AS prod_type,
-               CASE WHEN f.info_type IN ('5','D','L','N') THEN 'CALL'
-                    WHEN f.info_type IN ('6','E','M','O') THEN 'PUT'
-                    ELSE 'FUT' END AS call_put_cd,
-               CASE WHEN f.info_type IN ('B','D','E') THEN 50000 ELSE 250000 END AS cont_mult,
+               u.prod_type,
+               -- KIS 마스터의 콜/풋/선물은 info_type 이 아니라 코드 첫 글자가 말한다:
+               -- B 콜, C 풋, A 선물 (D 는 스프레드, 계열 목록에 없어 이미 빠짐)
+               CASE SUBSTR(f.short_code, 1, 1) WHEN 'B' THEN 'CALL' WHEN 'C' THEN 'PUT'
+                                              ELSE 'FUT' END AS call_put_cd,
+               u.cont_mult,
                REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
                NULLIF(f.acpr, 0) AS strike_prc,
                ROW_NUMBER() OVER (PARTITION BY f.short_code ORDER BY f.id DESC) AS rn
           FROM fo_idx_code_mst f
+          JOIN (SELECT DISTINCT prod_type, kis_info_types, cont_mult FROM meta_fuopt_info) u
+            ON INSTR(',' || u.kis_info_types || ',', ',' || f.info_type || ',') > 0
          WHERE f.trade_at = (SELECT MAX(trade_at) FROM fo_idx_code_mst)
-           AND f.info_type IN ('1','5','6','B','D','E','L','M','N','O')
       ) b
       LEFT JOIN meta_maturity m ON m.prod_type = b.prod_type AND m.mat_code = b.mat_code
      WHERE b.rn = 1 AND b.mat_code IS NOT NULL
