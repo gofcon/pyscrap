@@ -13,22 +13,21 @@ CREATE OR REPLACE PROCEDURE sp_meta_maturity_sync (p_inserted OUT NUMBER) AS
 -- 만기를 이 달력에서 메우므로, 달력이 먼저 늘어나 있어야 같은 날 그 자리가
 -- 채워진다.
 --
--- 원천은 셋이고 순서가 우선순위다.
+-- 원천은 둘이고 순서가 우선순위다.
 --   1. 거래소 목록(krx_deriv_info) -- 최종거래일 그대로.
---   2. mst_fuopt -- 거래소 목록은 지금 상장된 것만 주므로, 하루라도 거르면
---      (로그인이 막혔던 2026-09-02~13 이 그랬다) 그 사이 상장되고 만기된
---      위클리는 목록에서 영영 사라진다. 마스터는 한 번 본 종목을 지우지
---      않으므로 거기 남은 만기로 그 구멍을 메운다. 거래소가 확인한 행만 쓴다:
---      KIS 마스터로 들어와 만기를 이 달력에서 받은 행을 다시 원천으로 삼으면
---      추정값이 확정값으로 둔갑한다.
---   3. KIS 마스터(fo_idx_code_mst) 의 만기코드에서 규칙으로 계산 -- 월물은 둘째
---      목요일, 목요일 위클리 'YYMMWn' 은 n번째 목요일, 월요일 위클리는 n번째
---      월요일. 거래소가 비어 있고 마스터에도 없는 만기, 즉 로그인이 막힌 동안
---      새로 상장된 위클리가 여기 온다. 휴일이면 하루 밀리는데 그건 규칙이 모른다
---      (기존 630행 중 32행이 그렇다: 추석·근로자의날·성탄절). 그래서 미확인이라
---      적어 두고, 거래소가 돌아오면 WHEN MATCHED 가 그 행의 날짜를 바로잡는다.
---      틀린 하루가 문제 되는 것은 그 만기 주의 종목 선택뿐이고, 달력에 없어서
---      계열 전체가 빠지는 것보다는 낫다.
+--   2. KIS 마스터(fo_idx_code_mst) 의 만기코드에서 규칙으로 계산 -- 그 달의
+--      exp_dow 중 exp_week 번째(월물), 위클리 'YYMMWn' 은 n 번째 (meta_fuopt_info).
+--      거래소가 비어 있는 날, 즉 로그인이 막힌 동안 새로 상장된 것이 여기 온다.
+--      휴일이면 하루 밀리는데 그건 규칙이 모른다 (기존 636행 중 32행이 그렇다:
+--      추석·근로자의날·성탄절). 그래서 미확인이라 적어 두고, 거래소가 돌아오면
+--      WHEN MATCHED 가 그 행의 날짜를 바로잡는다. 틀린 하루가 문제 되는 것은 그
+--      만기 주의 종목 선택뿐이고, 달력에 없어서 계열 전체가 빠지는 것보다는 낫다.
+--
+-- mst_fuopt 는 원천이 아니다. 마스터에 확정 만기로 들어오는 계약은 전부 이
+-- 프로시저가 같은 날 같은 목록에서 먼저 달력에 넣은 것이라 더할 게 없고, 달력에서
+-- 마스터로 채운 만기를 다시 달력의 확정값으로 되먹이는 길만 열린다. 로그인이
+-- 막혔던 2026-09-02~13 에 놓친 두 주를 마스터에서 되찾을 때 한 번 원천으로
+-- 썼고, 그 뒤 뺐다.
 --
 --   mat_code  종목약명의 만기 부분: 'C 202609 335.0' -> 202609, 'C 2609W1 945.0' -> 2609W1
 --   mat_scd   KIS 코드의 4~6번째 글자: 101W12 -> W12, A01609 -> 609, B09FCW945 -> FCW.
@@ -74,19 +73,6 @@ BEGIN
            -- 스프레드는 만기가 둘이라 달력의 한 행이 아니다.
          WHERE SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
            AND k.lsttrd_dd IS NOT NULL
-        UNION ALL
-        -- 마스터의 거래소 코드에서, 위와 같은 규칙
-        SELECT 1, f.prod_type, f.mat_code, f.mat_date,
-               CASE WHEN f.mat_code LIKE '%W%'
-                      THEN SUBSTR(f.short_code, 4, 2) || 'W'
-                    ELSE SUBSTR(f.short_code, 4, 1)
-                         || CASE SUBSTR(f.short_code, 5, 1)
-                              WHEN 'A' THEN '10' WHEN 'B' THEN '11' WHEN 'C' THEN '12'
-                              ELSE '0' || SUBSTR(f.short_code, 5, 1) END
-               END
-          FROM mst_fuopt f
-         WHERE f.mat_date IS NOT NULL
-           AND (f.description IS NULL OR f.description NOT LIKE 'from fo_idx_code_mst%')
         UNION ALL
         -- KIS 코드에서: 월이 이미 두 자리라 4~6번째를 그대로 쓴다
         -- 그 달 첫 exp_dow 에서 (주차 - 1) 주 뒤. 주차는 월물이면 표의 exp_week,
