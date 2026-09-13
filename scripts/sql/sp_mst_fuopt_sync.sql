@@ -11,6 +11,15 @@ CREATE OR REPLACE PROCEDURE sp_mst_fuopt_sync (p_inserted OUT NUMBER) AS
 --   short_code    거래소 단축코드 (기본키)
 --   kis_short_cd  KIS 표기 -- KIS 로 나가는 모든 요청이 이 값을 쓴다
 -- 둘은 만기 칸의 자릿수만 다르다. 아래 to_kis 식 참고.
+--
+-- 거래소가 첫째, KIS 마스터(fo_idx_code_mst)가 둘째다. 거래소 목록은 로그인
+-- 뒤에 있어 그게 막히면 비는데(2026-09-02~13 열흘), 그동안 상장된 위클리는
+-- 마스터에 못 들어와 수집에서 통째로 빠졌다. KIS 마스터는 로그인이 없고 같은
+-- 종목을 같은 날 주므로 그 구멍을 메운다 -- 다만 만기일이 없어, 그건 달력
+-- (meta_maturity)에서 가져오고 description 에 미확인이라 적어 둔다. 거래소가
+-- 돌아오면 첫 MERGE 가 그 행을 만나 만기일을 거래소 값으로 바꾸고 표시를
+-- 지운다. 순서가 곧 우선순위다: 거래소 MERGE 가 먼저 넣고, KIS MERGE 는 없는
+-- 것만 넣는다.
 BEGIN
   MERGE /*+ NO_PARALLEL */ INTO mst_fuopt t
   USING (
@@ -51,6 +60,9 @@ BEGIN
        AND REGEXP_SUBSTR(k.isu_abbrv, '[0-9]{6}|[0-9]{4}W[0-9]') IS NOT NULL
   ) s
   ON (t.short_code = s.short_code)
+  -- KIS 마스터로 먼저 들어온 행: 거래소가 만기일을 확인해 준다.
+  WHEN MATCHED THEN UPDATE SET t.mat_date = s.mat_date, t.description = NULL
+                   WHERE t.description LIKE 'from fo_idx_code_mst%'
   WHEN NOT MATCHED THEN
     INSERT (short_code, kis_short_cd, prod_nm, prod_type, call_put_cd,
             cont_mult, mat_code, mat_date, strike_prc)
@@ -58,6 +70,56 @@ BEGIN
             s.cont_mult, s.mat_code, s.mat_date, s.strike_prc);
 
   p_inserted := SQL%ROWCOUNT;
+
+  -- 거래소 목록에 없는 종목을 KIS 마스터의 최신 스냅샷에서 넣는다. 거래소가
+  -- 비었으면(로그인 실패로 재적재가 안 된 날) 그날의 신규가 전부 여기로 온다.
+  -- KIS 코드 -> 거래소 단축코드는 위 to_kis 의 역: 월물은 두 자리 월을 한 자리
+  -- (10/11/12 -> A/B/C)로, 위클리는 'W' 를 빼고, 선물은 행사가 자리에 '000'.
+  -- 양쪽에 다 있는 8,363 종목으로 대조해 전건 일치를 확인한 식이다.
+  MERGE /*+ NO_PARALLEL */ INTO mst_fuopt t
+  USING (
+    SELECT b.*, m.mat_date, m.prev_mat_date AS front_date
+      FROM (
+        SELECT CASE WHEN f.info_type IN ('L','M','N','O')
+                      THEN SUBSTR(f.short_code, 1, 5) || SUBSTR(f.short_code, 7, 3)
+                    ELSE SUBSTR(f.short_code, 1, 4)
+                         || CASE SUBSTR(f.short_code, 5, 2)
+                              WHEN '10' THEN 'A' WHEN '11' THEN 'B' WHEN '12' THEN 'C'
+                              ELSE SUBSTR(f.short_code, 6, 1) END
+                         || CASE WHEN f.info_type IN ('1','B') THEN '000'
+                                 ELSE SUBSTR(f.short_code, 7, 3) END
+               END AS short_code,
+               f.short_code AS kis_short_cd,
+               f.kor_name   AS prod_nm,
+               CASE WHEN f.info_type IN ('1','5','6') THEN 'K2I'
+                    WHEN f.info_type IN ('B','D','E') THEN 'MKI'
+                    WHEN f.info_type IN ('L','M')     THEN 'WKI'
+                    WHEN f.info_type IN ('N','O')     THEN 'WKM' END AS prod_type,
+               CASE WHEN f.info_type IN ('5','D','L','N') THEN 'CALL'
+                    WHEN f.info_type IN ('6','E','M','O') THEN 'PUT'
+                    ELSE 'FUT' END AS call_put_cd,
+               f.unas_short_code AS ul_code,
+               f.unas_kor_name   AS ul_nm,
+               CASE WHEN f.info_type IN ('B','D','E') THEN 50000 ELSE 250000 END AS cont_mult,
+               REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
+               NULLIF(f.acpr, 0) AS strike_prc,
+               ROW_NUMBER() OVER (PARTITION BY f.short_code ORDER BY f.id DESC) AS rn
+          FROM fo_idx_code_mst f
+         WHERE f.trade_at = (SELECT MAX(trade_at) FROM fo_idx_code_mst)
+           AND f.info_type IN ('1','5','6','B','D','E','L','M','N','O')
+      ) b
+      LEFT JOIN meta_maturity m ON m.prod_type = b.prod_type AND m.mat_code = b.mat_code
+     WHERE b.rn = 1 AND b.mat_code IS NOT NULL
+  ) s
+  ON (t.short_code = s.short_code)
+  WHEN NOT MATCHED THEN
+    INSERT (short_code, kis_short_cd, prod_nm, prod_type, call_put_cd, ul_code, ul_nm,
+            cont_mult, mat_code, mat_date, front_date, strike_prc, description)
+    VALUES (s.short_code, s.kis_short_cd, s.prod_nm, s.prod_type, s.call_put_cd, s.ul_code, s.ul_nm,
+            s.cont_mult, s.mat_code, s.mat_date, s.front_date, s.strike_prc,
+            'from fo_idx_code_mst; expiry unconfirmed');
+
+  p_inserted := p_inserted + SQL%ROWCOUNT;
 
   -- 기초자산은 거래소 목록에 없다. KIS 마스터에서 kis_short_cd 로 붙여 채운다.
   -- 비어 있는 것만 채우므로 사람이 넣은 값은 그대로다.
@@ -86,11 +148,14 @@ BEGIN
   -- 거래소에서 옮겨온 과거 종목도 여기서 만기일을 얻는다: 목록 화면은 코드와
   -- 이름만 주고 날짜를 주지 않는다.
   --
-  -- NULL 인 것만 채우므로 사람이 넣은 값은 그대로다.
+  -- NULL 인 것만 채우므로 사람이 넣은 값은 그대로다. KIS 마스터로 들어와
+  -- 아직 거래소가 확인하지 않은 행은 예외로, 달력이 바뀌면 따라간다 -- 그
+  -- 달력 행이 규칙으로 추정한 것이었다가 거래소 값으로 바로잡히는 경우다.
   MERGE /*+ NO_PARALLEL */ INTO mst_fuopt t
   USING meta_maturity m
      ON (t.prod_type = m.prod_type AND t.mat_code = m.mat_code)
   WHEN MATCHED THEN UPDATE SET t.mat_date   = m.mat_date,
                                t.front_date = m.prev_mat_date
-                   WHERE t.mat_date IS NULL;
+                   WHERE t.mat_date IS NULL
+                      OR t.description LIKE 'from fo_idx_code_mst%';
 END;

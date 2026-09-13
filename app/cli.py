@@ -190,9 +190,13 @@ def sync_index_his_cmd():
 
 @app.command("sync-mst-fuopt")
 def sync_mst_fuopt_cmd():
-    """Fold any newly-listed contracts from krx_deriv_info into mst_fuopt, by
-    calling the DB-side procedure sp_mst_fuopt_sync (a MERGE that inserts
-    unseen short_codes and leaves existing rows alone).
+    """Fold any newly-listed contracts into mst_fuopt, by calling the DB-side
+    procedure sp_mst_fuopt_sync: a MERGE from krx_deriv_info that inserts
+    unseen short_codes and leaves existing rows alone, then one from the KIS
+    master (fo_idx_code_mst) for whatever the exchange listing did not have --
+    the listing sits behind a login and is empty on a day that fails, the
+    master is not. Contracts that arrive that way carry no expiry of their
+    own and are marked as unconfirmed until the exchange lists them.
 
     The expiry calendar is extended first, from the same listing
     (sp_meta_maturity_sync): the exchange gives every contract its last
@@ -211,8 +215,8 @@ def sync_mst_fuopt_cmd():
     no log. Schedule this after the daily_start cycle and before any job
     generation that selects from mst_fuopt."""
     setup_logging()
-    typer.echo(f"meta_maturity: {_call_procedure('sp_meta_maturity_sync')} new maturity(ies)")
-    typer.echo(f"mst_fuopt: {_call_procedure('sp_mst_fuopt_sync')} new contract(s)")
+    typer.echo(f"meta_maturity: {_call_procedure('sp_meta_maturity_sync')} row(s) merged")
+    typer.echo(f"mst_fuopt: {_call_procedure('sp_mst_fuopt_sync')} row(s) merged")
 
 
 @app.command("sync-mst-bond")

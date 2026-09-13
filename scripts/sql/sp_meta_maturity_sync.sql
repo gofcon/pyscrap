@@ -13,10 +13,22 @@ CREATE OR REPLACE PROCEDURE sp_meta_maturity_sync (p_inserted OUT NUMBER) AS
 -- 만기를 이 달력에서 메우므로, 달력이 먼저 늘어나 있어야 같은 날 그 자리가
 -- 채워진다.
 --
--- 원천은 둘을 합친다. 거래소 목록은 지금 상장된 것만 주므로, 하루라도 거르면
--- (로그인이 막혔던 2026-09-02~13 이 그랬다) 그 사이 상장되고 만기된 위클리는
--- 목록에서 영영 사라진다. mst_fuopt 는 한 번 본 종목을 지우지 않으므로 거기
--- 남은 만기로 그 구멍을 메운다 -- 만기일은 두 곳 다 거래소 최종거래일이다.
+-- 원천은 셋이고 순서가 우선순위다.
+--   1. 거래소 목록(krx_deriv_info) -- 최종거래일 그대로.
+--   2. mst_fuopt -- 거래소 목록은 지금 상장된 것만 주므로, 하루라도 거르면
+--      (로그인이 막혔던 2026-09-02~13 이 그랬다) 그 사이 상장되고 만기된
+--      위클리는 목록에서 영영 사라진다. 마스터는 한 번 본 종목을 지우지
+--      않으므로 거기 남은 만기로 그 구멍을 메운다. 거래소가 확인한 행만 쓴다:
+--      KIS 마스터로 들어와 만기를 이 달력에서 받은 행을 다시 원천으로 삼으면
+--      추정값이 확정값으로 둔갑한다.
+--   3. KIS 마스터(fo_idx_code_mst) 의 만기코드에서 규칙으로 계산 -- 월물은 둘째
+--      목요일, 목요일 위클리 'YYMMWn' 은 n번째 목요일, 월요일 위클리는 n번째
+--      월요일. 거래소가 비어 있고 마스터에도 없는 만기, 즉 로그인이 막힌 동안
+--      새로 상장된 위클리가 여기 온다. 휴일이면 하루 밀리는데 그건 규칙이 모른다
+--      (기존 630행 중 32행이 그렇다: 추석·근로자의날·성탄절). 그래서 미확인이라
+--      적어 두고, 거래소가 돌아오면 WHEN MATCHED 가 그 행의 날짜를 바로잡는다.
+--      틀린 하루가 문제 되는 것은 그 만기 주의 종목 선택뿐이고, 달력에 없어서
+--      계열 전체가 빠지는 것보다는 낫다.
 --
 --   mat_code  종목약명의 만기 부분: 'C 202609 335.0' -> 202609, 'C 2609W1 945.0' -> 2609W1
 --   mat_scd   단축코드 안의 만기 자리. 월물은 연도 끝자리+월 두 자리(202610 -> 610),
@@ -35,11 +47,15 @@ BEGIN
   MERGE /*+ NO_PARALLEL */ INTO meta_maturity t
   USING (
     SELECT prod_type, mat_code,
-           MIN(mat_date) AS mat_date,
+           -- 확정(src 1)이 하나라도 있으면 그것, 없으면 규칙값
+           MIN(src) AS src,
+           COALESCE(MIN(CASE WHEN src = 1 THEN mat_date END),
+                    MIN(CASE WHEN src = 2 THEN mat_date END)) AS mat_date,
            MIN(CASE WHEN mat_code LIKE '%W%' THEN SUBSTR(short_code, 4, 2) || 'W'
                     ELSE SUBSTR(mat_code, 4, 3) END) AS mat_scd
       FROM (
-        SELECT CASE k.prod_id
+        SELECT 1 AS src,
+               CASE k.prod_id
                  WHEN 'KRDRVFUK2I' THEN 'K2I' WHEN 'KRDRVOPK2I' THEN 'K2I'
                  WHEN 'KRDRVFUMKI' THEN 'MKI' WHEN 'KRDRVOPMKI' THEN 'MKI'
                  WHEN 'KRDRVOPWKI' THEN 'WKI' WHEN 'KRDRVOPWKM' THEN 'WKM'
@@ -54,18 +70,47 @@ BEGIN
            AND SUBSTR(k.isu_srt_cd, 1, 1) NOT IN ('D', '4')
            AND k.lsttrd_dd IS NOT NULL
         UNION ALL
-        SELECT f.prod_type, f.mat_code, f.mat_date, f.short_code
+        SELECT 1, f.prod_type, f.mat_code, f.mat_date, f.short_code
           FROM mst_fuopt f
          WHERE f.prod_type IN ('K2I','MKI','WKI','WKM')
            AND f.mat_date IS NOT NULL
+           AND (f.description IS NULL OR f.description NOT LIKE 'from fo_idx_code_mst%')
+        UNION ALL
+        SELECT 2, r.prod_type, r.mat_code,
+               CASE WHEN r.mat_code LIKE '%W%'
+                    THEN NEXT_DAY(TO_DATE('20' || SUBSTR(r.mat_code, 1, 4) || '01', 'YYYYMMDD') - 1,
+                                  CASE r.prod_type WHEN 'WKM' THEN 'MONDAY' ELSE 'THURSDAY' END)
+                         + 7 * (TO_NUMBER(SUBSTR(r.mat_code, 6, 1)) - 1)
+                    ELSE NEXT_DAY(TO_DATE(r.mat_code || '01', 'YYYYMMDD') - 1, 'THURSDAY') + 7
+               END,
+               -- KIS 코드의 4~5번째 글자는 거래소 단축코드와 같다 (B09FCW945 / B09FC945)
+               r.short_code
+          FROM (
+            SELECT CASE WHEN f.info_type IN ('1','5','6') THEN 'K2I'
+                        WHEN f.info_type IN ('B','D','E') THEN 'MKI'
+                        WHEN f.info_type IN ('L','M')     THEN 'WKI'
+                        WHEN f.info_type IN ('N','O')     THEN 'WKM' END AS prod_type,
+                   REGEXP_SUBSTR(f.kor_name, '[0-9]{6}|[0-9]{4}W[0-9]') AS mat_code,
+                   f.short_code
+              FROM fo_idx_code_mst f
+             WHERE f.trade_at = (SELECT MAX(trade_at) FROM fo_idx_code_mst)
+               AND f.info_type IN ('1','5','6','B','D','E','L','M','N','O')
+          ) r
+         WHERE r.mat_code IS NOT NULL
       )
      WHERE mat_code IS NOT NULL
      GROUP BY prod_type, mat_code
   ) s
   ON (t.prod_type = s.prod_type AND t.mat_code = s.mat_code)
+  -- 규칙으로 넣어 둔 행을 확정값이 바로잡는다.
+  WHEN MATCHED THEN UPDATE SET t.mat_date = s.mat_date,
+                               t.description = 'from krx_deriv_info (lsttrd_dd)'
+                   WHERE s.src = 1 AND t.description LIKE 'derived by rule%'
   WHEN NOT MATCHED THEN
     INSERT (prod_type, mat_code, mat_date, mat_scd, description)
-    VALUES (s.prod_type, s.mat_code, s.mat_date, s.mat_scd, 'from krx_deriv_info (lsttrd_dd)');
+    VALUES (s.prod_type, s.mat_code, s.mat_date, s.mat_scd,
+            CASE s.src WHEN 1 THEN 'from krx_deriv_info (lsttrd_dd)'
+                       ELSE 'derived by rule from mat_code; unconfirmed (a holiday shifts it)' END);
 
   p_inserted := SQL%ROWCOUNT;
 
