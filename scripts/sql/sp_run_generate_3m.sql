@@ -7,9 +7,12 @@ CREATE OR REPLACE PROCEDURE sp_run_generate_3m AS
 -- 생성을 걸 수는 없다. 생성 바로 앞에 두면 순서가 시계가 아니라 코드로 보장된다.
 --
 -- 순서가 실제 의존이다: sp_mst_fuopt_sync 의 마지막 MERGE 가 만기 없는 종목의
--- 만기를 meta_maturity 에서 메우므로, 달력이 먼저 늘어나 있어야 한다.
+-- 만기를 meta_maturity 에서 메우므로, 달력이 먼저 늘어나 있어야 한다. 만기 지난
+-- 잡을 물리는 것은 맨 앞이다 -- 잡 생성(이 다음)은 더하기만 하지 빼지 않는다.
   n NUMBER;
 BEGIN
+  sp_retire_expired_jobs(n);
+  DBMS_OUTPUT.PUT_LINE('sp_retire_expired_jobs: ' || n || ' expired 3m job(s) retired');
   sp_meta_maturity_sync(n);
   DBMS_OUTPUT.PUT_LINE('sp_meta_maturity_sync: ' || n || ' row(s) merged');
   sp_mst_fuopt_sync(n);
