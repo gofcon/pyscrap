@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.deps import SessionDep
 from app.db.models import ApiJob
+from app.scrapers.base import SiteBlocked
 from app.services.execution import generate_all_jobs, generate_jobs, generate_jobs_for_builder, run_job
 
 router = APIRouter(prefix="/jobs", tags=["api_job"])
@@ -65,5 +66,10 @@ def run(job_id: str, session: SessionDep) -> dict[str, str | None]:
     job = session.get(ApiJob, job_id)
     if job is None:
         raise HTTPException(404, f"ApiJob '{job_id}' not found")
-    run_job(session, job)
+    try:
+        run_job(session, job)
+    except SiteBlocked as exc:
+        # Logged as FAILED already; the site is refusing, which is its
+        # state rather than ours.
+        raise HTTPException(503, str(exc)) from exc
     return {"job_id": job.job_id, "description": job.description}

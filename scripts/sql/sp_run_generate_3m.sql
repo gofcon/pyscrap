@@ -12,7 +12,7 @@ CREATE OR REPLACE PROCEDURE sp_run_generate_3m AS
   n NUMBER;
 BEGIN
   sp_retire_expired_jobs(n);
-  DBMS_OUTPUT.PUT_LINE('sp_retire_expired_jobs: ' || n || ' expired 3m job(s) retired');
+  DBMS_OUTPUT.PUT_LINE('sp_retire_expired_jobs: ' || n || ' job(s) retired');
   sp_meta_maturity_sync(n);
   DBMS_OUTPUT.PUT_LINE('sp_meta_maturity_sync: ' || n || ' row(s) merged');
   sp_mst_fuopt_sync(n);

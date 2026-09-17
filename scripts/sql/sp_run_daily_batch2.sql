@@ -4,8 +4,12 @@ CREATE OR REPLACE PROCEDURE sp_run_daily_batch2 AS
 -- 둘 다 daily_batch1 이 재적재한 목록(ksd_bond_isin, krx_etf_daily)을 정제
 -- 마스터로 접는다. daily_batch2 의 빌더가 그 마스터에서 종목을 뽑으므로 사이클
 -- 앞에 있어야 하고, 둘 사이엔 의존이 없다 -- 채권이 먼저인 것은 그냥 순서다.
+-- 그 앞에서 밀린 잡을 놓는다(sp_retire_expired_jobs): KRX 구성종목 잡이 새
+-- 날짜와 함께 나가기 전에 7일 넘은 것을 빼야 한다.
   n NUMBER;
 BEGIN
+  sp_retire_expired_jobs(n);
+  DBMS_OUTPUT.PUT_LINE('sp_retire_expired_jobs: ' || n || ' job(s) retired');
   sp_mst_bond_sync(n);
   DBMS_OUTPUT.PUT_LINE('sp_mst_bond_sync: ' || n || ' new issue(s)');
   sp_mst_etf_sync(n);

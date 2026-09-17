@@ -35,7 +35,7 @@ from tenacity import (retry, retry_if_not_exception_type, stop_after_attempt,
                       wait_exponential)
 
 from app.auth_config import persist_env_var, resolve_env_placeholders
-from app.scrapers.base import (BaseScraper, SessionExpired, merge_records,
+from app.scrapers.base import (BaseScraper, SessionExpired, SiteBlocked, merge_records,
                                rows_to_records)
 
 # payload_type is stored verbatim as the httpx request kwarg name, so each
@@ -96,8 +96,12 @@ _HOST_INTERVALS: dict[str, float] = {
     # (지수 백필 1.6 req/s, 4,349건 무사고)보다 느리게 잡아 둔다.
     "data-dbg.krx.co.kr": 0.3,
     # 데이터마켓(로그인 필요)도 같은 성격이다. ETF 구성종목은 종목당 한
-    # 요청이라 하루 900건 안팎이 한 줄로 나간다.
-    "data.krx.co.kr": 0.5,
+    # 요청이라 하루 1,400건 안팎이 한 줄로 나간다. 0.5 였을 때 2 req/s 로
+    # 몰린 직후 에러페이지로 막혔다 -- 2026-09-17 21:09 에 1분 115건 뒤,
+    # 09-14 에 10분 303건 뒤. 반면 09-17 새벽엔 10분 300~600건(0.5~1 req/s)
+    # 으로 세 시간을 무사히 갔다. 그 사이 어딘가가 문턱이라 1초로 잡는다:
+    # 1,400건이면 24분이고, 막혀서 밤을 잃는 것보다 싸다.
+    "data.krx.co.kr": 1.0,
     # 0.2s 로 43개 ETF 를 훑었더니 22개가 JSON 이 아닌 응답으로 돌아왔다 --
     # 오류 코드가 아니라 본문이 바뀌는 형태라, 세는 쪽이 아니라 받는 쪽이
     # 밀린 것으로 보인다. 여기도 metered API 가 아니다.
@@ -415,9 +419,11 @@ class DynamicApiScraper(BaseScraper):
 
     # SessionExpired is excluded from the retry: being logged out is not a
     # transient failure, and retrying it would spend three attempts and ~10s
-    # of backoff before the caller ever gets to log in again.
+    # of backoff before the caller ever gets to log in again. SiteBlocked
+    # likewise, for the opposite reason -- the site wants fewer requests, not
+    # three more.
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),
-           retry=retry_if_not_exception_type(SessionExpired))
+           retry=retry_if_not_exception_type((SessionExpired, SiteBlocked)))
     def fetch(self) -> httpx.Response:
         request_kwargs = self.build_request()
         # Paced *inside* the retry, so a retried attempt (e.g. after a rate-
@@ -444,15 +450,24 @@ class DynamicApiScraper(BaseScraper):
         second, so this check has to cost nothing for the rows it does not
         concern. Scoped by configuration rather than by host, which is
         tighter -- only the rows that asked are ever examined."""
-        marker = (self.api.response_parse_json or {}).get("logged_out")
-        if not marker:
+        cfg = self.api.response_parse_json or {}
+        marker, blocked = cfg.get("logged_out"), cfg.get("blocked")
+        if not marker and not blocked:
             return
         # Cheap guard for a row that also downloads documents: a marker only
         # ever appears in a text reply, and a truncated read is enough.
         head = response.content[:4]
         body = "" if head[:2] == b"PK" or head == b"%PDF" else response.text[:4000]
-        if marker in body:
+        if marker and marker in body:
             raise SessionExpired(f"{self.api.api_id}: reply says {marker!r}")
+        # The refusal page is checked the same way and named the same way --
+        # ``response_parse_json['blocked']``, a string that appears in it.
+        # KRX's is an HTML page whose title says 에러페이지; left unrecognised
+        # it reached the JSON parser and failed every job as "mismatched
+        # tag", ten thousand times a night, with nothing slowing down.
+        if blocked and blocked in body:
+            raise SiteBlocked(f"{self.api.api_id}: reply is the site's refusal page ({blocked!r})",
+                              host=httpx.URL(str(response.url)).host or "")
 
     # ---- continuation ----------------------------------------------------
 

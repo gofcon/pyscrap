@@ -107,6 +107,25 @@ class SessionExpired(RuntimeError):
     once instead of failing the job."""
 
 
+class SiteBlocked(RuntimeError):
+    """The site answered with its refusal page instead of data.
+
+    Different from :class:`SessionExpired` in what it asks of the caller.
+    Being logged out is fixed by logging in again, right now, once. Being
+    refused is not: KRX's data portal serves an error page when requests
+    come too fast, and the page persists for some minutes -- every further
+    request during that window is refused too, and likely lengthens it. So
+    this is not retried here at all. It is caught by the cycle runner, which
+    stops sending to that host, waits the window out, logs in once and
+    carries on -- or, when the login itself is refused, gives that host up
+    for the run and leaves its jobs pending for the next one. ``host`` says
+    which site, since a cycle interleaves several."""
+
+    def __init__(self, message: str, host: str):
+        super().__init__(message)
+        self.host = host
+
+
 class BaseScraper:
     """One ``ApiMst`` row, minus any opinion about how it is fetched.
 

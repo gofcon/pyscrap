@@ -17,10 +17,13 @@ generation (see app.api.routers.jobs), where the systemd-timer-shaped
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, cast
 
+import httpx
 from loguru import logger
 from sqlalchemy import Column, delete as sa_delete, func
 from sqlmodel import Session, select
@@ -28,6 +31,8 @@ from tenacity import RetryError
 
 from app.db.models import ApiJob, ApiJobBuilder, ApiJobLog, ApiMst
 from app.scrapers import make_scraper
+from app.scrapers.base import SiteBlocked
+from app.auth_config import resolve_env_placeholders
 from app.services.export import TABLE_REGISTRY
 from app.services.job_builder import (
     NO_COLUMN,
@@ -190,6 +195,12 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         if isinstance(exc, RetryError) and exc.last_attempt.failed:
             exc = exc.last_attempt.exception()
         _log(session, job.job_id, "FAILED", error_message=str(exc)[:4000])
+        # A refusal is logged like any failure -- once, on the job that met
+        # it -- and then handed up: run_cycle has to stop sending to that
+        # host, which no single job can decide. Every other failure stays
+        # here, since it says nothing about the next job.
+        if isinstance(exc, SiteBlocked):
+            raise exc
 
     return job
 
@@ -249,6 +260,65 @@ def generate_jobs_for_builder(session: Session, build_id: str) -> list[ApiJob]:
     return build_jobs_from_builder(session, build_id)
 
 
+# How long a refused host is left alone before its deferred jobs are tried
+# again. KRX's window was measured at about ten minutes (refused from 00:00,
+# serving again by 00:10, on 2026-09-17); a longer wait costs nothing but
+# the clock, a shorter one risks a second refusal that may lengthen the
+# window.
+_BLOCK_COOLDOWN_SEC = float(os.environ.get("BLOCK_COOLDOWN_SEC", "600"))
+
+
+class _HostIndex:
+    """Which host each job talks to, looked up once per api_id."""
+
+    def __init__(self, session: Session):
+        self._session = session
+        self._by_api: dict[str, str] = {}
+
+    def of(self, job: ApiJob) -> str:
+        host = self._by_api.get(job.api_id)
+        if host is None:
+            api = self._session.get(ApiMst, job.api_id)
+            url = resolve_env_placeholders(api.api_url) if api and api.api_url else ""
+            host = httpx.URL(url).host if url else ""
+            self._by_api[job.api_id] = host
+        return host
+
+
+def _run_deferred(session: Session, host: str, pending: list[ApiJob]) -> dict[str, str | None]:
+    """One more pass over a refused host's jobs, after the refusal window.
+
+    Waits the window out, logs in again (the refusal may have voided the
+    session, and the login row is the cheapest request to test the water
+    with), then runs the jobs in order. A second refusal -- from the login
+    or from any job -- ends the pass: the host is given up for this run and
+    whatever is left stays active for the next one. That is the whole
+    difference from before: a refused night used to fail every remaining
+    job one by one, ten thousand lines of the same error, while asking the
+    site ten thousand more times."""
+    results: dict[str, str | None] = {}
+    logger.warning("{}: {} job(s) deferred -- waiting {:.0f}s before trying again",
+                   host, len(pending), _BLOCK_COOLDOWN_SEC)
+    time.sleep(_BLOCK_COOLDOWN_SEC)
+    api = session.get(ApiMst, pending[0].api_id)
+    try:
+        if api is not None and (api.response_parse_json or {}).get("login"):
+            make_scraper(api, params=pending[0].params_json)._login(session)
+    except Exception as exc:  # noqa: BLE001 - any refusal of the login means the host is still closed
+        logger.error("{}: login refused after the wait ({}) -- giving the host up for this run, "
+                     "{} job(s) left pending", host, str(exc)[:120], len(pending))
+        return results
+    for i, job in enumerate(pending):
+        try:
+            run_job(session, job)
+        except SiteBlocked:
+            logger.error("{}: refused again at job {} -- giving the host up for this run, "
+                         "{} job(s) left pending", host, job.job_id, len(pending) - i)
+            break
+        results[job.job_id] = job.description
+    return results
+
+
 def _login_rows_first(session: Session, jobs: Sequence[ApiJob]) -> list[ApiJob]:
     """Order a cycle's jobs so that its login rows run before anything else.
 
@@ -299,9 +369,28 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
             ApiJob.is_active == True,  # noqa: E712 - Oracle native BOOLEAN column rejects IS-based binds (ORA-00908), needs plain equality
         )
     ).all()
+    # A host that has refused us is set aside rather than hammered: its
+    # remaining jobs are deferred, the rest of the cycle goes on, and the
+    # deferred ones get one more chance after the refusal window has passed
+    # (see _run_deferred). Jobs are grouped by host because that is the
+    # unit a site refuses at -- one login, one rate limit -- and a cycle
+    # interleaves several hosts, none of which should pay for another's.
+    hosts = _HostIndex(session)
+    deferred: dict[str, list[ApiJob]] = {}
     for job in _login_rows_first(session, jobs):
-        run_job(session, job)
+        host = hosts.of(job)
+        if host in deferred:
+            deferred[host].append(job)
+            continue
+        try:
+            run_job(session, job)
+        except SiteBlocked as exc:
+            logger.warning("{} refused us at job {} -- deferring its remaining jobs", exc.host, job.job_id)
+            deferred.setdefault(exc.host, []).append(job)
+            continue
         results[job.job_id] = job.description
+    for host, pending in deferred.items():
+        results.update(_run_deferred(session, host, pending))
         logger.info("run_cycle({}): executed {}", execution_cycle, job.job_id)
 
     return results
