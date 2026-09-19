@@ -38,7 +38,14 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
   TYPE t_names IS TABLE OF VARCHAR2(30);
   -- 손으로 적는다. 자동 발견(외부 테이블이 있는 표 전부)으로 하면 언젠가
   -- 의도치 않은 표가 목록에 들어오고, 그 사고의 결과가 '데이터 삭제' 다.
-  v_targets t_names := t_names('kis_futopt_chart', 'kis_futopt_price', 'kis_futopt_daily');
+  -- krx_opt_daily 는 2026-09-19 에 들어왔다. 옵션 전 종목이 하루 한 행씩이라
+  -- 16년치 865만 행이 표와 인덱스로 3.3GB 였고, Parquet 으로는 127MB 다. 그날
+  -- 2010-01-04..2026-09-01 전체를 _bulk 로 내보내 외부 테이블과 날짜별 행수·
+  -- 수치 합계를 대조한 뒤 표를 비웠다. 이후 일별 수집이 붙으면 달마다 여기서
+  -- _arch 로 옮겨 간다. 다른 KRX 일별 표는 넣지 않는다 -- v_fut_cont 가
+  -- krx_fut_daily 를 직접 읽고, 외부 테이블 위에서는 그 뷰가 수십 배 느리다.
+  v_targets t_names := t_names('kis_futopt_chart', 'kis_futopt_price', 'kis_futopt_daily',
+                               'krx_opt_daily');
   v_name    VARCHAR2(30);
   v_col     VARCHAR2(200);
   v_kst     DATE;
