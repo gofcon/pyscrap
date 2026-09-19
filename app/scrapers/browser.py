@@ -196,7 +196,7 @@ class BrowserScraper(BaseScraper):
                 self._capture_json(page, captured)
 
             downloads = self.run_behavior(page)
-            self._check_logged_out(page)
+            self._check_reply_markers(page)
 
             if response_type == "session":
                 self._save_state(page.context)
@@ -566,13 +566,18 @@ class BrowserScraper(BaseScraper):
         context.storage_state(path=str(path))
         logger.info("{}: saved browser session to {}", self.api.api_id, path)
 
-    def _check_logged_out(self, page: Page) -> None:
+    def _check_reply_markers(self, page: Page) -> None:
         """Raise if the configured "you are logged out" marker is on the page.
 
         Sites rarely say this with a status code -- KRX answers 400 with the
         body ``LOGOUT``, others just render the login screen again -- so the
         row has to name the tell itself: ``response_parse_json['logged_out']``,
-        a css selector."""
+        a css selector.
+
+        Same name as the HTTP transport's check, which also reads the row's
+        ``blocked`` marker (a site's refusal page). No browser row has met a
+        refusal yet, so that half is not here; when one does, this is where
+        it goes."""
         marker = (self.api.response_parse_json or {}).get("logged_out")
         if marker and page.query_selector(marker) is not None:
             raise SessionExpired(f"{self.api.api_id}: '{marker}' is on the page")

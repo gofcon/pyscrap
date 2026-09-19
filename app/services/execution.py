@@ -319,7 +319,7 @@ def _run_deferred(session: Session, host: str, pending: list[ApiJob]) -> dict[st
     api = session.get(ApiMst, pending[0].api_id)
     try:
         if api is not None and (api.response_parse_json or {}).get("login"):
-            make_scraper(api, params=pending[0].params_json)._login(session)
+            make_scraper(api, params=pending[0].params_json).login(session)
     except Exception as exc:  # noqa: BLE001 - any refusal of the login means the host is still closed
         logger.error("{}: login refused after the wait ({}) -- giving the host up for this run, "
                      "{} job(s) left pending", host, str(exc)[:120], len(pending))

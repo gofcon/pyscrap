@@ -430,12 +430,15 @@ class DynamicApiScraper(BaseScraper):
         # limit rejection) takes its own slot rather than firing immediately.
         _pace_host(request_kwargs["url"])
         response = get_http_client().request(**request_kwargs)
-        self._check_logged_out(response)
+        self._check_reply_markers(response)
         response.raise_for_status()
         return response
 
-    def _check_logged_out(self, response: httpx.Response) -> None:
-        """Raise if this reply is the site saying "you are not logged in".
+    def _check_reply_markers(self, response: httpx.Response) -> None:
+        """Raise if this reply is the site saying "you are not logged in"
+        (SessionExpired) or "go away" (SiteBlocked), by the markers the row
+        configured. The two are told apart by what the caller must do next;
+        see the exception classes.
 
         Checked *before* raise_for_status because that is often how it
         arrives: KRX's data endpoint answers HTTP 400 with the body ``LOGOUT``

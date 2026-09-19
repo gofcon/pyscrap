@@ -173,7 +173,7 @@ class BaseScraper:
                 if attempt == 2 or not can_relogin:
                     raise
                 logger.warning("{} -- logging in again and retrying once", exc)
-                self._login(session)
+                self.login(session)
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _collect_once(self, session: Session | None) -> dict[str, list[dict[str, Any]]]:
@@ -197,7 +197,7 @@ class BaseScraper:
         logging in again. A browser row has a storage-state file to delete; an
         HTTP row's cookie jar is replaced by the login reply itself."""
 
-    def _login(self, session: Session) -> None:
+    def login(self, session: Session) -> None:
         """Run this row's login row, replacing the stale session.
 
         The login row is an ordinary ``ApiMst`` row with
@@ -205,7 +205,12 @@ class BaseScraper:
         stay where every other row's do, and logging in is just another row
         being run. It goes through :func:`app.scrapers.make_scraper` like
         anything else, so an HTTP row's login may be a browser row and vice
-        versa if a site ever needs that."""
+        versa if a site ever needs that.
+
+        Public because :meth:`collect` is not its only caller: the cycle
+        runner logs a refused host back in after the refusal window, before
+        giving its deferred jobs one more pass (see
+        app.services.execution._run_deferred)."""
         from app.scrapers import make_scraper
 
         login_api: ApiMst | None = session.get(ApiMst, self._login_api_id)
