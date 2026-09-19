@@ -601,7 +601,7 @@ append      그냥 추가한다
 현재 타이머가 부르는 값:
 
 ```
-daily_start   08:35    3m_call / 3m_put   08:42~16:45
+daily_early   03:00    daily_start        08:35    3m_call / 3m_put   08:42~16:45
 5m            08:40~   1h                 09:00~16:00
 daily_close   16:00    daily_batch1       18:00    daily_batch2   21:00
 ```
