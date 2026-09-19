@@ -30,6 +30,14 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
 -- 수인지 본다. 이 확인이 통과하지 못하면 아무것도 지우지 않고 오류를 낸다.
 -- 파일이 써졌다는 것과 읽힌다는 것은 다른 얘기고, 지우고 나면 되돌릴 수 없다.
 --
+-- 그 달의 날짜 폴더는 _arch 를 쓴 뒤 비운다. 일 배치가 매일 <대상>/<날짜>/ 로
+-- 내보낸 것이 그대로 있으면 외부 테이블이 그 달을 두 벌 읽는다 -- 원본보다
+-- 많이 읽히니 위 확인은 통과하고, 삭제 뒤 남는 것은 중복뿐이다. sp_export_bulk
+-- 는 처음부터 이렇게 접었고(그래서 2026-09-01 의 첫 아카이브에선 이 문제가
+-- 안 보였다), 이 프로시저는 접지 않아 10월 1일에 9월이 두 벌이 될 참이었다.
+-- 순서가 중요하다: 폴더를 비운 뒤 다시 세어 원본과 '같은지' 본다. 같지 않으면
+-- 지우지 않는다 -- 접은 뒤엔 많이 읽히는 것도 잘못이다.
+--
 -- 대상은 외부 테이블(xt_<대상>)이 있는 것으로 한정한다. 그것이 곧 "Parquet 으로
 -- 읽을 수 있다"의 정의이고, 없는 표를 지우면 데이터가 사라진다.
   c_cred  CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
@@ -57,6 +65,7 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
   v_src     NUMBER;
   v_xt      NUMBER;
   v_del     NUMBER;
+  v_folded  NUMBER;
 BEGIN
   p_deleted := 0;
   -- '직전월' 은 한국 기준이다. SYSDATE 는 DB 서버의 OS 시각이라 지금은 UTC 를
@@ -106,6 +115,28 @@ BEGIN
         || ' 행이다 (' || v_month || '). 삭제하지 않았다.');
     END IF;
 
+    -- _arch 가 읽히니 그 달의 날짜 폴더를 접는다 (위 설명). object_name 은
+    -- 프리픽스 기준 상대경로라 날짜 폴더는 'YYYYMMDD/...' 꼴이고, '_arch/...'
+    -- 와 '_bulk/...' 는 9번째가 '/' 가 아니라 걸리지 않는다.
+    v_folded := 0;
+    FOR o IN (SELECT object_name FROM DBMS_CLOUD.LIST_OBJECTS(c_cred, c_base || LOWER(v_name) || '/')) LOOP
+      IF INSTR(o.object_name, '/') = 9
+         AND SUBSTR(o.object_name, 1, 8) BETWEEN v_from AND v_to THEN
+        DBMS_CLOUD.DELETE_OBJECT(c_cred, c_base || LOWER(v_name) || '/' || o.object_name);
+        v_folded := v_folded + 1;
+      END IF;
+    END LOOP;
+    IF v_folded > 0 THEN
+      EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM xt_' || v_name
+                        || ' WHERE ' || v_col || ' BETWEEN :1 AND :2'
+        INTO v_xt USING v_from, v_to;
+    END IF;
+    IF v_xt <> v_src THEN
+      raise_application_error(-20011,
+        v_name || ': 날짜 폴더를 접은 뒤 외부 테이블이 ' || v_xt || ' 행을 읽는데 원본은 '
+        || v_src || ' 행이다 (' || v_month || '). 삭제하지 않았다.');
+    END IF;
+
     EXECUTE IMMEDIATE 'DELETE /*+ NO_PARALLEL */ FROM ' || v_name
                       || ' WHERE ' || v_col || ' BETWEEN :1 AND :2' USING v_from, v_to;
     v_del := SQL%ROWCOUNT;
@@ -114,7 +145,8 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || v_month || ' (' || v_min || '..' || v_max || ')  '
       || TO_CHAR(v_src, 'FM999,999,999') || ' rows -> _arch, '
       || TO_CHAR(v_del, 'FM999,999,999') || ' deleted (xt reads '
-      || TO_CHAR(v_xt, 'FM999,999,999') || ')');
+      || TO_CHAR(v_xt, 'FM999,999,999') || ')'
+      || CASE WHEN v_folded > 0 THEN ', ' || v_folded || ' day file(s) folded in' END);
   END LOOP;
 EXCEPTION
   WHEN OTHERS THEN
