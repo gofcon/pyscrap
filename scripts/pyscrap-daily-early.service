@@ -1,0 +1,15 @@
+[Unit]
+Description=pyscrap Daily Early (03:00)
+After=network.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+# 전 거래일(last_bday)의 KRX 오픈API 일별 자료: ETF·지수·종목기본·옵션·주식.
+# 0행으로 답한 잡은 닫히지 않고 남는다(empty_is_pending) -- 18:00 에 다시 묻는다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_early
+
+[Install]
+WantedBy=multi-user.target

@@ -17,11 +17,18 @@ CREATE OR REPLACE PROCEDURE sp_retire_expired_jobs (p_retired OUT NUMBER) AS
 --    놓는다: 그날 것을 못 받은 채로 두는 것과, 그것 때문에 오늘 것까지 못 받는
 --    것 사이의 선택이다.
 --
+-- 3. 자료가 끝내 안 온 KRX 오픈API 일별 잡. 그 API 들은 아직 안 낸 날을 0행으로
+--    답하고, 그런 행(api_mst.response_parse_json 의 empty_is_pending)은 0행이면
+--    잡을 닫지 않고 다음 사이클에 다시 묻는다 (app.services.execution.run_job).
+--    휴장일은 영영 0행이라 그 잡은 스스로 끝나지 않는다 -- 7일 지나면 놓는다.
+--    기준 날짜는 잡의 BASDD 다.
+--
 -- 잡 생성 앞(sp_run_generate_3m)과 daily_batch2 앞(sp_run_daily_batch2)에서
 -- 부른다. 생성은 이미 있는 잡을 건너뛰므로 앞에 두면 그날의 잡 목록이 생성
 -- 직후 완성된 상태가 된다. 두 UPDATE 는 서로 무관하고 각각 멱등이다.
   n1 NUMBER;
   n2 NUMBER;
+  n3 NUMBER;
 BEGIN
   UPDATE /*+ NO_PARALLEL */ api_job j
      SET j.is_active = 0
@@ -41,6 +48,16 @@ BEGIN
          < TO_CHAR(TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE)) - 7, 'YYYYMMDD');
   n2 := SQL%ROWCOUNT;
 
-  DBMS_OUTPUT.PUT_LINE('  expired-contract 3m jobs: ' || n1 || ', stale KRX_ETF_PDF jobs: ' || n2);
-  p_retired := n1 + n2;
+  UPDATE /*+ NO_PARALLEL */ api_job j
+     SET j.is_active = 0
+   WHERE j.is_active = 1
+     AND j.api_id IN (SELECT api_id FROM api_mst
+                       WHERE JSON_VALUE(response_parse_json, '$.empty_is_pending') = 'true')
+     AND JSON_VALUE(j.params_json, '$.BASDD')
+         < TO_CHAR(TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE)) - 7, 'YYYYMMDD');
+  n3 := SQL%ROWCOUNT;
+
+  DBMS_OUTPUT.PUT_LINE('  expired-contract 3m jobs: ' || n1 || ', stale KRX_ETF_PDF jobs: ' || n2
+                       || ', never-published KRX daily jobs: ' || n3);
+  p_retired := n1 + n2 + n3;
 END;

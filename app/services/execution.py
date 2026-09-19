@@ -155,7 +155,21 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         scraper = make_scraper(api, params=job.params_json)
         counts = scraper.run_and_save(session, job_id=job.job_id, key_params=key_params)
         job.description = ", ".join(f"{table}: {n}" for table, n in counts.items())
-        if not is_repeated:
+        # A row can say that an empty reply means "not yet" rather than
+        # "nothing" (response_parse_json['empty_is_pending']). KRX's open API
+        # answers a day it has not published with zero rows and a 200, and
+        # the job used to close on that -- 2026-09-01's index bars were
+        # missed that way and put back by hand twelve days later. With the
+        # flag the job stays pending and the next cycle asks again; a day
+        # that never comes (a holiday) is retired by sp_retire_expired_jobs
+        # once it is a week old. Scoped by configuration like logged_out and
+        # blocked: an empty reply is a real answer for most rows.
+        pending_empty = (not is_repeated
+                         and bool((api.response_parse_json or {}).get("empty_is_pending"))
+                         and sum(counts.values()) == 0)
+        if pending_empty:
+            job.description = f"no data yet ({job.description})"
+        elif not is_repeated:
             # One-shot job: done for good once it succeeds -- flip inactive
             # so run_cycle's ApiJob-based scan (execution_cycle + is_active)
             # won't pick it up again on a future tick (a *failed* one-shot

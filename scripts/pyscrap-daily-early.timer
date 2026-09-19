@@ -1,0 +1,17 @@
+[Unit]
+Description=Timer for pyscrap Daily Early (03:00, KRX open API for the previous trading day)
+
+[Timer]
+# 03:00 -- KRX 오픈API 가 전 거래일 자료를 내놓은 뒤, 아침 배치(08:35) 전.
+# 이 자료는 18:00 배치가 전날치를 받아 왔는데, 그건 KRX 가 당일치를 그 시각에
+# 아직 안 내서였다(T 의 20시에 0행이었던 관측). 새벽에 받으면 같은 확정값을
+# 하루 먼저 갖는다. 정확한 공개 시각은 모르므로 18:00 이 안전망으로 남는다 --
+# pyscrap-daily-batch1.service 가 이 사이클의 남은 잡을 한 번 더 돌린다.
+#
+# Mon..Fri: 월요일 03:00 의 last_bday 는 금요일이다. 토요일엔 돌지 않으니
+# 금요일치는 월요일 새벽에 온다.
+OnCalendar=Mon..Fri *-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
