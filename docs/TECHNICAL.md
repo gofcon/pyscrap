@@ -683,6 +683,7 @@ python -m app.cli generate-jobs <cycle>       # 잡 생성
 python -m app.cli run-cycle <cycle>           # 대기 중인 잡 실행
 python -m app.cli generate-builder <build_id> # 한 빌더만, 비활성이어도
 python -m app.cli call-proc <sp_run_...>      # 사이클의 DB 쪽 단계들을 순서대로 (배치가 쓰는 것)
+python -m app.cli sync-meta-maturity          # 거래소 목록 → 만기 달력 (한 단계만 따로)
 python -m app.cli sync-mst-fuopt              # 원본 → 정제 마스터 (한 단계만 따로)
 python -m app.cli sync-index-his              # 지수 → 시계열, MV 갱신
 python -m app.cli dedup-stock-base            # 주식 기본정보 → 종목당 1행

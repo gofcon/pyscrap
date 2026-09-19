@@ -210,6 +210,23 @@ def sync_index_his_cmd():
     typer.echo(f"stock_index_his: {_call_procedure('sp_stock_index_his_sync')} row(s) merged")
 
 
+@app.command("sync-meta-maturity")
+def sync_meta_maturity_cmd():
+    """Extend the expiry calendar (meta_maturity) from the exchange listing,
+    by calling sp_meta_maturity_sync: every listed contract carries its last
+    trading day, so a maturity is known the day its contracts list -- a
+    weekly a week ahead, a monthly years ahead. When the listing is empty
+    (the portal login failed) the KIS master stands in and the date is
+    derived from the code, marked unconfirmed until the exchange lists it.
+
+    One step on its own. The batch runs it inside sp_run_generate_3m, ahead
+    of sync-mst-fuopt -- that order is a real dependency, since the master
+    sync fills missing expiries from this calendar -- and that procedure is
+    where the order is written down, not here."""
+    setup_logging()
+    typer.echo(f"meta_maturity: {_call_procedure('sp_meta_maturity_sync')} row(s) merged")
+
+
 @app.command("sync-mst-fuopt")
 def sync_mst_fuopt_cmd():
     """Fold any newly-listed contracts into mst_fuopt, by calling the DB-side
@@ -220,24 +237,15 @@ def sync_mst_fuopt_cmd():
     master is not. Contracts that arrive that way carry no expiry of their
     own and are marked as unconfirmed until the exchange lists them.
 
-    The expiry calendar is extended first, from the same listing
-    (sp_meta_maturity_sync): the exchange gives every contract its last
-    trading day, so a maturity is known the day its contracts list. The order
-    is a real dependency -- sp_mst_fuopt_sync's last step fills the expiry
-    of any contract that has none from that calendar, and the job builders
-    select by expiry, so a contract whose maturity the calendar lacks is
-    invisible to collection. The weekly options went uncollected for ten
-    days in 2026-09 exactly that way, with the calendar stopped at 08-31.
-
-    Belongs to the batch rather than to a trigger on krx_deriv_info: the raw
-    listing is only ever refreshed by the daily_start cycle, so "whenever rows
-    arrive" and "once a day, after the refresh" are the same moment -- and a
-    trigger paid for that equivalence, re-running the whole MERGE once per
-    INSERT statement of the reload while making failures land somewhere with
-    no log. Schedule this after the daily_start cycle and before any job
-    generation that selects from mst_fuopt."""
+    One step on its own; run sync-meta-maturity first if the calendar may be
+    behind, or call-proc sp_run_generate_3m for the whole sequence the batch
+    runs. Belongs to the batch rather than to a trigger on krx_deriv_info:
+    the raw listing is only ever refreshed by the daily_start cycle, so
+    "whenever rows arrive" and "once a day, after the refresh" are the same
+    moment -- and a trigger paid for that equivalence, re-running the whole
+    MERGE once per INSERT statement of the reload while making failures land
+    somewhere with no log."""
     setup_logging()
-    typer.echo(f"meta_maturity: {_call_procedure('sp_meta_maturity_sync')} row(s) merged")
     typer.echo(f"mst_fuopt: {_call_procedure('sp_mst_fuopt_sync')} row(s) merged")
 
 

@@ -29,10 +29,10 @@ from sqlalchemy import Column, delete as sa_delete, func
 from sqlmodel import Session, select
 from tenacity import RetryError
 
+from app.auth_config import resolve_env_placeholders
 from app.db.models import ApiJob, ApiJobBuilder, ApiJobLog, ApiMst
 from app.scrapers import make_scraper
 from app.scrapers.base import SiteBlocked
-from app.auth_config import resolve_env_placeholders
 from app.services.export import TABLE_REGISTRY
 from app.services.job_builder import (
     NO_COLUMN,
@@ -164,9 +164,11 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         # that never comes (a holiday) is retired by sp_retire_expired_jobs
         # once it is a week old. Scoped by configuration like logged_out and
         # blocked: an empty reply is a real answer for most rows.
+        # api_rst is left out of the count: a row that also keeps its raw
+        # reply there stages one api_rst row on every call, data or not.
         pending_empty = (not is_repeated
                          and bool((api.response_parse_json or {}).get("empty_is_pending"))
-                         and sum(counts.values()) == 0)
+                         and sum(n for table, n in counts.items() if table != "api_rst") == 0)
         if pending_empty:
             job.description = f"no data yet ({job.description})"
         elif not is_repeated:
@@ -403,8 +405,8 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
             deferred.setdefault(exc.host, []).append(job)
             continue
         results[job.job_id] = job.description
+        logger.info("run_cycle({}): executed {}", execution_cycle, job.job_id)
     for host, pending in deferred.items():
         results.update(_run_deferred(session, host, pending))
-        logger.info("run_cycle({}): executed {}", execution_cycle, job.job_id)
 
     return results
