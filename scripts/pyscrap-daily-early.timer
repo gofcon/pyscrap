@@ -11,6 +11,15 @@ Description=Timer for pyscrap Daily Early (03:00, KRX open API for the previous 
 # Mon..Fri: 월요일 03:00 의 last_bday 는 금요일이다. 토요일엔 돌지 않으니
 # 금요일치는 월요일 새벽에 온다.
 OnCalendar=Mon..Fri *-*-* 03:00:00
+# 2026-09-22 부터 한 주, 공개 시각을 재기 위한 추가 회차. 03:00 엔 없었고(09-21,
+# 금요일치도) 08:35 엔 있었다는 것만 알므로 그 사이를 시간 단위로 묻는다. 잡은
+# 03:00 에 한 번 만들어지고 이후 회차는 0행이었던 것만 다시 묻는다(run-only 가
+# 아니라도 생성은 '이미 있음' 으로 지나간다). 첫 성공 회차가 로그에 남으면 그
+# 시각 하나만 남기고 나머지는 지운다.
+OnCalendar=Mon..Fri *-*-* 05:00:00
+OnCalendar=Mon..Fri *-*-* 06:00:00
+OnCalendar=Mon..Fri *-*-* 07:00:00
+OnCalendar=Mon..Fri *-*-* 08:00:00
 Persistent=true
 
 [Install]
