@@ -8,7 +8,7 @@ User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_batch1
-# 새벽 03:00(daily_early)에 KRX 가 아직 안 낸 날의 잡은 0행으로 남아 있다
+# 아침 07:00(daily_early)에 KRX 가 아직 안 낸 날의 잡은 0행으로 남아 있다
 # (empty_is_pending). 여기서 한 번 더 묻는다 -- run-only 라 생성은 하지 않고,
 # 남은 것만 돈다. 03:00 에 다 받았으면 돌 것이 없다.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_early run-only

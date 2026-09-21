@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap Daily Early (03:00)
+Description=pyscrap Daily Early (07:00)
 After=network.target
 
 [Service]
