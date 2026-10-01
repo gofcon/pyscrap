@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap Daily Early (08:38, 장중 잡의 준비와 생성)
+Description=pyscrap Daily Early (07:00, 그날 수집 전의 사전 작업)
 After=network.target
 
 [Service]
@@ -7,17 +7,29 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
-# 예전 pyscrap-generate-3m 이 하던 일이다. 이름을 바꾼 이유: 하는 일이 3분 잡
-# 생성만이 아니다 -- 만기 지난 잡을 물리고, 만기 달력과 선물옵션 마스터를
-# 늘린 뒤에 생성한다. 어느 단계를 어떤 순서로는 scripts/sql/
-# sp_run_daily_early.sql 이 위에서 아래로 말하고, 이 유닛은 언제만 안다.
+# 원칙: 여기에는 '그날 일간 자료를 받기 전에 끝나 있어야 하는 것' 만 둔다.
+# 그날 자료가 나오기를 기다리는 일은 pyscrap-daily-start 에 있다. 그래서 이
+# 유닛은 외부 공개 시각과 무관하고, 이르게 둘 수 있다.
 #
-# daily_start(08:35) 뒤에 있어야 한다: 그 사이클이 거래소 목록(krx_deriv_info)과
-# KIS 마스터를 다시 받아 오고, 아래 단계들이 그것을 읽는다. 먼저 돌면 어제
-# 목록으로 달력을 늘리고, 그날 상장된 위클리를 놓친다.
+#   1. KRX 포털 로그인                       -- 2 가 쓴다 (세션 30분, 같은 사이클)
+#   2. 거래소 전종목 기본정보(krx_deriv_info) -- 마스터, 언제 받아도 된다
+#      KIS 마스터 파일(fo_idx_code_mst)       -- 같다. 저녁에 갱신되므로(2026-10-01
+#                                                측정: Last-Modified 18:55 KST) 아침
+#                                                어느 시각이든 전날 저녁판이다
+#   3. 만기 지난 잡 퇴역 -> 만기 달력 -> 선물옵션 마스터  (sp_run_daily_early)
+#   4. 3분 잡 생성
+#
+# 2 가 3 보다 먼저인 것이 요점이다. 예전에는 2 가 08:35 에, 3 이 08:38 에 있어
+# 두 타이머 사이의 3분에 기대고 있었다 -- daily_start 가 45~51초에 끝난다는
+# 관측에 기댄 것이고, 관측은 약속이 아니다. 지금은 같은 유닛의 앞뒤다.
+#
+# KIS 접근토큰은 여기 없다. 이 유닛의 어느 단계도 그것을 쓰지 않고(마스터
+# 파일은 인증 없는 공개 파일이다), 토큰이 필요한 것은 그날 수집부터다 --
+# pyscrap-daily-start 의 첫 단계가 그것이다.
 #
 # Type=oneshot 의 ExecStart 들은 차례로 돌고 첫 실패에서 멈춘다 -- 마스터가
 # 갱신되지 않은 채로 잡이 생성되는 것보다 그 편이 낫다.
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_early
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh call-proc sp_run_daily_early
 # generate-only 로 두 샤드를 각각 한 프로세스에 -- 둘이 같은 계약 목록을 본다.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_call generate-only

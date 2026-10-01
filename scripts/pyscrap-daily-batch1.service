@@ -10,11 +10,11 @@ WorkingDirectory=/home/opc/pyscrap
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_batch1
 # 아침 08:35(daily_start)에 KRX 가 아직 안 낸 날의 잡은 0행으로 남아 있다
 # (empty_is_pending). 여기서 한 번 더 묻는다 -- run-only 라 생성은 하지 않고,
-# 남은 것만 돈다. 아침에 다 받았으면 KRX 오픈API 쪽은 돌 것이 없다.
+# 남은 것만 돈다. 아침에 다 받았으면 돌 것이 없다.
 #
-# 이 사이클에는 반복 잡도 있다(로그인, 거래소 전종목 기본정보 27개). 그것들은
-# 매번 다시 도는데, 저녁에 한 번 더 받는 것이 해롭지 않고 -- 그날 상장된 것이
-# 마스터에 들어온다 -- 비용은 포털 요청 28건, 1초 간격으로 30초다.
+# 이 사이클은 KIS 토큰과 KRX 오픈API 다섯 개뿐이고 전부 일회성이라, 아침에
+# 성공한 것은 이미 닫혀 있다. 반복 잡(포털 로그인, 거래소 전종목 기본정보)은
+# daily_early(07:00)에 있으므로 저녁에 괜히 다시 도는 것이 없다.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_start run-only
 
 [Install]

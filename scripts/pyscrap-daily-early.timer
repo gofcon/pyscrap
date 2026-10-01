@@ -1,14 +1,16 @@
 [Unit]
-Description=Timer for pyscrap Daily Early (08:38)
+Description=Timer for pyscrap Daily Early (07:00, 그날 수집 전의 사전 작업)
 
 [Timer]
-# 08:38 -- daily_start(08:35, 45~51초) 가 끝난 뒤, 3분 첫 틱(08:42) 전. 예전
-# pyscrap-generate-3m 의 자리 그대로다.
+# 07:00 -- 이 유닛에는 그날 자료를 기다리는 일이 없다(원칙은 .service 참고).
+# 마스터는 언제 받아도 되고, 달력·마스터 동기화와 3분 잡 생성은 날짜만 보고
+# 시각은 보지 않는다. 유일한 시각 제약은 3분 첫 틱(08:42) 보다 먼저라는 것이고
+# 그건 외부가 아니라 우리 일정이다 -- 07:00 은 1시간 42분 앞선다.
 #
 # 요일 제한은 app.services.job_builder._last_bday 와 같은 범위다(평일, 공휴일
 # 달력 없음). 휴장일에도 돌아 빈 잡을 만드는데, 그 잡은 일주일 뒤
 # sp_retire_expired_jobs 가 놓는다.
-OnCalendar=Mon..Fri *-*-* 08:38:00
+OnCalendar=Mon..Fri *-*-* 07:00:00
 Persistent=true
 
 [Install]
