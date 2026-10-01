@@ -698,8 +698,8 @@ python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 ### 5.2 하루 일정 (systemd)
 
 ```
-07:00  daily-early        사전 작업: 포털 로그인·원본 마스터 → 만기 잡 퇴역 → 달력·마스터 → 3분 잡 생성
-08:35  daily-start        그날 수집: KIS 토큰 → KRX 오픈API 전일분 → 주식 마스터 접기·이관
+07:00  daily-early        사전 작업: 포털 로그인·원본 마스터 → 만기 잡 퇴역 → 주식·파생 마스터 → 3분 잡 생성
+08:35  daily-start        그날 수집: KIS 토큰 → KRX 오픈API 전일분
 08:40~ 3m-call / 3m-put / 5m / 1h    장중 수집
 16:00  daily-close        장 마감 직후 확정되는 것
 18:00  daily-batch1       공시, ETF, 지수 일봉, 1분봉, 일봉

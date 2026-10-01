@@ -177,12 +177,11 @@ def _call_procedure(name: str, *args: object, out_count: bool = True) -> int | N
 
 @app.command("call-proc")
 def call_proc_cmd(
-    name: str = typer.Argument(..., help="DB-side procedure to run, e.g. sp_run_daily_start"),
+    name: str = typer.Argument(..., help="DB-side procedure to run, e.g. sp_run_daily_early"),
 ):
     """Run one parameterless DB-side procedure and log what it reports.
 
-    This is how the batch calls its orchestrators (sp_run_daily_start,
-    sp_run_daily_early, sp_run_daily_batch2): each is a list of the steps
+    This is how the batch calls its orchestrators (sp_run_daily_early, sp_run_daily_batch2): each is a list of the steps
     that follow or precede one cycle, in order, the way sp_run_export lists
     the export targets. The order of the DB-side steps then lives in one
     SQL file per cycle rather than across service files and cli commands,

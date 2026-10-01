@@ -16,7 +16,8 @@ WorkingDirectory=/home/opc/pyscrap
 #      KIS 마스터 파일(fo_idx_code_mst)       -- 같다. 저녁에 갱신되므로(2026-10-01
 #                                                측정: Last-Modified 18:55 KST) 아침
 #                                                어느 시각이든 전날 저녁판이다
-#   3. 만기 지난 잡 퇴역 -> 만기 달력 -> 선물옵션 마스터  (sp_run_daily_early)
+#   3. 만기 지난 잡 퇴역 -> 주식 마스터 접기·이관 -> 만기 달력 -> 선물옵션
+#      마스터  (sp_run_daily_early)
 #   4. 3분 잡 생성
 #
 # 2 가 3 보다 먼저인 것이 요점이다. 예전에는 2 가 08:35 에, 3 이 08:38 에 있어

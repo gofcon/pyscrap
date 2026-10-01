@@ -21,10 +21,9 @@ WorkingDirectory=/home/opc/pyscrap
 # 자리에서 받아 왔다. 공개 시각의 하한은 모르므로 못 받은 날은 18:00 이 한 번
 # 더 묻는다 (pyscrap-daily-batch1.service, empty_is_pending).
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_start
-# 위에서 받은 종목기본을 종목당 한 행으로 접고 정제 마스터로 옮긴다. 무엇을
-# 어떤 순서로는 scripts/sql/sp_run_daily_start.sql 이 말하고, 여기는 언제만 안다.
-# 수집 뒤여야 한다 -- 앞에 있으면 그날 행은 다음 날 접힌다.
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh call-proc sp_run_daily_start
+# DB 쪽 단계는 여기 없다. 받은 것을 접는 일(주식 기본정보 -> 정제 마스터)은
+# 그날 수집을 기다리지 않는 사전 작업이라 daily_early(07:00)로 갔다 -- 어제까지
+# 받아 둔 것을 접으므로, 그날 수집분은 다음 날 아침에 접힌다.
 
 [Install]
 WantedBy=multi-user.target
