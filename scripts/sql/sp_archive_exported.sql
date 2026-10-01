@@ -15,6 +15,12 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
 -- 돌리든 -- 다시 돌리든 -- 같은 구간을 본다. 일수로 자르면 실행 시각에 따라
 -- 경계가 흔들려 한 달이 두 파일에 걸친다.
 --
+-- 다시 불러도 결과가 같다: 내보내기 전에 그 달의 _arch 프리픽스를 비운다.
+-- EXPORT_DATA 는 파일 이름에 고유한 꼬리를 붙이므로 같은 프리픽스로 또 쓰면
+-- 덮지 않고 더한다 -- 2026-10-01 에 04:00 실행이 멈춘 뒤 손으로 다시 부르니
+-- 외부 테이블이 그 달을 정확히 두 벌(620,657 x 2) 읽었다. sp_export_bulk 가
+-- _bulk 를 비우는 것과 같은 이유다.
+--
 -- 그 대신 못 돌고 지나간 달은 저절로 따라잡히지 않는다. 두 달을 건너뛰었다면
 -- p_month 에 그 달을 주고 한 번 더 부른다. 자동으로 '남은 것 전부' 를 쓸어가게
 -- 하지 않는 이유는, 그 동작이 필요한 상황이 곧 뭔가 잘못된 상황이라서다 --
@@ -37,6 +43,13 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
 -- 안 보였다), 이 프로시저는 접지 않아 10월 1일에 9월이 두 벌이 될 참이었다.
 -- 순서가 중요하다: 폴더를 비운 뒤 다시 세어 원본과 '같은지' 본다. 같지 않으면
 -- 지우지 않는다 -- 접은 뒤엔 많이 읽히는 것도 잘못이다.
+--
+-- 세는 범위는 그 달이 아니라 '원본에 있는 날짜들' 이다. 달로 세면 _bulk 가 그
+-- 달의 일부를 덮고 있을 때 어긋난다 -- 2026-10-01 첫 실행이 그래서 멈췄다:
+-- kis_futopt_chart 의 _bulk 는 20250814..20260901 이고 09-01 은 이미 전달에
+-- 아카이브되어 DB 에 없으니, 외부가 12,735 행 더 읽혀 '같지 않다' 가 됐다.
+-- 날짜 목록으로 세면 _bulk 가 과거 어디를 덮든 상관없고, 같은 날이 두 벌이면
+-- 그 날의 수가 늘어나므로 중복 검출력은 그대로다.
 --
 -- 대상은 외부 테이블(xt_<대상>)이 있는 것으로 한정한다. 그것이 곧 "Parquet 으로
 -- 읽을 수 있다"의 정의이고, 없는 표를 지우면 데이터가 사라진다.
@@ -66,6 +79,8 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
   v_xt      NUMBER;
   v_del     NUMBER;
   v_folded  NUMBER;
+  v_days    VARCHAR2(4000);   -- 원본에 있는 그 달의 날짜들, IN 절에 넣을 꼴
+  c_batch   CONSTANT NUMBER := 50000;   -- 한 번에 지울 행 수 (undo 한도)
 BEGIN
   p_deleted := 0;
   -- '직전월' 은 한국 기준이다. SYSDATE 는 DB 서버의 OS 시각이라 지금은 UTC 를
@@ -92,6 +107,21 @@ BEGIN
       DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || v_month || '  없음, 건너뜀');
       CONTINUE;
     END IF;
+    -- 외부 테이블을 셀 때 쓸 날짜 목록. 달 범위가 아니라 이것으로 센다 (위 설명).
+    -- 안쪽에서 별명을 붙인다: 날짜 컬럼이 식인 대상(kis_futopt_price 의
+    -- SUBSTR(trade_at,1,8))에서는 바깥이 원래 컬럼을 볼 수 없다.
+    EXECUTE IMMEDIATE 'SELECT LISTAGG('''''''' || d || '''''''', '','') FROM '
+                      || '(SELECT DISTINCT ' || v_col || ' AS d FROM ' || v_name
+                      || ' WHERE ' || v_col || ' BETWEEN :1 AND :2 ORDER BY 1)'
+      INTO v_days USING v_from, v_to;
+
+    -- 이 달의 기존 _arch 를 비운다. 안 비우면 다시 부를 때 두 벌이 된다 (위 설명).
+    FOR o IN (SELECT object_name
+                FROM DBMS_CLOUD.LIST_OBJECTS(c_cred, c_base || LOWER(v_name) || '/_arch/')) LOOP
+      IF SUBSTR(o.object_name, 1, 6) = v_month THEN
+        DBMS_CLOUD.DELETE_OBJECT(c_cred, c_base || LOWER(v_name) || '/_arch/' || o.object_name);
+      END IF;
+    END LOOP;
 
     -- 하나의 파일로 나가도록 병렬 질의를 끈다 (sp_export_bulk 와 같은 이유).
     EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL QUERY';
@@ -106,8 +136,8 @@ BEGIN
 
     -- 읽히는지 확인한다. 외부 테이블은 방금 쓴 폴더까지 포함해서 센다.
     EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM xt_' || v_name
-                      || ' WHERE ' || v_col || ' BETWEEN :1 AND :2'
-      INTO v_xt USING v_from, v_to;
+                      || ' WHERE ' || v_col || ' IN (' || v_days || ')'
+      INTO v_xt;
 
     IF v_xt < v_src THEN
       raise_application_error(-20010,
@@ -128,8 +158,8 @@ BEGIN
     END LOOP;
     IF v_folded > 0 THEN
       EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM xt_' || v_name
-                        || ' WHERE ' || v_col || ' BETWEEN :1 AND :2'
-        INTO v_xt USING v_from, v_to;
+                        || ' WHERE ' || v_col || ' IN (' || v_days || ')'
+        INTO v_xt;
     END IF;
     IF v_xt <> v_src THEN
       raise_application_error(-20011,
@@ -137,10 +167,34 @@ BEGIN
         || v_src || ' 행이다 (' || v_month || '). 삭제하지 않았다.');
     END IF;
 
-    EXECUTE IMMEDIATE 'DELETE /*+ NO_PARALLEL */ FROM ' || v_name
-                      || ' WHERE ' || v_col || ' BETWEEN :1 AND :2' USING v_from, v_to;
-    v_del := SQL%ROWCOUNT;
+    -- 5만 행씩 지우고 사이사이 커밋한다. 한 문장으로 지우면 undo 가 모자란다 --
+    -- kis_futopt_price 는 한 달이 284만 행이고, 2026-10-01 에 ORA-30036 으로
+    -- 그렇게 멈췄다 (sp_krx_stock_base_dedup 이 같은 이유로 같은 모양이다).
+    --
+    -- 커밋하는 것이 맞다: 지우는 행은 방금 Parquet 으로 확인된 것들이고, 중간에
+    -- 멈춘 실행은 다음 실행이 이어 간다 -- _arch 를 다시 쓰고 남은 것을 지운다.
+    v_del := 0;
+    LOOP
+      EXECUTE IMMEDIATE 'DELETE /*+ NO_PARALLEL */ FROM ' || v_name
+                        || ' WHERE ' || v_col || ' BETWEEN :1 AND :2 AND ROWNUM <= ' || c_batch
+        USING v_from, v_to;
+      EXIT WHEN SQL%ROWCOUNT = 0;
+      v_del := v_del + SQL%ROWCOUNT;
+      COMMIT;
+    END LOOP;
     p_deleted := p_deleted + v_del;
+
+    -- 자리를 실제로 반납한다. DELETE 는 고수위선을 내리지 않아서, 10만 행이
+    -- 남은 kis_futopt_price 가 표와 인덱스로 1,206MB 를 들고 있었다
+    -- (2026-10-01). 이 작업의 목적이 용량이므로 지우는 것으로 끝낼 수 없다.
+    --
+    -- MOVE ONLINE 이다. SHRINK SPACE 는 이 Autonomous DB 에서 아무 일도 하지
+    -- 않았다 -- COMPACT 와 CASCADE 를 따로 불러도 0초에 끝나고 세그먼트가 그대로
+    -- 였다(ROW MOVEMENT 를 켠 뒤에도). MOVE ONLINE 은 세그먼트를 새로 만들어
+    -- 1,206MB 를 45MB 로 줄였고 5초가 걸렸으며, 인덱스도 함께 다시 만들어져
+    -- VALID 로 남는다. ONLINE 이라 도는 동안 DML 도 막지 않는다 -- 이 작업이
+    -- 04:00 라 부딪힐 것도 없지만.
+    EXECUTE IMMEDIATE 'ALTER TABLE ' || v_name || ' MOVE ONLINE';
 
     DBMS_OUTPUT.PUT_LINE(RPAD(v_name, 20) || v_month || ' (' || v_min || '..' || v_max || ')  '
       || TO_CHAR(v_src, 'FM999,999,999') || ' rows -> _arch, '
