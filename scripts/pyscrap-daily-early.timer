@@ -1,18 +1,14 @@
 [Unit]
-Description=Timer for pyscrap Daily Early (07:00, KRX open API for the previous trading day)
+Description=Timer for pyscrap Daily Early (08:38)
 
 [Timer]
-# 07:00 -- KRX 오픈API 가 전 거래일 자료를 내놓은 뒤, 아침 배치(08:35) 전.
-# 이 자료는 18:00 배치가 전날치를 받아 왔는데, 그건 KRX 가 당일치를 그 시각에
-# 아직 안 내서였다. 오픈API 는 홈페이지보다 늦다: T 의 23시에도 T 는 없고,
-# 다음 영업일 03:00 에도 없었으며(2026-09-21, 금요일치도) 08:35 엔 매일 있었다.
-# 그 사이 어디인지는 재지 않았다 -- 다섯 요청에 30초라 07:00 이면 08:35 까지
-# 넉넉하고, 그래도 안 온 날은 18:00 이 안전망으로 받는다
-# (pyscrap-daily-batch1.service 가 이 사이클의 남은 잡을 한 번 더 돌린다).
+# 08:38 -- daily_start(08:35, 45~51초) 가 끝난 뒤, 3분 첫 틱(08:42) 전. 예전
+# pyscrap-generate-3m 의 자리 그대로다.
 #
-# Mon..Fri: 월요일 07:00 의 last_bday 는 금요일이다. 토요일엔 돌지 않으니
-# 금요일치는 월요일 아침에 온다.
-OnCalendar=Mon..Fri *-*-* 07:00:00
+# 요일 제한은 app.services.job_builder._last_bday 와 같은 범위다(평일, 공휴일
+# 달력 없음). 휴장일에도 돌아 빈 잡을 만드는데, 그 잡은 일주일 뒤
+# sp_retire_expired_jobs 가 놓는다.
+OnCalendar=Mon..Fri *-*-* 08:38:00
 Persistent=true
 
 [Install]

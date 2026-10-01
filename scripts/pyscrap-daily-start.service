@@ -8,6 +8,12 @@ User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
 # ExecStart calls the wrapper script with cycle argument
+# 전 거래일(last_bday)의 KRX 오픈API 일별 자료 -- ETF·지수·종목기본·옵션·주식 --
+# 도 이 사이클에 있다. 예전에는 07:00 에 따로 돌렸는데, 오픈API 는 홈페이지보다
+# 늦어서 그 시각엔 다섯 개 모두 0행이었다(2026-09-22~10-01, 매일). 데이터가
+# 있는 것이 확인된 가장 이른 시각은 08:35 다 -- 종목기본이 9월 내내 이 자리에서
+# 받아 왔다. 그래서 여기로 돌아왔고, 못 받은 날은 18:00 이 한 번 더 묻는다
+# (pyscrap-daily-batch1.service).
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh daily_start
 # 그 다음 DB 쪽 단계들 -- krx_stock_base 를 종목당 한 행으로 접고 정제
 # 마스터로 옮기는 것 -- 을 순서대로. 무엇을 어떤 순서로는 scripts/sql/

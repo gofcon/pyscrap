@@ -23,7 +23,7 @@ CREATE OR REPLACE PROCEDURE sp_retire_expired_jobs (p_retired OUT NUMBER) AS
 --    휴장일은 영영 0행이라 그 잡은 스스로 끝나지 않는다 -- 7일 지나면 놓는다.
 --    기준 날짜는 잡의 BASDD 다.
 --
--- 잡 생성 앞(sp_run_generate_3m)과 daily_batch2 앞(sp_run_daily_batch2)에서
+-- 잡 생성 앞(sp_run_daily_early)과 daily_batch2 앞(sp_run_daily_batch2)에서
 -- 부른다. 생성은 이미 있는 잡을 건너뛰므로 앞에 두면 그날의 잡 목록이 생성
 -- 직후 완성된 상태가 된다. 두 UPDATE 는 서로 무관하고 각각 멱등이다.
   n1 NUMBER;

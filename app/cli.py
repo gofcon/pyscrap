@@ -182,7 +182,7 @@ def call_proc_cmd(
     """Run one parameterless DB-side procedure and log what it reports.
 
     This is how the batch calls its orchestrators (sp_run_daily_start,
-    sp_run_generate_3m, sp_run_daily_batch2): each is a list of the steps
+    sp_run_daily_early, sp_run_daily_batch2): each is a list of the steps
     that follow or precede one cycle, in order, the way sp_run_export lists
     the export targets. The order of the DB-side steps then lives in one
     SQL file per cycle rather than across service files and cli commands,
@@ -219,7 +219,7 @@ def sync_meta_maturity_cmd():
     (the portal login failed) the KIS master stands in and the date is
     derived from the code, marked unconfirmed until the exchange lists it.
 
-    One step on its own. The batch runs it inside sp_run_generate_3m, ahead
+    One step on its own. The batch runs it inside sp_run_daily_early, ahead
     of sync-mst-fuopt -- that order is a real dependency, since the master
     sync fills missing expiries from this calendar -- and that procedure is
     where the order is written down, not here."""
@@ -238,7 +238,7 @@ def sync_mst_fuopt_cmd():
     own and are marked as unconfirmed until the exchange lists them.
 
     One step on its own; run sync-meta-maturity first if the calendar may be
-    behind, or call-proc sp_run_generate_3m for the whole sequence the batch
+    behind, or call-proc sp_run_daily_early for the whole sequence the batch
     runs. Belongs to the batch rather than to a trigger on krx_deriv_info:
     the raw listing is only ever refreshed by the daily_start cycle, so
     "whenever rows arrive" and "once a day, after the refresh" are the same

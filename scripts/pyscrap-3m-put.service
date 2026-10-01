@@ -8,7 +8,7 @@ User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
 # run-only: the 3m shards' job set is static and is generated once a day by
-# pyscrap-generate-3m.service -- see run_cycle.sh's header for why.
+# pyscrap-daily-early.service -- see run_cycle.sh's header for why.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_cycle.sh 3m_put run-only
 
 [Install]

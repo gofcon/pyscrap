@@ -601,7 +601,7 @@ append      그냥 추가한다
 현재 타이머가 부르는 값:
 
 ```
-daily_early   07:00    daily_start        08:35    3m_call / 3m_put   08:42~16:45
+daily_start   08:35    daily_early        08:38    3m_call / 3m_put   08:42~16:45
 5m            08:40~   1h                 09:00~16:00
 daily_close   16:00    daily_batch1       18:00    daily_batch2   21:00
 ```
@@ -698,8 +698,8 @@ python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 ### 5.2 하루 일정 (systemd)
 
 ```
-08:35  daily-start        토큰 갱신, 원본 마스터 재적재 (+ 주식 마스터 접기·이관)
-08:38  generate-3m        마스터 동기화 → 3분 잡 생성
+08:35  daily-start        토큰 갱신, 원본 마스터 재적재, KRX 오픈API 전일분 (+ 주식 마스터 접기·이관)
+08:38  daily-early        만기 잡 퇴역 → 달력·마스터 동기화 → 3분 잡 생성
 08:40~ 3m-call / 3m-put / 5m / 1h    장중 수집
 16:00  daily-close        장 마감 직후 확정되는 것
 18:00  daily-batch1       공시, ETF, 지수 일봉, 1분봉, 일봉
