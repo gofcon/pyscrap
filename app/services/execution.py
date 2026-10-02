@@ -76,7 +76,19 @@ def _clear_previous_results(session: Session, api: ApiMst, job_id: str) -> None:
     field's default), so re-running the same job_id replaces stale rows
     instead of accumulating duplicates every time. A repeated/snapshot job
     (RESERVED_NOW_KEY -- see run_job) must use save_mode='append'
-    instead, or every execution would wipe out the history it's building."""
+    instead, or every execution would wipe out the history it's building.
+
+    Deliberately does NOT commit. The delete and the rows that replace it are
+    one change: committing here made a failed fetch destructive, because
+    run_job's rollback then had nothing left to undo. On 2026-10-02 the KRX
+    portal answered the 07:00 login with a notice page, all 27 listing jobs
+    failed on the reply, and krx_deriv_info -- 23,000 rows, the source the
+    expiry calendar and the futures/options master are built from -- was
+    emptied. Nothing had replaced it; the previous day's copy was simply
+    gone. Leaving the delete uncommitted means a failure leaves yesterday's
+    rows in place, which is what "overwrite" should mean: replaced, or not
+    touched.
+    """
     for table_name in set((api.output_tables_json or {}).values()):
         model_cls = TABLE_REGISTRY.get(table_name)
         if model_cls is None:
@@ -95,7 +107,6 @@ def _clear_previous_results(session: Session, api: ApiMst, job_id: str) -> None:
         # a SQL condition), which is what .where() actually needs.
         job_id_column = cast(Column, getattr(model_cls, "job_id"))
         session.exec(sa_delete(model_cls).where(job_id_column == job_id))
-    session.commit()
 
 
 def run_job(session: Session, job: ApiJob) -> ApiJob:
