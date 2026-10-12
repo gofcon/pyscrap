@@ -113,6 +113,16 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
     """Run an already-existing ``ApiJob`` (e.g. created ahead of time via
     :func:`app.services.job_builder.build_jobs_from_builder`), logging the
     outcome to ``ApiJobLog`` (SUCCESS or FAILED only -- no RUNNING marker)."""
+    _execute_job(session, job)
+    return job
+
+
+def _execute_job(session: Session, job: ApiJob) -> bool:
+    """run_job's body, with the outcome returned instead of discarded: True
+    if the job succeeded. Only run_cycle needs that -- it counts an api_id's
+    consecutive failures to decide when to stop asking (see _FailStreak) --
+    so run_job keeps the friendlier contract of handing the job back, and
+    every other caller is unaffected."""
 
     # Explicit annotation: PyCharm's own type stubs mis-resolve
     # Session.get()'s generic (_EntityBindKey[_O]) signature and infer
@@ -201,6 +211,7 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         session.add(job)
         _log(session, job.job_id, "SUCCESS", commit=False)
         session.commit()
+        return True
     except Exception as exc:  # noqa: BLE001 - persisted for later inspection
         logger.exception("{}: job {} failed", job.api_id, job.job_id)
         # Discard whatever the failed job already added to the session before
@@ -228,8 +239,7 @@ def run_job(session: Session, job: ApiJob) -> ApiJob:
         # here, since it says nothing about the next job.
         if isinstance(exc, SiteBlocked):
             raise exc
-
-    return job
+        return False
 
 
 def _generate_jobs_for_builders(session: Session, builders: Sequence[ApiJobBuilder]) -> list[ApiJob]:
@@ -294,6 +304,12 @@ def generate_jobs_for_builder(session: Session, build_id: str) -> list[ApiJob]:
 # window.
 _BLOCK_COOLDOWN_SEC = float(os.environ.get("BLOCK_COOLDOWN_SEC", "600"))
 
+# How many consecutive failures of one api_id end that api's run (see
+# _FailStreak). Five is about a minute of timeouts -- enough that a site
+# having a bad moment still gets several chances, little enough that a dead
+# one costs a minute instead of a night. 0 turns the breaker off.
+_FAIL_STREAK_LIMIT = int(os.environ.get("FAIL_STREAK_LIMIT", "5"))
+
 
 class _HostIndex:
     """Which host each job talks to, looked up once per api_id."""
@@ -312,7 +328,65 @@ class _HostIndex:
         return host
 
 
-def _run_deferred(session: Session, host: str, pending: list[ApiJob]) -> dict[str, str | None]:
+class _FailStreak:
+    """Counts an api_id's consecutive failures and says when to stop asking.
+
+    A source can die quietly. KB moved its ETF holdings site to another
+    domain over the 2026-10-03 holiday; the old host answers every request
+    with a 302 to a host that never completes a TCP connection, so every job
+    times out after three minutes. Nothing retires a job that has not
+    succeeded -- that is what keeps a failed one-shot job coming back
+    tomorrow -- and the builder added 142 more every night, so by 10-12 the
+    night cycle had 852 of them. It spent 21:02 to past 01:30 on jobs that
+    could not work, two successes to show for it, and the KSD bond migration
+    and the other managers' holdings queued behind them never ran at all.
+    The first few failures are worth paying for; the eight hundredth says
+    nothing the fifth did not.
+
+    Counted per api_id, not per host: the endpoint is what breaks, and one
+    host serves several rows (data.krx.co.kr serves a dozen). A host
+    refusing us wholesale is a different thing, already handled better --
+    SiteBlocked defers it and tries again after the window (see
+    _run_deferred) instead of giving up for the night.
+
+    Any success resets the api's count, so a long run where a few codes
+    legitimately fail never accumulates toward a shutdown; it takes
+    _FAIL_STREAK_LIMIT in a row, unbroken.
+
+    Deliberately in-memory and per-cycle: the next cycle starts fresh and
+    asks again, which is what should happen when the site comes back. The
+    cost of being wrong is one more minute of timeouts, once per cycle."""
+
+    def __init__(self, limit: int = _FAIL_STREAK_LIMIT):
+        self._limit = limit
+        self._streak: dict[str, int] = {}
+        self.skipped: dict[str, int] = {}
+
+    def tripped(self, api_id: str) -> bool:
+        """Has this api already failed its way out of this cycle? Counts the
+        job as skipped when it has, for the summary at the end of the run."""
+        if self._limit <= 0 or self._streak.get(api_id, 0) < self._limit:
+            return False
+        self.skipped[api_id] = self.skipped.get(api_id, 0) + 1
+        return True
+
+    def record(self, api_id: str, ok: bool) -> None:
+        if ok:
+            self._streak[api_id] = 0
+            return
+        self._streak[api_id] = self._streak.get(api_id, 0) + 1
+        if self._streak[api_id] == self._limit:
+            logger.error("{}: {} consecutive failures -- skipping the rest of its jobs this cycle",
+                         api_id, self._limit)
+
+    def report(self) -> None:
+        for api_id, n in self.skipped.items():
+            logger.warning("{}: {} job(s) skipped by the failure breaker -- still pending for the "
+                           "next cycle", api_id, n)
+
+
+def _run_deferred(session: Session, host: str, pending: list[ApiJob],
+                  streak: _FailStreak) -> dict[str, str | None]:
     """One more pass over a refused host's jobs, after the refusal window.
 
     Waits the window out, logs in again (the refusal may have voided the
@@ -336,12 +410,15 @@ def _run_deferred(session: Session, host: str, pending: list[ApiJob]) -> dict[st
                      "{} job(s) left pending", host, str(exc)[:120], len(pending))
         return results
     for i, job in enumerate(pending):
+        if streak.tripped(job.api_id):
+            continue
         try:
-            run_job(session, job)
+            ok = _execute_job(session, job)
         except SiteBlocked:
             logger.error("{}: refused again at job {} -- giving the host up for this run, "
                          "{} job(s) left pending", host, job.job_id, len(pending) - i)
             break
+        streak.record(job.api_id, ok)
         results[job.job_id] = job.description
     return results
 
@@ -388,6 +465,12 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
     one naturally stays and gets retried next tick -- no separate retry
     bookkeeping needed.
 
+    Not every pending job is necessarily tried: a host that refuses us is
+    set aside and retried after a window (SiteBlocked/_run_deferred), and an
+    api that fails several times in a row is dropped for the rest of the
+    cycle (_FailStreak). Either way the jobs stay active and the next cycle
+    picks them up.
+
     Returns {job_id: description}, one entry per job actually executed."""
     results: dict[str, str | None] = {}
     jobs = session.exec(
@@ -403,21 +486,29 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
     # unit a site refuses at -- one login, one rate limit -- and a cycle
     # interleaves several hosts, none of which should pay for another's.
     hosts = _HostIndex(session)
+    # An api that has just failed several times running is not asked again
+    # this cycle -- a dead source otherwise eats the whole night (see
+    # _FailStreak).
+    streak = _FailStreak()
     deferred: dict[str, list[ApiJob]] = {}
     for job in _login_rows_first(session, jobs):
+        if streak.tripped(job.api_id):
+            continue
         host = hosts.of(job)
         if host in deferred:
             deferred[host].append(job)
             continue
         try:
-            run_job(session, job)
+            ok = _execute_job(session, job)
         except SiteBlocked as exc:
             logger.warning("{} refused us at job {} -- deferring its remaining jobs", exc.host, job.job_id)
             deferred.setdefault(exc.host, []).append(job)
             continue
+        streak.record(job.api_id, ok)
         results[job.job_id] = job.description
         logger.info("run_cycle({}): executed {}", execution_cycle, job.job_id)
     for host, pending in deferred.items():
-        results.update(_run_deferred(session, host, pending))
+        results.update(_run_deferred(session, host, pending, streak))
+    streak.report()
 
     return results
