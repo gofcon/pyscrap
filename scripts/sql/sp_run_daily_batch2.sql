@@ -6,6 +6,10 @@ CREATE OR REPLACE PROCEDURE sp_run_daily_batch2 AS
 -- 앞에 있어야 하고, 둘 사이엔 의존이 없다 -- 채권이 먼저인 것은 그냥 순서다.
 -- 그 앞에서 밀린 잡을 놓는다(sp_retire_expired_jobs): KRX 구성종목 잡이 새
 -- 날짜와 함께 나가기 전에 7일 넘은 것을 빼야 한다.
+--
+-- 마지막은 sp_ksd_no_detail_mark 다. 채권 상세 빌더가 후보를 뽑기 전에,
+-- 세이브로가 상세를 주지 않는 ISIN 을 적어 둬야 그 종목이 그날 창을 먹지
+-- 않는다. mst_bond 가 접힌 뒤라야 새로 들어온 채권까지 함께 본다.
   n NUMBER;
 BEGIN
   sp_retire_expired_jobs(n);
@@ -14,4 +18,6 @@ BEGIN
   DBMS_OUTPUT.PUT_LINE('sp_mst_bond_sync: ' || n || ' new issue(s)');
   sp_mst_etf_sync(n);
   DBMS_OUTPUT.PUT_LINE('sp_mst_etf_sync: ' || n || ' row(s) merged');
+  sp_ksd_no_detail_mark(n);
+  DBMS_OUTPUT.PUT_LINE('sp_ksd_no_detail_mark: ' || n || ' ISIN(s) marked');
 END;
