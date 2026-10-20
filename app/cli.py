@@ -481,4 +481,19 @@ def check_sql_cmd(
 
 
 if __name__ == "__main__":
-    app()
+    # Typer prints an uncaught exception to stderr and nowhere else, which on
+    # this instance means it is gone within hours: journald keeps 8 MB and the
+    # 3-minute cycles write ~130k lines a day. That is how the cause of the
+    # 2026-10-19 daily_batch2 crash was lost -- the batch's own file log (30
+    # days, with locals) had every job it ran and nothing about why it died,
+    # because run_job logs what it catches and this did not come from a job.
+    # So the last thing before exiting is to put it through loguru as well.
+    # SystemExit passes through untouched: Typer raises it for --help and for
+    # a command's own exit code, and neither is an error to report.
+    try:
+        app()
+    except SystemExit:
+        raise
+    except BaseException:
+        logger.exception("batch command failed")
+        raise

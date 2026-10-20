@@ -2,15 +2,15 @@
 Description=Timer for pyscrap Finalize Exports
 
 [Timer]
-# Run at 18:10 -- after daily_end (18:00, see main-daily-end.timer) and
-# after the trading-hours 5m/1h windows (which end by 16:45), so every
-# cycle's jobs for the day have already run before this sweeps up whatever
-# CSVs are left pending.
+# 03:00 -- 하루치 잡이 다 돈 뒤 남은 CSV 를 쓸어 담는 자리. 저녁이 아니라
+# 새벽에 혼자 돈다. 여기 있던 purge-jobs 가 2026-10-19 밤 22:30 에 돌면서,
+# 아직 돌고 있던 daily_batch2 의 로그 INSERT 를 70분간 막아 그 사이클을
+# 죽였다 (sp_purge_jobs 주석 참고). 그 문장 자체는 고쳤지만, 잡 부기를
+# 정리하는 일이 수집 사이클과 같은 시간대를 쓸 이유가 없다 -- batch2 의
+# 최악(~00:30)과 daily_early(07:00) 사이에 둔다.
 # Mon..Fri only -- same "weekday, no public-holiday calendar" scope as
 # app.services.job_builder._last_bday, so Lunar New Year/Chuseok etc. still fire.
-# pyscrap-export 뒤. 서로 독립이지만 저녁 배치가 한 방향으로 읽히도록
-# 순서대로 둔다.
-OnCalendar=Mon..Fri *-*-* 22:30:00
+OnCalendar=Mon..Fri *-*-* 03:00:00
 Persistent=true
 
 [Install]

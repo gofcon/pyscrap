@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap Finalize Exports (18:20, after the day's export)
+Description=pyscrap Finalize Exports (03:00, after the night's cycles)
 After=network.target
 
 [Service]
