@@ -448,6 +448,34 @@ def purge_jobs_cmd(
     typer.echo(f"purged {deleted:,} job(s) older than {days} day(s)")
 
 
+@app.command("purge-job-logs")
+def purge_job_logs_cmd(
+    ok_days: int = typer.Option(30, "--ok-days", min=7, help="Keep SUCCESS log rows newer than this"),
+    fail_days: int = typer.Option(365, "--fail-days", min=1, help="Keep FAILED log rows newer than this"),
+):
+    """Delete api_job_log rows once they are older than the retention for
+    their outcome, by calling sp_purge_job_logs (see scripts/sql/).
+
+    Separate from purge-jobs because that one reaches a log row only by way
+    of the job it belongs to, and two kinds of row are out of its reach: the
+    logs of jobs that stay active forever (the repeated ones) and the logs of
+    jobs that have not yet aged past its own 90-day bar. The log table grows
+    far faster than the job table -- about 124,000 rows on a trading day --
+    so its retention is worth setting on its own.
+
+    --ok-days has a floor of 7, enforced here and again in the procedure:
+    sp_retire_expired_jobs decides a source is dead when the last 7 days of
+    log hold no success for it, so a shorter retention would retire sources
+    that are collecting perfectly well.
+
+    Register alongside purge-jobs, in the step that runs when no cycle does
+    (03:00) -- the delete takes a lock the running cycle's inserts need."""
+    setup_logging()
+    deleted = _call_procedure("sp_purge_job_logs", ok_days, fail_days)
+    typer.echo(f"purged {deleted:,} log row(s): success older than {ok_days}d, "
+               f"failure older than {fail_days}d")
+
+
 @app.command("check-sql")
 def check_sql_cmd(
     pull: list[str] = typer.Option(None, "--pull", help="Object to overwrite its file with the database's version; repeatable"),
