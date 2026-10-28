@@ -15,6 +15,15 @@ ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh finalize-exports
 # CSV 버퍼를 지우고, 이것이 몇 달 지난 잡 부기를 지운다. 결과는 어느 쪽도
 # 건드리지 않는다.
 ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh purge-jobs
+# 그리고 로그 부기. 위의 purge-jobs 는 잡을 지우면서 그 잡의 로그를 함께
+# 지우는데, 활성 잡의 로그(반복 잡은 영원히 활성이다)와 아직 90일을 못 넘긴
+# 잡의 로그는 손에 닿지 않는다. 로그는 잡보다 훨씬 빨리 늘므로(영업일당 12.4만
+# 행) 보존을 따로 걸어야 한다. 성공 30일 / 실패 365일이 기본값이다.
+#
+# 이 세 가지가 밤 사이클이 아니라 03:00 에 있는 이유: 대량 DELETE 는 테이블에
+# 락을 걸고, 돌고 있는 사이클은 바로 그 api_job_log 에 INSERT 를 한다. 10-19 밤
+# daily_batch2 가 그래서 죽었다(sp_purge_jobs 주석 참고).
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/run_command.sh purge-job-logs
 
 [Install]
 WantedBy=multi-user.target
