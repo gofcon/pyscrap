@@ -617,6 +617,37 @@ MST_CODE       BOND_TYPE · GOVT · '국채'
 외래키는 걸지 않는다 -- 원천이 아직 안 보낸 값을 미리 매핑해 둘 수 있어야 하고
 (`MBS`·`SLBS` 가 그 경우), 수확이 SRC_CODE 를 다시 만들 때 제약이 걸린다.
 
+### 조인은 뷰로 (REF)
+
+질의마다 두 표를 잇지 않게 `v_code_map` 을 둔다.
+
+```sql
+SELECT b.isin, c.code_nm AS bond_type
+  FROM ksd_bond_isin b
+  LEFT JOIN v_code_map c ON c.table_name  = 'ksd_bond_isin'
+                        AND c.column_name = 'codevalue_nm'
+                        AND c.code_value  = b.codevalue_nm;
+```
+
+뷰 안에서 `mst_code` 를 **LEFT** 로 잇는다. 매핑이 가리키는 코드가 `mst_code` 에
+없으면 그것은 데이터 오류인데, INNER 면 그 행이 조용히 사라져서 오류가 안
+보인다. `code_nm` 이 NULL 로 나오는 쪽이 낫다 -- 표본으로 확인했다.
+
+```
+ksd_bond_isin · codevalue_nm · '없는코드'  →  BOND_TYPE.NOSUCH  (code_nm NULL)
+```
+
+`v_code_unmapped` 는 수확됐지만 매핑 안 된 값이다. 운영 중 가장 자주 볼 질의라
+뷰로 둔다.
+
+```sql
+SELECT * FROM v_code_unmapped ORDER BY row_cnt DESC FETCH FIRST 30 ROWS ONLY;
+```
+
+> 이 뷰를 SCRAP 에 넘겨주려면 `src_code` 의 GRANT 에 **WITH GRANT OPTION** 이
+> 붙어야 한다. 없으면 뷰를 만들 때가 아니라 넘겨줄 때 ORA-01720 이 나서 원인이
+> 한 겹 숨는다.
+
 ### 수확 (`sp_src_code_sync`, SCRAP)
 
 후보는 **통계로** 고른다. `user_tab_columns.num_distinct` 가 555개 문자 컬럼

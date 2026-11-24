@@ -55,7 +55,11 @@ CREATE INDEX ix_src_code_first ON src_code (first_seen);
 COMMENT ON TABLE  src_code IS '결과 컬럼에서 수확한 원천 코드 값. sp_src_code_sync 가 채운다';
 COMMENT ON COLUMN src_code.last_seen IS '멈춘 값 = 원천이 더는 보내지 않는 값. 지우지 않는다';
 
-GRANT SELECT ON src_code TO &ref_user;
+-- WITH GRANT OPTION 이 필요하다. REF 의 v_code_unmapped 가 이 표를 읽고, 그
+-- 뷰를 다시 SCRAP 에 넘겨주려면 원본에 대한 전달 권한이 있어야 한다. 없으면
+-- 뷰를 만들 때가 아니라 **넘겨줄 때** ORA-01720 이 난다 -- 뷰는 멀쩡히
+-- 만들어지고 GRANT 에서 막히므로 원인이 한 겹 숨는다.
+GRANT SELECT ON src_code TO &ref_user WITH GRANT OPTION;
 
 -- ===========================================================================
 -- REF 으로 접속해서 실행
@@ -104,40 +108,82 @@ CREATE INDEX ix_user_code_map_group ON user_code_map (code_group, code);
 GRANT SELECT ON mst_code      TO &scrap_user;
 GRANT SELECT ON user_code_map TO &scrap_user;
 
+-- 조인해서 쓰는 뷰. 질의마다 두 표를 잇지 않게 한다.
+--
+-- mst_code 를 LEFT 로 잇는 이유: 매핑이 가리키는 코드가 mst_code 에 없으면
+-- 그것은 데이터 오류이고, INNER 로 두면 그 행이 조용히 사라져서 오류가
+-- 안 보인다. code_nm 이 NULL 로 나오는 쪽이 낫다.
+CREATE OR REPLACE VIEW v_code_map AS
+SELECT p.table_name,
+       p.column_name,
+       p.code_value,
+       p.code_group,
+       p.code,
+       m.code_nm,
+       m.parent_code,
+       m.sort_order
+  FROM user_code_map p
+  LEFT JOIN mst_code m
+         ON m.code_group = p.code_group
+        AND m.code       = p.code;
+
+COMMENT ON TABLE v_code_map IS '원천 값 -> 우리 코드/이름. 결과 테이블에 LEFT JOIN 해서 쓴다';
+
+-- 아직 매핑 안 한 값. 운영 중에 가장 자주 볼 질의라 뷰로 둔다.
+-- src_code 는 SCRAP 소유이고 여기서는 synonym 으로 닿는다 -- 그 GRANT 에
+-- WITH GRANT OPTION 이 붙어 있어야 이 뷰를 SCRAP 에 되돌려 줄 수 있다.
+CREATE OR REPLACE VIEW v_code_unmapped AS
+SELECT s.source, s.table_name, s.column_name, s.code_value,
+       s.row_cnt, s.distinct_cnt, s.first_seen, s.last_seen
+  FROM src_code s
+ WHERE NOT EXISTS (SELECT 1
+                     FROM user_code_map p
+                    WHERE p.table_name  = s.table_name
+                      AND p.column_name = s.column_name
+                      AND p.code_value  = s.code_value);
+
+COMMENT ON TABLE v_code_unmapped IS '수확됐지만 매핑 안 된 값. row_cnt 큰 것부터 보면 된다';
+
+GRANT SELECT ON v_code_map      TO &scrap_user;
+GRANT SELECT ON v_code_unmapped TO &scrap_user;
+
 -- ===========================================================================
 -- synonym (각 계정에서)
 -- ===========================================================================
--- REF 에서:
+-- REF 에서 (위 v_code_unmapped 보다 먼저 만들어야 한다):
 CREATE SYNONYM src_code FOR &scrap_user..src_code;
 
 -- SCRAP 에서:
--- CREATE SYNONYM mst_code      FOR &ref_user..mst_code;
--- CREATE SYNONYM user_code_map FOR &ref_user..user_code_map;
+-- CREATE SYNONYM mst_code        FOR &ref_user..mst_code;
+-- CREATE SYNONYM user_code_map   FOR &ref_user..user_code_map;
+-- CREATE SYNONYM v_code_map      FOR &ref_user..v_code_map;
+-- CREATE SYNONYM v_code_unmapped FOR &ref_user..v_code_unmapped;
 
 -- ===========================================================================
 -- 쓰는 법
 -- ===========================================================================
--- 해석은 LEFT JOIN 이다. 매핑 안 된 값이 행을 떨어뜨리지 않고 NULL 로 드러나야
--- 한다 -- 조용히 사라지면 매핑이 빠진 것을 알 수 없다.
+-- 조인은 하나다. 매핑 안 된 값이 행을 떨어뜨리지 않고 NULL 로 드러나야 하므로
+-- LEFT 다 -- 조용히 사라지면 매핑이 빠진 것을 알 수 없다.
 --
---   SELECT b.isin, m.code_nm AS bond_type
+--   SELECT b.isin, c.code_nm AS bond_type
 --     FROM ksd_bond_isin b
---     LEFT JOIN user_code_map p
---            ON p.table_name  = 'ksd_bond_isin'
---           AND p.column_name = 'codevalue_nm'
---           AND p.code_value  = b.codevalue_nm
---     LEFT JOIN mst_code m
---            ON m.code_group = p.code_group AND m.code = p.code
+--     LEFT JOIN v_code_map c
+--            ON c.table_name  = 'ksd_bond_isin'
+--           AND c.column_name = 'codevalue_nm'
+--           AND c.code_value  = b.codevalue_nm;
 --
--- 아직 매핑 안 한 것:
+-- 한 표에 코드 컬럼이 여럿이면 뷰를 여러 번 잇는다. 별칭만 다르다:
 --
---   SELECT s.* FROM src_code s
---    WHERE NOT EXISTS (SELECT 1 FROM user_code_map p
---                       WHERE p.table_name  = s.table_name
---                         AND p.column_name = s.column_name
---                         AND p.code_value  = s.code_value)
---      AND s.distinct_cnt <= 40
---    ORDER BY s.row_cnt DESC;
+--   LEFT JOIN v_code_map c1 ON c1.table_name='ksd_bond_credit'
+--                          AND c1.column_name='secn_kanm'
+--                          AND c1.code_value=x.secn_kanm
+--   LEFT JOIN v_code_map c2 ON c2.table_name='ksd_bond_credit'
+--                          AND c2.column_name='valat_org_nm'
+--                          AND c2.code_value=x.valat_org_nm
+--
+-- 매핑 밀린 것:
+--
+--   SELECT * FROM v_code_unmapped ORDER BY row_cnt DESC FETCH FIRST 30 ROWS ONLY;
 --
 -- 어제 새로 나타난 값:
 --
