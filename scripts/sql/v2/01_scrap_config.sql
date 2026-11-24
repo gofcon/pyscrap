@@ -7,6 +7,7 @@
 --   api_mst.key_params_list   -> job_key_params + row_stamp_json
 --                                + is_repeated + snapshot_column
 --   api_mst.response_parse_json -> parse_json + session_json + staging_json
+--                                + empty_is_pending (컬럼으로)
 --   api_mst.request_type      -> protocol + method
 --   api_mst.api_group         -> source + domain
 --   api_mst.output_tables_json -> record_map_json
@@ -70,6 +71,16 @@ CREATE TABLE api_mst (
   row_stamp_json     JSON,                 -- 행에 찍을 것. {파라미터: 컬럼}
   is_repeated        BOOLEAN DEFAULT FALSE NOT NULL,  -- 성공 후에도 활성 유지
   snapshot_column    VARCHAR2(30 CHAR),    -- 실행 시각을 받을 컬럼. 없으면 NULL
+
+  -- 0행 성공을 "끝났다" 로 보지 않는다. KRX 오픈API 는 아직 안 낸 날을 0행으로
+  -- 답하므로, 그 행은 0행이면 잡을 닫지 않고 다음 사이클에 다시 묻는다.
+  --
+  -- is_repeated 의 형제다 -- 둘 다 "이 잡은 언제 끝났는가" 를 말한다. v1 은
+  -- 이것을 response_parse_json 안의 키로 두었는데, 쓰는 다섯 행
+  -- (KRX_ETF · KRX_OPTION_DAILY · KRX_INDEX_KOSPI · KRX_STOCK_INFO ·
+  -- KRX_STOCK_BASE_INFO)의 그 컬럼에는 **그 키 하나뿐**이었다. 파싱 명세가
+  -- 전혀 없으니 parse_json/session_json/staging_json 어디에도 갈 자리가 없다.
+  empty_is_pending   BOOLEAN DEFAULT FALSE NOT NULL,
 
   pagination_json    JSON,
 

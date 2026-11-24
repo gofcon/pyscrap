@@ -62,10 +62,26 @@ BEGIN
   sp_export_parquet(p_name => 'kis_etf', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'kis_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
   sp_export_parquet(p_name => 'amc_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
-  sp_export_parquet(p_name => 'ace_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
-  sp_export_parquet(p_name => 'plus_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
-  sp_export_parquet(p_name => 'sol_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
-  sp_export_parquet(p_name => 'kodex_etf_pdf', p_to => p_to, p_from => p_from, p_rows => n);
+  -- 운용사별 넷은 v2 에서 뷰다(api_rst 위). p_name 은 **옛 이름 그대로** 둔다 --
+  -- 그것이 버킷 프리픽스이고 외부 테이블 이름(xt_ace_etf_pdf)이기도 해서, 바꾸면
+  -- 분석 쪽 경로가 끊긴다. 소스만 p_query 로 뷰를 가리킨다.
+  sp_export_parquet(p_name  => 'ace_etf_pdf',
+                    p_to    => p_to, p_from => p_from,
+                    p_query => 'SELECT * FROM v_ace_etf_pdf WHERE std_dt = :DAY',
+                    p_rows  => n);
+  sp_export_parquet(p_name  => 'plus_etf_pdf',
+                    p_to    => p_to, p_from => p_from,
+                    p_query => 'SELECT * FROM v_plus_etf_pdf WHERE wkdate = :DAY',
+                    p_rows  => n);
+  sp_export_parquet(p_name  => 'sol_etf_pdf',
+                    p_to    => p_to, p_from => p_from,
+                    p_query => 'SELECT * FROM v_sol_etf_pdf WHERE work_dt = :DAY',
+                    p_rows  => n);
+  sp_export_parquet(p_name  => 'kodex_etf_pdf',
+                    p_to    => p_to, p_from => p_from,
+                    p_query => 'SELECT * FROM v_kodex_etf_pdf '
+                            || 'WHERE REPLACE(gijunymd, ''.'') = :DAY',
+                    p_rows  => n);
 
   -- 뷰/질의: p_name 은 버킷 프리픽스 이름으로만 쓰이고, 소스는 p_query 다.
   -- :DAY 로 그날을 좁혀야 한다 -- 프리픽스가 날짜별이라 다른 날이 섞이면

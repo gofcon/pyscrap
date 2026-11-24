@@ -1110,14 +1110,54 @@ REF     테이블 10 · MV 1 · 프로시저 6 · synonym 12
 > PURGE 없이 드롭하면 identity 시퀀스가 휴지통의 표를 따라 남는다.
 > `PURGE RECYCLEBIN` 으로 함께 사라지지만 되돌릴 수 없으므로 사용자 확인 대기.
 
-### 남은 프로시저 (SCRAP 쪽)
+### SCRAP 프로시저 (2026-11-24)
+
+함수 1개 + 프로시저 12개 전부 VALID, 오류 0건. 셋만 고쳐야 했다.
+
+**`sp_retire_expired_jobs`** -- 컬럼 셋이 다 바뀌었고, 둘은 **단순해졌다**.
+
+```
+j.execution_cycle IN ('3m_call','3m_put')              ->  j.schedule_tag IN (…)
+JSON_VALUE(response_parse_json,'$.empty_is_pending')   ->  empty_is_pending = TRUE
+JSON_EXISTS(key_params_list,'$[*]?(@ == "NOW")')
+  OR JSON_EXISTS(key_params_list,'$[*]."NOW"')         ->  m.is_repeated = TRUE
+```
+
+마지막 것이 4.1 의 값이 드러나는 자리다. v1 은 `"NOW"` 를 **두 가지 JSON 경로**로
+찾아야 했고(문자열 항목과 `{"NOW": …}` 딕셔너리 항목), 그것이 파이썬의
+`is_repeated_api` 와 같은 판정인지 11개 api 에 대해 손으로 대조해야 했다. 지금은
+컬럼 하나다.
+
+**`empty_is_pending` 은 컬럼이 됐다.** `response_parse_json` 을 셋으로 쪼개면서
+갈 곳이 없었다 -- 쓰는 다섯 행(`KRX_ETF` · `KRX_OPTION_DAILY` ·
+`KRX_INDEX_KOSPI` · `KRX_STOCK_INFO` · `KRX_STOCK_BASE_INFO`)의 그 컬럼에는
+**그 키 하나뿐**이고 파싱 명세가 전혀 없다. `is_repeated` 의 형제이기도 하다 --
+둘 다 "이 잡은 언제 끝났는가" 를 말한다. `api_mst` 는 27컬럼이 됐다.
+
+**`fn_export_day_col` · `sp_run_export`** -- 운용사별 넷이 뷰가 됐다. `p_name` 은
+**옛 이름 그대로** 두고 소스만 `p_query` 로 뷰를 가리킨다 -- `p_name` 이 버킷
+프리픽스이고 외부 테이블 이름(`xt_ace_etf_pdf`)이기도 해서, 바꾸면 분석 쪽 경로가
+끊긴다. `sp_export_parquet` 이 `p_query` 를 받으면 `p_name` 을 프리픽스로만 쓰는
+성질이 이미 있어서 그대로 됐다.
+
+### 고치지 않아도 됐던 것
+
+`sp_archive_exported` · `sp_export_bulk` · `sp_export_parquet` 는 손대지 않는다.
+세 곳이 `ALTER SESSION` 을 쓰지만 **`PARALLEL QUERY` 이고 `PARALLEL DML` 이
+아니다.** 재보니 ORA-12841 은 DML 에만 걸린다.
+
+```
+트랜잭션 중  ALTER SESSION DISABLE PARALLEL QUERY  ->  ok
+트랜잭션 중  ALTER SESSION DISABLE PARALLEL DML    ->  ORA-12841
+```
+
+그러니 고쳐야 했던 것은 `DML` 을 쓴 `sp_stock_index_his_sync` 하나뿐이었다.
+(이 문서의 앞선 판에서 "세 곳도 여지가 같다" 고 적었던 것은 틀렸다.)
+
+### 남은 것
 
 | | 무엇 |
 |---|---|
-| `sp_retire_expired_jobs` | `execution_cycle` · `key_params_list` · `response_parse_json` 세 컬럼이 전부 바뀌었다 |
-| `fn_export_day_col` | `*_etf_pdf` 넷이 뷰가 되었다 |
-| `sp_run_export` | 같음. `p_name` 을 버킷 프리픽스로도 쓰므로 이름을 그대로 둘 수 없다 |
-| `sp_archive_exported` · `sp_export_bulk` · `sp_export_parquet` | `ALTER SESSION PARALLEL` 을 쓴다. ORA-12841 여지가 같다 |
 | `sp_create_external_tables` | MART 몫. 외부 테이블 5개가 아직 SCRAP 에 있다 |
 
 ---

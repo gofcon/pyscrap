@@ -20,11 +20,16 @@ BEGIN
              WHEN 'kis_futopt_price' THEN 'SUBSTR(trade_at, 1, 8)'
              -- ETF 구성종목: 운용사마다 자기 이름과 표기를 쓴다. 이름은 여기서
              -- 맞추고, 표기까지 어긋나는 곳(KODEX 는 '2026.08.31')은 식을 준다.
-             WHEN 'ace_etf_pdf'      THEN 'std_dt'
+             --
+             -- 운용사별 넷은 v2 에서 타입 테이블이 아니라 api_rst 위의 뷰다
+             -- (docs/SCHEMA-V2.md 9.5). 여기 키도 그 이름이어야 한다 -- 가리킬
+             -- 표가 없으면 -20001 이 아니라 조회 시점에 ORA-00942 가 난다.
+             -- amc_etf_pdf 는 다섯 운용사가 공용으로 쓰는 타입 테이블로 남았다.
              WHEN 'amc_etf_pdf'      THEN 'std_dt'
-             WHEN 'plus_etf_pdf'     THEN 'wkdate'
-             WHEN 'sol_etf_pdf'      THEN 'work_dt'
-             WHEN 'kodex_etf_pdf'    THEN 'REPLACE(gijunymd, ''.'')'
+             WHEN 'v_ace_etf_pdf'    THEN 'std_dt'
+             WHEN 'v_plus_etf_pdf'   THEN 'wkdate'
+             WHEN 'v_sol_etf_pdf'    THEN 'work_dt'
+             WHEN 'v_kodex_etf_pdf'  THEN 'REPLACE(gijunymd, ''.'')'
              -- KIS 는 조회일을 받지도 돌려주지도 않는 스냅샷이라 관측 시각을
              -- 초까지 적어 둔다. 하루로 자르는 것은 그 앞 8 자리다.
              WHEN 'kis_etf'          THEN 'SUBSTR(snap_at, 1, 8)'

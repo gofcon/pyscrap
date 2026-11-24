@@ -18,7 +18,7 @@ CREATE OR REPLACE PROCEDURE sp_retire_expired_jobs (p_retired OUT NUMBER) AS
 --    것 사이의 선택이다.
 --
 -- 3. 자료가 끝내 안 온 KRX 오픈API 일별 잡. 그 API 들은 아직 안 낸 날을 0행으로
---    답하고, 그런 행(api_mst.response_parse_json 의 empty_is_pending)은 0행이면
+--    답하고, 그런 행(api_mst.empty_is_pending)은 0행이면
 --    잡을 닫지 않고 다음 사이클에 다시 묻는다 (app.services.execution.run_job).
 --    휴장일은 영영 0행이라 그 잡은 스스로 끝나지 않는다 -- 7일 지나면 놓는다.
 --    기준 날짜는 잡의 BASDD 다.
@@ -40,7 +40,7 @@ CREATE OR REPLACE PROCEDURE sp_retire_expired_jobs (p_retired OUT NUMBER) AS
 --
 --    사흘을 요구하는 것은 하룻밤 장애와 구분하기 위해서다. 차단기가 한 밤에
 --    실패 다섯 개를 만들므로 "실패 n건" 으로는 하루 만에 걸린다. 반복 잡
---    (key_params_list 에 NOW -- 3분 스냅샷)은 제외한다: 스스로 끝나지 않는 것이
+--    (is_repeated -- 3분 스냅샷)은 제외한다: 스스로 끝나지 않는 것이
 --    설계라 1번 규칙이 만기로 거둔다.
 --
 --    되살릴 때는 api_mst 의 URL 을 고친 뒤 빌더가 그날 잡을 다시 만든다. 지난
@@ -57,7 +57,7 @@ CREATE OR REPLACE PROCEDURE sp_retire_expired_jobs (p_retired OUT NUMBER) AS
 BEGIN
   UPDATE /*+ NO_PARALLEL */ api_job j
      SET j.is_active = 0
-   WHERE j.execution_cycle IN ('3m_call', '3m_put')
+   WHERE j.schedule_tag IN ('3m_call', '3m_put')
      AND j.is_active = 1
      AND EXISTS (SELECT 1
                    FROM mst_fuopt f
@@ -76,8 +76,7 @@ BEGIN
   UPDATE /*+ NO_PARALLEL */ api_job j
      SET j.is_active = 0
    WHERE j.is_active = 1
-     AND j.api_id IN (SELECT api_id FROM api_mst
-                       WHERE JSON_VALUE(response_parse_json, '$.empty_is_pending') = 'true')
+     AND j.api_id IN (SELECT api_id FROM api_mst WHERE empty_is_pending = TRUE)
      AND JSON_VALUE(j.params_json, '$.BASDD')
          < TO_CHAR(TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE)) - 7, 'YYYYMMDD');
   n3 := SQL%ROWCOUNT;
@@ -94,11 +93,11 @@ BEGIN
             GROUP BY w.api_id
            HAVING SUM(CASE WHEN w.status = 'SUCCESS' THEN 1 ELSE 0 END) = 0
               AND COUNT(DISTINCT TRUNC(w.executed_at)) >= 3)
-     -- 반복 잡은 제외 (위 설명). app.services.job_builder.is_repeated_api 와
-     -- 같은 판정이고, 11개 api 에 대해 양쪽이 일치하는 것을 확인했다.
-     AND j.api_id NOT IN (SELECT m.api_id FROM api_mst m
-                           WHERE JSON_EXISTS(m.key_params_list, '$[*]?(@ == "NOW")')
-                              OR JSON_EXISTS(m.key_params_list, '$[*]."NOW"'));
+     -- 반복 잡은 제외 (위 설명). v1 은 key_params_list 안의 "NOW" 를 두 가지
+     -- JSON 경로로 찾아야 했고(문자열 항목과 {"NOW": …} 딕셔너리 항목), 그것이
+     -- 파이썬의 is_repeated_api 와 같은 판정인지 11개 api 에 대해 손으로
+     -- 대조해야 했다. v2 는 컬럼 하나다.
+     AND j.api_id NOT IN (SELECT m.api_id FROM api_mst m WHERE m.is_repeated = TRUE);
   n4 := SQL%ROWCOUNT;
 
   DBMS_OUTPUT.PUT_LINE('  expired-contract 3m jobs: ' || n1 || ', stale KRX_ETF_PDF jobs: ' || n2
