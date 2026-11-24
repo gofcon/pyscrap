@@ -1,6 +1,9 @@
 # Secrets -- never commit
 .env
-wallet/
+# ADB 지갑. mTLS 자격이라 저장소에 들어가면 안 된다 -- 이 저장소는 공개다.
+# 'wallet/' 만 적어 두었다가 v2 의 지갑 디렉터리(이름이 다르다)가 커밋 직전까지
+# 따라 들어왔다. 접두사로 받아서 어떤 이름이든 걸리게 한다.
+wallet*/
 
 # Python
 __pycache__/

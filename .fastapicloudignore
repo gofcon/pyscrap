@@ -13,3 +13,6 @@ scripts/
 # negate it explicitly so it's re-included despite that.
 !wallet/
 !wallet/**
+# v2 로 배포 대상을 옮기면 그 지갑 디렉터리도 여기 같은 모양으로 되살려야
+# 한다 -- .gitignore 가 'wallet*/' 로 넓어졌으므로 이름만 다른 지갑은 기본적으로
+# 제외된다.
