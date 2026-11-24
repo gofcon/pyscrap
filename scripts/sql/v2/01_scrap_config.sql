@@ -7,7 +7,7 @@
 --   api_mst.key_params_list   -> job_key_params + row_stamp_json
 --                                + is_repeated + snapshot_column
 --   api_mst.response_parse_json -> parse_json + session_json + staging_json
---                                + empty_is_pending (컬럼으로)
+--                                + options_json (스위치들)
 --   api_mst.request_type      -> protocol + method
 --   api_mst.api_group         -> source + domain
 --   api_mst.output_tables_json -> record_map_json
@@ -72,31 +72,42 @@ CREATE TABLE api_mst (
   is_repeated        BOOLEAN DEFAULT FALSE NOT NULL,  -- 성공 후에도 활성 유지
   snapshot_column    VARCHAR2(30 CHAR),    -- 실행 시각을 받을 컬럼. 없으면 NULL
 
-  -- 0행 성공을 "끝났다" 로 보지 않는다. KRX 오픈API 는 아직 안 낸 날을 0행으로
-  -- 답하므로, 그 행은 0행이면 잡을 닫지 않고 다음 사이클에 다시 묻는다.
+  -- 엔진 동작을 켜고 끄는 스위치들. 필요할 때 키를 더하는 자리다.
   --
-  -- is_repeated 의 형제다 -- 둘 다 "이 잡은 언제 끝났는가" 를 말한다. v1 은
-  -- 이것을 response_parse_json 안의 키로 두었는데, 쓰는 다섯 행
-  -- (KRX_ETF · KRX_OPTION_DAILY · KRX_INDEX_KOSPI · KRX_STOCK_INFO ·
-  -- KRX_STOCK_BASE_INFO)의 그 컬럼에는 **그 키 하나뿐**이었다. 파싱 명세가
-  -- 전혀 없으니 parse_json/session_json/staging_json 어디에도 갈 자리가 없다.
+  -- 지금 쓰는 것:
+  --   empty_is_pending  0행 성공을 "끝났다" 로 보지 않는다. KRX 오픈API 는 아직
+  --                     안 낸 날을 0행으로 답하므로, 그 행은 0행이면 잡을 닫지
+  --                     않고 다음 사이클에 다시 묻는다
   --
-  -- 이런 스위치가 앞으로 늘 것이므로 JSON 한 칸(options_json)에 모으고 JSON
-  -- 스키마 제약으로 오타를 막는 길을 재봤다. 빈 표에서는 제대로 막힌다 --
-  -- additionalProperties:false 가 오타와 모르는 키를 ORA-40875 로 거부한다.
-  -- 가상 컬럼으로 노출하면 질의도 안 바뀌고, 인덱스도 걸린다.
+  -- v1 은 이것을 response_parse_json 안의 키로 두었다. 쓰는 다섯 행(KRX_ETF ·
+  -- KRX_OPTION_DAILY · KRX_INDEX_KOSPI · KRX_STOCK_INFO · KRX_STOCK_BASE_INFO)의
+  -- 그 컬럼에는 그 키 하나뿐이고 파싱 명세가 전혀 없어서, 쪼갠 셋
+  -- (parse_json/session_json/staging_json) 어디에도 갈 자리가 없었다.
   --
-  -- 그런데 **api_mst 에서는 그 제약이 평가되지 않았다.** ENABLED VALIDATED 이고
-  -- 조건을 저장된 행에 직접 걸면 FAIL 인데 INSERT 가 통과한다. 같은 표의
-  -- ck_api_mst_snapshot 은 정상 동작한다(ORA-02290 확인). 빈 표에 같은 조건을
-  -- 그대로 옮기면 거부한다. 원인을 찾지 못했다 -- 스키마의 줄바꿈, 가상 컬럼,
-  -- XMLTYPE 컬럼, JSON 컬럼 여러 개를 하나씩 재현해 봤으나 모두 정상이었다.
+  -- **제약을 걸지 않는다.** JSON 스키마(IS JSON VALIDATE, additionalProperties
+  -- false)로 오타를 막는 길을 재봤는데, 그렇게 하면 새 스위치마다 properties 에
+  -- 선언해야 해서 ALTER CONSTRAINT 가 필요하다 -- 컬럼을 더하는 것과 같은
+  -- 비용이고, 자유롭게 더할 수 있다는 성질을 포기하면서 오타 검사만 사는
+  -- 거래가 된다. 애초에 원한 것이 그 자유였다.
   --
-  -- 오타를 잡는 것이 유일한 목적인 장치를 설명하지 못한 채로 쓸 수는 없어서
-  -- 컬럼으로 둔다. 스위치가 늘면 ALTER TABLE ADD 한 번이고, 대가는 컬럼이
-  -- updated_at 뒤에 붙는 것뿐이다 -- 그 규칙은 읽기 편하라고 둔 것이고
-  -- 정확성 문제가 아니다.
-  empty_is_pending   BOOLEAN DEFAULT FALSE NOT NULL,
+  -- (덧붙여: 그 제약은 빈 표에서는 동작하지만 이 표 모양에서는 평가되지
+  --  않았다. ENABLED VALIDATED 이고 조건을 행에 직접 걸면 FAIL 인데 INSERT 가
+  --  통과한다. 가상 컬럼·XMLTYPE·JSON 컬럼 수·다른 CHECK·줄바꿈을 각각
+  --  재현해 봤으나 모두 정상이어서 원인을 찾지 못했다. 쓰지 않기로 했으니
+  --  더 파지 않았다.)
+  --
+  -- 오타는 엔진이 알려준다 -- 아는 스위치 이름과 대조해 모르는 키를 경고로
+  -- 남긴다. 막지 않고 알리는 쪽이라 스위치를 더하는 자유가 유지된다.
+  --
+  -- 쓰는 규칙 (측정으로 확인한 성질들):
+  --   * 스칼라(불리언·숫자·문자열)는 가상 컬럼으로 노출할 수 있다. 배열과
+  --     중첩 객체는 담을 수는 있지만 가상 컬럼이 안 된다(ORA-54004) --
+  --     엔진이나 JSON_QUERY 로만 읽는다.
+  --   * 불리언은 반드시 true 로 쓴다. JSON_VALUE 가 LAX 라 "true"(문자열)도
+  --     TRUE 로 읽히지만 1(숫자)은 NULL 이 되어 비일관적이다.
+  --   * 의미는 **키가 있으면 켠 것**이다. f IS NULL 이 "키 없음"·"타입 불일치"
+  --     ·"false" 를 구별하지 못하므로, false 를 명시적 off 로 쓰지 않는다.
+  options_json       JSON,
 
   pagination_json    JSON,
 
@@ -127,6 +138,17 @@ CREATE TABLE api_mst (
   -- 반복이면서 시각을 안 남기는 경우가 있다 (v1 의 none_mapped 자리).
   CONSTRAINT ck_api_mst_snapshot
     CHECK (snapshot_column IS NULL OR is_repeated = TRUE)
+);
+
+-- SQL 이 거르는 스위치만 컬럼처럼 노출한다. 저장이 아니라 메타데이터라 데이터
+-- 이동이 없고, 인덱스도 걸린다. 적어만 두는 스위치는 노출하지 않는다 --
+-- 엔진이 options_json 을 직접 읽으면 된다.
+--
+-- empty_is_pending 은 sp_retire_expired_jobs 가 'empty_is_pending = TRUE' 로
+-- 거르므로 노출한다.
+ALTER TABLE api_mst ADD (
+  empty_is_pending GENERATED ALWAYS AS
+    (JSON_VALUE(options_json, '$.empty_is_pending' RETURNING BOOLEAN))
 );
 
 CREATE INDEX ix_api_mst_source ON api_mst (source);
