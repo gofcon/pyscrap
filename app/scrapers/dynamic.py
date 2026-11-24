@@ -210,10 +210,18 @@ def _pace_host(url: str, api_min: float | None = None) -> None:
     get their own slot instead of all waking on the same one.
 
     ``api_min`` (ApiMst.options_json['min_interval_sec']) 은 호스트 간격을
-    **대체하지 않고 바닥을 올린다** -- 둘 중 큰 값을 쓴다. 슬롯이 호스트별로
-    하나이기 때문이다: 같은 호스트의 두 API 가 각자 0.5s 를 선언하면 호스트는
-    1 req/s 가 아니라 2 req/s 를 받는다. 지금 seibro.or.kr 에 API 가 16개,
-    data-dbg.krx.co.kr 에 9개 있으므로 가정이 아니라 실제 상황이다.
+    **대체하지 않고 바닥을 올린다** -- 둘 중 큰 값을 쓴다.
+
+    이유는 방향이다: API 쪽 값으로 **느려지는 것만** 허용한다. _HOST_INTERVALS
+    의 값은 추측이 아니라 맞아 본 결과다 -- data.krx.co.kr 1.0s 는 1분 115건
+    뒤 에러페이지로 막힌 뒤에 정한 것이고, samsungfund.com 0.5s 는 0.2s 로
+    43개를 훑다가 22개가 깨진 뒤에 정한 것이다. 대체를 허용하면 설정 한 줄로
+    그 교훈을 되돌릴 수 있고, 되돌린 줄도 모른다.
+
+    (슬롯은 호스트별로 하나이므로 API 가 여러 개여도 연속 요청은 이미 간격만큼
+     떨어진다 -- 같은 호스트의 API 수가 간격을 합산하지는 않는다. 실행도
+     직렬이다(run_cycle 이 잡을 하나씩 돈다). 병렬이 생기는 것은 별개
+     프로세스가 겹칠 때뿐이고, 그때를 위해 슬롯이 프로세스 단위로 공유된다.)
     """
     host = httpx.URL(url).host or ""
     interval = _interval_for(host)
