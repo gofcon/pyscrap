@@ -25,16 +25,16 @@ def main():
 
 @app.command("generate-jobs")
 def generate_jobs_cmd(
-    execution_cycle: str = typer.Argument(..., help="ApiJobBuilder.execution_cycle to generate, e.g. daily, 5m, 1h"),
+    schedule_tag: str = typer.Argument(..., help="ApiJobBuilder.schedule_tag to generate, e.g. daily, 5m, 1h"),
 ):
-    """Generate every active ApiJobBuilder's job(s) for this execution_cycle
+    """Generate every active ApiJobBuilder's job(s) for this schedule_tag
     (see app.services.execution.generate_jobs) -- separate from actually
     executing them (see run-cycle). Call this before run-cycle for the same
-    execution_cycle."""
+    schedule_tag."""
     setup_logging()
 
     with Session(engine) as session:
-        created = generate_jobs(session, execution_cycle)
+        created = generate_jobs(session, schedule_tag)
         # job_ids extracted while the session is still open: `created` holds
         # ORM instances, and Session.commit() (inside generate_jobs, via
         # build_jobs_from_builder) expires their attributes by default -- an
@@ -45,7 +45,7 @@ def generate_jobs_cmd(
         # and doesn't hit this).
         job_ids = [job.job_id for job in created]
 
-    typer.echo(f"{execution_cycle}: generated {len(job_ids)} new job(s)")
+    typer.echo(f"{schedule_tag}: generated {len(job_ids)} new job(s)")
     for job_id in job_ids:
         typer.echo(f"  {job_id}")
 
@@ -55,7 +55,7 @@ def generate_builder_cmd(
     build_id: str = typer.Argument(..., help="ApiJobBuilder.build_id to generate jobs for"),
 ):
     """Generate one specific builder's jobs by id, regardless of its
-    execution_cycle or is_active (see
+    schedule_tag or is_active (see
     app.services.execution.generate_jobs_for_builder).
 
     generate-jobs is scoped to a cycle and only looks at *active* builders,
@@ -74,12 +74,12 @@ def generate_builder_cmd(
 
 @app.command("run-cycle")
 def run_cycle_cmd(
-    execution_cycle: str = typer.Argument(..., help="ApiJobBuilder.execution_cycle to run, e.g. daily, 5m, 1h"),
+    schedule_tag: str = typer.Argument(..., help="ApiJobBuilder.schedule_tag to run, e.g. daily, 5m, 1h"),
 ):
-    """Execute every currently-pending ApiJob for this execution_cycle (see
+    """Execute every currently-pending ApiJob for this schedule_tag (see
     app.services.execution.run_cycle) -- does NOT generate jobs itself, run
     generate-jobs first. Register one systemd timer per distinct
-    execution_cycle value in use, each calling generate-jobs then this with
+    schedule_tag value in use, each calling generate-jobs then this with
     its own value."""
     setup_logging()
 
@@ -94,9 +94,9 @@ def run_cycle_cmd(
     # where a request handler re-reading post-commit state is the safer
     # assumption.
     with Session(engine, expire_on_commit=False) as session:
-        results = run_cycle(session, execution_cycle)
+        results = run_cycle(session, schedule_tag)
 
-    typer.echo(f"{execution_cycle}: executed {len(results)} job(s)")
+    typer.echo(f"{schedule_tag}: executed {len(results)} job(s)")
     for job_id, description in results.items():
         typer.echo(f"  {job_id} -> {description}")
 

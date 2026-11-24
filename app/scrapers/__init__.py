@@ -27,7 +27,7 @@ BROWSER_REQUEST_TYPE = "BROWSER"
 
 def make_scraper(api: ApiMst, params: dict[str, Any] | None = None) -> BaseScraper:
     """The engine this row asks for, ready to run."""
-    if (api.request_type or "").upper() == BROWSER_REQUEST_TYPE:
+    if (api.protocol or "").upper() == BROWSER_REQUEST_TYPE:
         from app.scrapers.browser import BrowserScraper
 
         return BrowserScraper(api, params=params)

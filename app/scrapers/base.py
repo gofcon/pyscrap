@@ -4,7 +4,7 @@
 result arrived over httpx (:mod:`app.scrapers.dynamic`) or was acted out in a
 real browser (:mod:`app.scrapers.browser`): ``:KEY`` substitution, staging a
 downloaded document, merging pages of records, and saving the finished
-``{selector: [record, ...]}`` into whatever tables ``output_tables_json``
+``{selector: [record, ...]}`` into whatever tables ``record_map_json``
 names.
 
 A subclass supplies exactly one thing -- :meth:`collect`, "hand me
@@ -190,7 +190,7 @@ class BaseScraper:
         a different host than the screens it unlocks (an SSO page) still
         works, and so no job has to scan the master table to find out who its
         login is."""
-        return (self.api.response_parse_json or {}).get("login")
+        return (self.api.session_json or {}).get("login")
 
     def _invalidate_session(self) -> None:
         """Throw away whatever stale session this transport is holding, before
@@ -238,7 +238,7 @@ class BaseScraper:
         Deliberately not the file content -- a result table is the wrong place
         for a multi-megabyte blob, and the object store is where the pipeline
         already puts large artifacts."""
-        config = self.api.response_parse_json or {}
+        config = self.api.staging_json or {}
         group = config.get("group") or self.api.api_id.lower()
         name = self._substitute_placeholders(config.get("name") or "")
         if not name or ":" in name:
@@ -307,7 +307,7 @@ class BaseScraper:
         field names match), or as ``key_params_json`` for a generic table --
         so results are filterable by e.g. instrument/date without parsing
         job_id or joining back to ApiJob.params_json."""
-        mapping = self.api.output_tables_json or {}
+        mapping = self.api.record_map_json or {}
         key_params = key_params or {}
 
         per_selector = self.collect(session)

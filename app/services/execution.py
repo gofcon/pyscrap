@@ -3,11 +3,11 @@ schedule-driven batches of them.
 
 :func:`run_job` runs one already-existing job (logging SUCCESS/FAILED to
 ``ApiJobLog``). :func:`run_cycle` is the entrypoint a systemd timer should
-call: it executes every currently-pending ``ApiJob`` whose ``execution_cycle``
+call: it executes every currently-pending ``ApiJob`` whose ``schedule_tag``
 matches (after job generation has created them).
 
 Job *generation* comes in three granularities, all dedup-safe/idempotent
-(see build_jobs_from_builder): :func:`generate_jobs` (one execution_cycle --
+(see build_jobs_from_builder): :func:`generate_jobs` (one schedule_tag --
 what a systemd timer calls), :func:`generate_all_jobs` (every active builder,
 any cycle), :func:`generate_jobs_for_builder` (one builder by id, regardless
 of cycle/is_active) -- the latter two exist for manual/API-triggered
@@ -35,11 +35,7 @@ from app.scrapers import make_scraper
 from app.scrapers.base import SiteBlocked
 from app.services.export import TABLE_REGISTRY
 from app.services.job_builder import (
-    NO_COLUMN,
-    RESERVED_NOW_KEY,
     build_jobs_from_builder,
-    is_repeated_api,
-    normalize_key_param,
     resolve_now,
 )
 
@@ -89,7 +85,7 @@ def _clear_previous_results(session: Session, api: ApiMst, job_id: str) -> None:
     rows in place, which is what "overwrite" should mean: replaced, or not
     touched.
     """
-    for table_name in set((api.output_tables_json or {}).values()):
+    for table_name in set((api.record_map_json or {}).values()):
         model_cls = TABLE_REGISTRY.get(table_name)
         if model_cls is None:
             continue
@@ -137,47 +133,39 @@ def _execute_job(session: Session, job: ApiJob) -> bool:
     if job.save_mode == "overwrite":
         _clear_previous_results(session, api, job.job_id)
 
-    # is_repeated / key_params_list are ApiMst properties (see its field
-    # comment in app.db.models) -- always available, no build_id/builder
-    # needed.
-    is_repeated = is_repeated_api(api)
+    # v1 은 이 셋을 key_params_list 한 컬럼에서 끌어내야 했고, 그래서 예약어
+    # 'NOW'(반복이라는 뜻)와 'none_mapped'(컬럼 자리에 컬럼 아닌 것)가
+    # 필요했다. v2 는 컬럼이 각각 한 가지만 뜻한다.
+    is_repeated = api.is_repeated
 
-    # Only the key subset (not all of params_json) gets stamped onto result
-    # rows. Dict keys here are already the target *column* names (see
-    # normalize_key_param), not necessarily the raw params_json key names.
+    # params_json 전체가 아니라 지목된 것만 결과 행에 찍는다. row_stamp_json 의
+    # 키는 파라미터 이름이고 값이 **컬럼** 이름이다 -- 둘이 다를 수 있다
+    # (Oracle 이 date 를 예약해서, DATE 라는 파라미터는 trade_date 로 가야 한다).
+    #
+    # 찍지 않을 파라미터는 그냥 적지 않는다 -- v1 의 none_mapped 가 하던 일이
+    # 없어진다.
     key_params: dict[str, Any] = {}
-    for entry in api.key_params_list or []:
-        param_key, column_name = normalize_key_param(entry)
-        if column_name == NO_COLUMN:
-            # The entry earns its place by shaping job_id (and, for
-            # RESERVED_NOW_KEY, by marking the API repeated) -- there is no
-            # column to land in. Skipped rather than stamped-and-dropped so
-            # the intent is on the record instead of relying on pydantic
-            # discarding a key that matches no field.
-            continue
-        if param_key == RESERVED_NOW_KEY:
-            # Capture time for repeated/snapshot jobs (e.g. a quote endpoint
-            # polled every few minutes) -- resolved fresh on every execution,
-            # never baked into job_id/params_json, so the same job runs over
-            # and over instead of one job being generated per tick. Floored
-            # to job.execution_cycle -- copied from the builder at
-            # generation time (see build_jobs_from_builder), so no builder
-            # lookup is needed here; a manually-constructed job with no
-            # build_id just has the field's own default instead. See
-            # job_builder.resolve_now.
-            key_params[column_name] = resolve_now(job.execution_cycle)
-        elif param_key in job.params_json:
+    for param_key, column_name in (api.row_stamp_json or {}).items():
+        if param_key in job.params_json:
             key_params[column_name] = job.params_json[param_key]
 
+    # 관측 시각. 조회일을 받지도 돌려주지도 않는 스냅샷 API 용이고, 실행마다
+    # 새로 풀어서 job_id/params_json 에 굽지 않는다 -- 그래서 같은 잡이 계속
+    # 돌고, 틱마다 잡이 하나씩 생기지 않는다. job.snapshot_unit 으로 내려
+    # 자르는데, 그 값은 생성 때 빌더에서 복사돼 있으므로 빌더를 다시 찾지
+    # 않는다 (job_builder.resolve_now).
+    if api.snapshot_column:
+        key_params[api.snapshot_column] = resolve_now(job.snapshot_unit)
+
     try:
-        # HTTP or browser, by the row's own request_type -- see
+        # HTTP or browser, by the row's own protocol -- see
         # app.scrapers.make_scraper. Everything from here down is the same
         # either way.
         scraper = make_scraper(api, params=job.params_json)
         counts = scraper.run_and_save(session, job_id=job.job_id, key_params=key_params)
-        job.description = ", ".join(f"{table}: {n}" for table, n in counts.items())
+        job.engine_note = ", ".join(f"{table}: {n}" for table, n in counts.items())
         # A row can say that an empty reply means "not yet" rather than
-        # "nothing" (response_parse_json['empty_is_pending']). KRX's open API
+        # "nothing" (options_json['empty_is_pending']). KRX's open API
         # answers a day it has not published with zero rows and a 200, and
         # the job used to close on that -- 2026-09-01's index bars were
         # missed that way and put back by hand twelve days later. With the
@@ -188,13 +176,13 @@ def _execute_job(session: Session, job: ApiJob) -> bool:
         # api_rst is left out of the count: a row that also keeps its raw
         # reply there stages one api_rst row on every call, data or not.
         pending_empty = (not is_repeated
-                         and bool((api.response_parse_json or {}).get("empty_is_pending"))
+                         and bool((api.options_json or {}).get("empty_is_pending"))
                          and sum(n for table, n in counts.items() if table != "api_rst") == 0)
         if pending_empty:
-            job.description = f"no data yet ({job.description})"
+            job.engine_note = f"no data yet ({job.engine_note})"
         elif not is_repeated:
             # One-shot job: done for good once it succeeds -- flip inactive
-            # so run_cycle's ApiJob-based scan (execution_cycle + is_active)
+            # so run_cycle's ApiJob-based scan (schedule_tag + is_active)
             # won't pick it up again on a future tick (a *failed* one-shot
             # job stays active, so it's naturally retried next tick instead
             # of needing separate retry logic). A repeated job is never
@@ -249,8 +237,8 @@ def _generate_jobs_for_builders(session: Session, builders: Sequence[ApiJobBuild
     return created
 
 
-def generate_jobs(session: Session, execution_cycle: str) -> list[ApiJob]:
-    """Generate every active ApiJobBuilder's job(s) for this execution_cycle
+def generate_jobs(session: Session, schedule_tag: str) -> list[ApiJob]:
+    """Generate every active ApiJobBuilder's job(s) for this schedule_tag
     (via build_jobs_from_builder) -- e.g. today's daily job, or a
     repeated/snapshot job's one static row (see RESERVED_NOW_KEY in
     app.services.job_builder). Deliberately separate from actually executing
@@ -260,7 +248,7 @@ def generate_jobs(session: Session, execution_cycle: str) -> list[ApiJob]:
     without ever calling run_cycle) is harmless.
 
     The systemd-timer level (see app.cli/scripts) -- one call per
-    execution_cycle in use. For the other two granularities, see
+    schedule_tag in use. For the other two granularities, see
     generate_jobs_for_builder (one builder, regardless of cycle/is_active)
     and generate_all_jobs (every active builder, regardless of cycle).
 
@@ -269,7 +257,7 @@ def generate_jobs(session: Session, execution_cycle: str) -> list[ApiJob]:
     builders = session.exec(
         select(ApiJobBuilder).where(
             ApiJobBuilder.is_active == True,  # noqa: E712 - Oracle native BOOLEAN column rejects IS-based binds (ORA-00908), needs plain equality
-            ApiJobBuilder.execution_cycle == execution_cycle,
+            ApiJobBuilder.schedule_tag == schedule_tag,
         )
     ).all()
     return _generate_jobs_for_builders(session, builders)
@@ -277,7 +265,7 @@ def generate_jobs(session: Session, execution_cycle: str) -> list[ApiJob]:
 
 def generate_all_jobs(session: Session) -> list[ApiJob]:
     """Generate every active ApiJobBuilder's job(s), regardless of
-    execution_cycle -- e.g. a manual "generate everything now" trigger
+    schedule_tag -- e.g. a manual "generate everything now" trigger
     (see app.api.routers.jobs). Same idempotent/dedup-safe guarantee as
     generate_jobs; just not scoped to one cycle."""
     builders = session.exec(
@@ -288,7 +276,7 @@ def generate_all_jobs(session: Session) -> list[ApiJob]:
 
 def generate_jobs_for_builder(session: Session, build_id: str) -> list[ApiJob]:
     """Generate one specific ApiJobBuilder's job(s) by id, regardless of its
-    execution_cycle/is_active -- e.g. a manual trigger for a single builder
+    schedule_tag/is_active -- e.g. a manual trigger for a single builder
     from the API (see app.api.routers.jobs), including testing a builder
     that's still inactive. Thin pass-through: build_jobs_from_builder does
     all the actual work and is already idempotent/dedup-safe; this exists so
@@ -403,7 +391,7 @@ def _run_deferred(session: Session, host: str, pending: list[ApiJob],
     time.sleep(_BLOCK_COOLDOWN_SEC)
     api = session.get(ApiMst, pending[0].api_id)
     try:
-        if api is not None and (api.response_parse_json or {}).get("login"):
+        if api is not None and (api.session_json or {}).get("login"):
             make_scraper(api, params=pending[0].params_json).login(session)
     except Exception as exc:  # noqa: BLE001 - any refusal of the login means the host is still closed
         logger.error("{}: login refused after the wait ({}) -- giving the host up for this run, "
@@ -419,7 +407,7 @@ def _run_deferred(session: Session, host: str, pending: list[ApiJob],
                          "{} job(s) left pending", host, job.job_id, len(pending) - i)
             break
         streak.record(job.api_id, ok)
-        results[job.job_id] = job.description
+        results[job.job_id] = job.engine_note
     return results
 
 
@@ -449,15 +437,15 @@ def _login_rows_first(session: Session, jobs: Sequence[ApiJob]) -> list[ApiJob]:
     return sorted(jobs, key=lambda job: 0 if job.api_id in login_apis else 1)
 
 
-def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
-    """Execute every currently-pending ApiJob for this execution_cycle --
+def run_cycle(session: Session, schedule_tag: str) -> dict[str, str | None]:
+    """Execute every currently-pending ApiJob for this schedule_tag --
     the entrypoint a systemd timer should call (e.g.
     ``python -m app.cli run-cycle 5m``), one timer per distinct
-    execution_cycle value in use. Does NOT generate jobs itself -- call
+    schedule_tag value in use. Does NOT generate jobs itself -- call
     generate_jobs first (a separate step; see its docstring for why).
 
     What actually runs is decided by scanning ApiJob directly
-    (execution_cycle + is_active=True). is_active=True means "still
+    (schedule_tag + is_active=True). is_active=True means "still
     pending": a repeated job is never flipped inactive (see run_job), so
     it's always in this set and keeps re-running forever; a one-shot job is
     flipped inactive the moment it succeeds, so a past period's
@@ -475,7 +463,7 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
     results: dict[str, str | None] = {}
     jobs = session.exec(
         select(ApiJob).where(
-            ApiJob.execution_cycle == execution_cycle,
+            ApiJob.schedule_tag == schedule_tag,
             ApiJob.is_active == True,  # noqa: E712 - Oracle native BOOLEAN column rejects IS-based binds (ORA-00908), needs plain equality
         )
     ).all()
@@ -505,8 +493,8 @@ def run_cycle(session: Session, execution_cycle: str) -> dict[str, str | None]:
             deferred.setdefault(exc.host, []).append(job)
             continue
         streak.record(job.api_id, ok)
-        results[job.job_id] = job.description
-        logger.info("run_cycle({}): executed {}", execution_cycle, job.job_id)
+        results[job.job_id] = job.engine_note
+        logger.info("run_cycle({}): executed {}", schedule_tag, job.job_id)
     for host, pending in deferred.items():
         results.update(_run_deferred(session, host, pending, streak))
     streak.report()

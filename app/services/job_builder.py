@@ -1,6 +1,6 @@
 """Expands an ``ApiJobBuilder`` row into one or more concrete ``ApiJob`` rows.
 
-``macro_params_json`` is a dict whose *keys* may be a single param name or a
+``cartesian_param_json`` is a dict whose *keys* may be a single param name or a
 comma-separated list of param names (for multi-column query mapping), and
 whose *values* are one of:
 
@@ -18,8 +18,8 @@ Do NOT put a capture-timestamp value here to key snapshot/repeated jobs (e.g.
 a quote endpoint polled every few minutes to build a time series) -- a value
 here becomes part of *job generation*, so a fresh timestamp on every call
 would mint a brand new ApiJob row every time (job_id is meant to stay stable
-and reusable -- see ``key_params_list`` below). Use the reserved
-``"NOW"`` entry in ``key_params_list`` instead: it's resolved once per
+and reusable -- see ``job_key_params`` below). Use the reserved
+``"NOW"`` entry in ``job_key_params`` instead: it's resolved once per
 *execution*, not per job-generation, so the job_id/row count stays flat while
 each run still stamps its own capture time onto the saved rows.
 
@@ -39,8 +39,8 @@ Example::
 Only *generates* ApiJob rows; no log entry is written until the job actually
 runs (see :func:`app.services.execution.run_job`, which logs SUCCESS/FAILED).
 
-``ApiMst.key_params_list`` (a list of param names, e.g. ``["BASDD"]``, or
-``{param_name: column_name}`` dicts -- see :func:`normalize_key_param`) makes
+``ApiMst.job_key_params`` (a list of param names, e.g. ``["BASDD"]``, or
+``row_stamp_json`` 이 {파라미터: 컬럼} 을 담는다) makes
 job_id deterministic from those params' values instead of a random uuid, so
 regenerating with the same values reuses the same job_id -- and a job whose
 id already exists is skipped as a duplicate rather than re-created. Without
@@ -51,13 +51,13 @@ not of any particular builder's parameter choices -- every builder targeting
 the same api_id needs the exact same value anyway.
 
 The reserved entry ``"NOW"`` (or ``{"NOW": "<column_name>"}``) is special: it
-must never appear in ``macro_params_json``, and it's excluded from job_id
+must never appear in ``cartesian_param_json``, and it's excluded from job_id
 construction entirely (a job's identity has to stay stable across repeated
 executions, or every run would mint a fresh job forever -- exactly the
 explosion this reservation avoids for something like a 1-minute snapshot
 poll). Instead it's resolved fresh at *execution* time, in
 :func:`app.services.execution.run_job`, via :func:`resolve_now` --
-floored to the job's ``ApiJobBuilder.execution_cycle`` bucket (see
+floored to the job's ``ApiJobBuilder.schedule_tag`` bucket (see
 :func:`_floor_datetime`) so repeated runs of the same scheduled job get
 timestamps that line up with each other -- and stamped onto the saved result
 row the same way any other key param is (``key_params_json`` for generic
@@ -136,7 +136,7 @@ def _last_bday(d: date) -> date:
     return prev
 
 
-# ApiJobBuilder.execution_cycle, e.g. "1m", "5m", "1h", "1d", "1w" -- how
+# ApiJobBuilder.schedule_tag, e.g. "1m", "5m", "1h", "1d", "1w" -- how
 # often the scheduler is meant to invoke this builder. Older rows use
 # free-form values like "daily"/"once"; those simply don't match this pattern
 # and _floor_datetime leaves the timestamp unaligned (no-op), so they're
@@ -153,19 +153,19 @@ def _last_bday(d: date) -> date:
 _CYCLE_RE = re.compile(r"^(\d+)([mhdw])(?:_\w+)?$")
 
 
-def _floor_datetime(dt: datetime, execution_cycle: str | None) -> datetime:
-    """Floor dt down to the start of its execution_cycle bucket, e.g. with a
+def _floor_datetime(dt: datetime, snapshot_unit: str | None) -> datetime:
+    """Floor dt down to the start of its snapshot_unit bucket, e.g. with a
     "5m" cycle, 09:07:42 -> 09:05:00.
 
     The point: a snapshot job's timestamp should reflect its *scheduled*
     slot, not raw wall-clock jitter -- a scheduler invoked a few seconds late
     (or a manual re-run) shouldn't produce a one-off timestamp that doesn't
     line up with every other snapshot in the same series. Returns dt
-    unchanged if execution_cycle is missing or not in "<N><m|h|d|w>" form.
+    unchanged if snapshot_unit is missing or not in "<N><m|h|d|w>" form.
     """
-    if not execution_cycle:
+    if not snapshot_unit:
         return dt
-    m = _CYCLE_RE.match(execution_cycle.strip())
+    m = _CYCLE_RE.match(snapshot_unit.strip())
     if not m:
         return dt
     n, unit = int(m.group(1)), m.group(2)
@@ -218,51 +218,21 @@ def _resolve_date(keyword: str, fmt: str | None = None) -> str:
     return resolver(_now_kst().date()).strftime(fmt or default_fmt)
 
 
-# Reserved key_params_list entry (see module docstring): resolved once
-# per *execution* by app.services.execution.run_job via resolve_now(),
-# never during job generation -- must never appear in macro_params_json.
-RESERVED_NOW_KEY = "NOW"
+def resolve_now(snapshot_unit: str | None = None, fmt: str = "%Y%m%d%H%M%S") -> str:
+    """``ApiMst.snapshot_column`` 에 찍을 관측 시각.
 
-# Column name meaning "this key isn't stamped onto result rows" -- the entry
-# is there only to shape job_id and, for RESERVED_NOW_KEY, to mark the API as
-# repeated (see is_repeated_api). A key_params_list entry must name a column
-# even when there is no column to name: the plain-string form derives one from
-# the param name, and RESERVED_NOW_KEY has no param name to derive from, so it
-# can only be written as a dict. Before this existed the four ETF_LIST rows
-# said {"NOW": "trade_at"} against tables that have no trade_at, and the value
-# was dropped in silence by pydantic -- indistinguishable from a typo.
-#
-# Not for an API that writes to a generic table (one with a result_json
-# field): there the whole key_params dict is stored as key_params_json
-# rather than spread over columns, so every key lands regardless of name
-# and NO_COLUMN would throw away a value that was being kept.
-NO_COLUMN = "none_mapped"
+    ``snapshot_unit`` 버킷으로 내려 자른다(_floor_datetime) -- 같은 스케줄
+    잡의 반복 실행이 스케줄러 흔들림만큼 어긋나지 않고 서로 줄을 맞춘다.
 
-
-def resolve_now(execution_cycle: str | None = None, fmt: str = "%Y%m%d%H%M%S") -> str:
-    """Capture timestamp for a RESERVED_NOW_KEY entry, floored to
-    execution_cycle's bucket (see _floor_datetime) so repeated executions of
-    the same scheduled job produce timestamps that line up with each other
-    instead of drifting on scheduler jitter."""
-    return _floor_datetime(_now_kst(), execution_cycle).strftime(fmt)
-
-
-def is_repeated_api(api: ApiMst) -> bool:
-    """True if api.key_params_list contains RESERVED_NOW_KEY, i.e. it's
-    a repeated/snapshot poll (a quote endpoint re-executed every few minutes
-    to build a time series) rather than a one-shot job. This same check
-    governs several different decisions across the app (whether run_job
-    stamps a fresh timestamp, whether run_cycle re-executes an
-    already-existing job), so it's centralized here rather than re-derived
-    at each call site -- see app.services.execution."""
-    return bool(
-        api.key_params_list
-        and any(normalize_key_param(e)[0] == RESERVED_NOW_KEY for e in api.key_params_list)
-    )
+    v1 은 이 단위를 ``execution_cycle`` 에서 받았는데, 그 컬럼은 "어느 타이머가
+    집어 가는가" 도 겸하고 있어서 ``daily_batch2`` 같은 값이 패턴에 안 맞아
+    **절삭이 조용히 no-op** 이 됐다. v2 는 둘을 갈랐다(schedule_tag /
+    snapshot_unit)."""
+    return _floor_datetime(_now_kst(), snapshot_unit).strftime(fmt)
 
 
 def _build_axes(session: Session, params_spec: dict[str, Any]) -> list[list[dict[str, Any]]]:
-    """Turn each macro_params_json entry into an "axis": a list of partial
+    """Turn each cartesian_param_json entry into an "axis": a list of partial
     param dicts, one item per value this entry can take (>1 only for db
     entries with multiple rows)."""
     axes: list[list[dict[str, Any]]] = []
@@ -300,69 +270,42 @@ def _build_axes(session: Session, params_spec: dict[str, Any]) -> list[list[dict
 _JOB_ID_MAX_LENGTH = 150  # matches ApiJob.job_id column (see app/db/models.py)
 
 
-def normalize_key_param(entry: str | dict[str, str]) -> tuple[str, str]:
-    """A key_params_list entry is either a plain param name (e.g.
-    ``"SHORT_CODE"`` -> param key and result-table column are the same,
-    column auto-lowercased to ``"short_code"``), or an explicit single-key
-    ``{param_name: column_name}`` dict for cases where they must differ --
-    e.g. Oracle reserves ``date`` as an identifier, so a job param literally
-    named ``DATE`` needs ``{"DATE": "trade_date"}`` to land in a real column.
-
-    ``NO_COLUMN`` as the column name means the key shapes job_id but is not
-    written to result rows.
-
-    Returns ``(param_key, column_name)``."""
-    if isinstance(entry, dict):
-        # Not `((param_key, column_name),) = entry.items()`: that nested
-        # single-tuple-unpacking form is valid Python (and does the same
-        # thing -- also raising ValueError if entry has more than one key),
-        # but PyCharm's inference doesn't follow it correctly and infers both
-        # param_key and column_name as tuple[str, str] (the *item* type)
-        # instead of str each. Spelled out in two plain steps instead, which
-        # every checker infers correctly.
-        if len(entry) != 1:
-            raise ValueError(f"expected a single-key {{param_name: column_name}} dict, got {entry!r}")
-        param_key, column_name = next(iter(entry.items()))
-        return param_key, column_name
-    return entry, entry.lower()
-
-
 def _build_job_id(builder: ApiJobBuilder, api: ApiMst, params: dict[str, Any]) -> tuple[str, bool]:
     """Returns (job_id, is_deterministic).
 
-    Without ``api.key_params_list``, job_id is random (``uuid``) and
-    every call produces a new job -- no duplicate check possible.
+    ``api.job_key_params`` 가 없으면 job_id 는 무작위(uuid)이고 매 호출이 새
+    잡을 만든다 -- 중복 검사가 불가능하다.
 
-    With it (a list of param names), job_id is built from those params'
-    *values* instead of a uuid, so re-generating with the same values always
-    yields the same job_id -- which is what lets the caller detect "this
-    exact job already exists" and skip it (e.g. a weekend run resolving
-    ``last_bday`` to the same Friday as the prior day's run).
+    있으면(파라미터 이름 목록) job_id 를 그 파라미터들의 **값**으로 만든다.
+    같은 값으로 다시 생성하면 같은 job_id 가 나오므로, 부르는 쪽이 "이 잡은
+    이미 있다" 를 알아보고 건너뛸 수 있다(주말 실행이 ``last_bday`` 를 전날과
+    같은 금요일로 풀는 경우).
 
-    RESERVED_NOW_KEY entries are excluded from this -- job identity has to
-    stay stable across repeated executions of the same job, not mint a new
-    job per tick (see module docstring / resolve_now). If that's the *only*
-    key_params_list entry, there's nothing left to vary job_id by, so one
-    static job_id is used for the whole builder (still deterministic --
-    regenerating just finds it already exists and skips it).
+    관측 시각은 여기 들어오지 않는다 -- 잡의 정체성은 반복 실행 사이에
+    고정돼야 하고, 틱마다 새 잡을 만들어서는 안 된다(resolve_now 참고).
+    v1 은 그래서 job_key_params 에서 'NOW' 항목을 걸러내야 했는데, v2 는
+    job_key_params 가 애초에 정체성만 담는다 -- 시각은 snapshot_column 이고
+    서로 다른 컬럼이다.
 
-    Many/long key values could push this past the DB column's max_length, so
-    it falls back to a short deterministic hash of the key values instead of
-    the raw ones once that would happen -- still deterministic (same values
-    -> same hash), just not human-readable in that case."""
-    key_params = api.key_params_list
-    if not key_params:
+    job_key_params 가 비어 있으면(그러나 is_repeated 면) 변주할 것이 없으므로
+    빌더 하나에 정적 job_id 하나를 쓴다. 여전히 결정적이다 -- 다시 생성하면
+    이미 있는 것을 찾아 건너뛴다.
+
+    키 값이 많거나 길면 컬럼 max_length 를 넘을 수 있어, 그때는 키 값들의 짧은
+    결정적 해시로 떨어진다 -- 같은 값이면 같은 해시이므로 결정성은 유지되고,
+    사람이 읽을 수 없게 되는 것만 잃는다."""
+    param_keys = list(api.job_key_params or [])
+    if not param_keys:
+        # 반복 잡은 정적 job_id 하나로 돈다. 그 외에는 무작위 -- 중복 검사가
+        # 불가능하므로 매 호출이 새 잡을 만든다.
+        if api.is_repeated:
+            return f"{builder.api_id}_{builder.build_id}", True
         return f"{builder.api_id}_{uuid.uuid4().hex[:12]}", False
 
-    identity_entries = [e for e in key_params if normalize_key_param(e)[0] != RESERVED_NOW_KEY]
-    if not identity_entries:
-        return f"{builder.api_id}_{builder.build_id}", True
-
-    param_keys = [normalize_key_param(e)[0] for e in identity_entries]
     missing = [k for k in param_keys if k not in params]
     if missing:
         raise ValueError(
-            f"{builder.build_id}: key_params_list references {missing}, "
+            f"{builder.build_id}: job_key_params references {missing}, "
             f"not present in generated params {list(params)}"
         )
 
@@ -385,14 +328,7 @@ def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
     if api is None:
         raise ValueError(f"No ApiMst row for api_id={builder.api_id!r}")
 
-    if RESERVED_NOW_KEY in (builder.macro_params_json or {}):
-        raise ValueError(
-            f"{build_id}: '{RESERVED_NOW_KEY}' is reserved for ApiMst.key_params_list "
-            f"(resolved at execution time) -- it must not appear in macro_params_json, "
-            f"or every generation call would mint a brand new job."
-        )
-
-    axes = _build_axes(session, builder.macro_params_json or {})
+    axes = _build_axes(session, builder.cartesian_param_json or {})
 
     if axes:
         param_sets = []
@@ -411,16 +347,16 @@ def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
 
         if deterministic:
             # Two different param combos landing on the same job_id means
-            # key_params_list doesn't actually distinguish them (e.g. only
+            # job_key_params doesn't actually distinguish them (e.g. only
             # BASDD is keyed but MKT_TYPE also fans out) -- fail loudly rather
             # than silently dropping one of them as a "duplicate".
             prior = seen_in_batch.get(job_id)
             if prior is not None:
                 if prior != params:
                     raise ValueError(
-                        f"{build_id}: ApiMst.key_params_list {api.key_params_list} is not "
+                        f"{build_id}: ApiMst.job_key_params {api.job_key_params} is not "
                         f"specific enough -- both {prior} and {params} produce job_id={job_id!r}. "
-                        f"Add the differing param(s) to key_params_list."
+                        f"Add the differing param(s) to job_key_params."
                     )
                 continue  # identical params generated twice this batch; harmless no-op
             seen_in_batch[job_id] = params
@@ -430,8 +366,8 @@ def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
                 if existing.params_json != params:
                     raise ValueError(
                         f"{build_id}: job_id={job_id!r} already exists with different params "
-                        f"{existing.params_json} vs new {params} -- ApiMst.key_params_list "
-                        f"{api.key_params_list} may be insufficient."
+                        f"{existing.params_json} vs new {params} -- ApiMst.job_key_params "
+                        f"{api.job_key_params} may be insufficient."
                     )
                 logger.info("{}: job {} already exists, skipping duplicate", build_id, job_id)
                 continue
@@ -449,10 +385,11 @@ def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
             # app.services.execution._clear_previous_results).
             save_mode=builder.save_mode or "overwrite",
             # Also previously never copied -- load-bearing now that run_cycle
-            # scans ApiJob directly by execution_cycle (see
+            # scans ApiJob directly by schedule_tag (see
             # app.services.execution.run_cycle) instead of only ever going
             # through the builder.
-            execution_cycle=builder.execution_cycle,
+            schedule_tag=builder.schedule_tag,
+            snapshot_unit=builder.snapshot_unit,
         )
         session.add(job)
         jobs.append(job)

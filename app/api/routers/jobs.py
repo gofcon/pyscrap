@@ -7,9 +7,9 @@ call.
 
 Three generate endpoints, one per granularity (see
 app.services.execution's module docstring for why all three exist):
-individual builder, one execution_cycle, everything. All nested under
+individual builder, one schedule_tag, everything. All nested under
 "/generate/..." with a distinguishing literal segment (cycle/builder/all) --
-NOT e.g. "/generate/{execution_cycle}" next to "/generate/{build_id}": those
+NOT e.g. "/generate/{schedule_tag}" next to "/generate/{build_id}": those
 are the exact same path *shape* to the router (a parameter's name doesn't
 factor into route matching at all), so the one registered first would
 silently swallow every request meant for the other -- no startup error, just
@@ -26,19 +26,19 @@ from app.services.execution import generate_all_jobs, generate_jobs, generate_jo
 router = APIRouter(prefix="/jobs", tags=["api_job"])
 
 
-@router.post("/generate/cycle/{execution_cycle}")
-def generate_by_cycle(execution_cycle: str, session: SessionDep) -> list[str]:
-    """Create any still-missing ApiJob rows for this execution_cycle -- same
-    as `python -m app.cli generate-jobs <execution_cycle>` (see app.cli).
+@router.post("/generate/cycle/{schedule_tag}")
+def generate_by_cycle(schedule_tag: str, session: SessionDep) -> list[str]:
+    """Create any still-missing ApiJob rows for this schedule_tag -- same
+    as `python -m app.cli generate-jobs <schedule_tag>` (see app.cli).
     Returns the newly-created job_ids (empty if everything already existed)."""
-    created = generate_jobs(session, execution_cycle)
+    created = generate_jobs(session, schedule_tag)
     return [job.job_id for job in created]
 
 
 @router.post("/generate/all")
 def generate_all(session: SessionDep) -> list[str]:
     """Create any still-missing ApiJob rows for every active builder,
-    regardless of execution_cycle -- a manual "generate everything now",
+    regardless of schedule_tag -- a manual "generate everything now",
     e.g. for a one-off full refresh outside the normal per-cycle schedule."""
     created = generate_all_jobs(session)
     return [job.job_id for job in created]
@@ -47,7 +47,7 @@ def generate_all(session: SessionDep) -> list[str]:
 @router.post("/generate/builder/{build_id}")
 def generate_for_builder(build_id: str, session: SessionDep) -> list[str]:
     """Create job(s) for one specific ApiJobBuilder by id, regardless of its
-    execution_cycle/is_active -- e.g. to try out a builder you just created
+    schedule_tag/is_active -- e.g. to try out a builder you just created
     (or edited) without waiting for its scheduled cycle or flipping it
     active first."""
     try:
@@ -60,7 +60,7 @@ def generate_for_builder(build_id: str, session: SessionDep) -> list[str]:
 @router.post("/run/{job_id}")
 def run(job_id: str, session: SessionDep) -> dict[str, str | None]:
     """Execute one already-existing ApiJob by id, regardless of its
-    execution_cycle/is_active -- the same app.services.execution.run_job a
+    schedule_tag/is_active -- the same app.services.execution.run_job a
     scheduled run-cycle tick would call, just triggered by id instead of
     scanned for. Logs SUCCESS/FAILED to ApiJobLog same as any other run."""
     job = session.get(ApiJob, job_id)

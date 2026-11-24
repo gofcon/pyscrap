@@ -62,7 +62,7 @@ def _discover_table_registry() -> dict[str, type[SQLModel]]:
 
     마커로 말하면 그 둘이 사라진다. ReferenceTable 과 StateTable 은 상속이
     다르므로 저절로 빠지고, 부기 표는 아무 마커도 달지 않는다 -- 그래서
-    output_tables_json 이 그런 표를 가리키면 run_and_save 가 "unknown target
+    record_map_json 이 그런 표를 가리키면 run_and_save 가 "unknown target
     table" 로 크게 실패한다. 반쯤 동작하지 않는다."""
     registry: dict[str, type[SQLModel]] = {}
     for obj in vars(_models).values():
@@ -75,7 +75,7 @@ def _discover_table_registry() -> dict[str, type[SQLModel]]:
     return registry
 
 
-# table_name (as used in ApiMst.output_tables_json) -> the SQLModel class it
+# table_name (as used in ApiMst.record_map_json) -> the SQLModel class it
 # saves to -- see _discover_table_registry.
 TABLE_REGISTRY: dict[str, type[SQLModel]] = _discover_table_registry()
 

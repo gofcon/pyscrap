@@ -24,7 +24,7 @@ What the behavior leaves behind is read four ways, chosen by
   described exactly like an HTTP download (``BaseScraper._stage_binary``).
 - ``'session'`` -- log in and keep nothing but the cookies, saved as a
   Playwright storage state file that later jobs reuse. The one response_type
-  whose row may leave ``output_tables_json`` empty.
+  whose row may leave ``record_map_json`` empty.
 
 Playwright is an optional dependency (``pip install -e ".[browser]"`` plus
 ``playwright install --with-deps chromium``), and this module is imported only
@@ -168,9 +168,9 @@ class BrowserScraper(BaseScraper):
         is exactly what a logged-out screen looks like, and the login screen
         has none of the elements a behavior waits for."""
         response_type = (self.api.response_type or "dom").lower()
-        mapping = self.api.output_tables_json or {}
+        mapping = self.api.record_map_json or {}
         if not mapping and response_type != "session":
-            raise ValueError(f"{self.api.api_id}: output_tables_json is empty")
+            raise ValueError(f"{self.api.api_id}: record_map_json is empty")
         try:
             return self._collect_page(response_type, mapping)
         except PlaywrightTimeoutError as exc:
@@ -182,7 +182,7 @@ class BrowserScraper(BaseScraper):
             raise
 
     def _collect_page(self, response_type: str, mapping: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        spec = self.api.response_parse_json or {}
+        spec = self.api.parse_json or {}
         pagination = self.api.pagination_json or {}
         if pagination.get("mode") == "page":
             # Seeded before the first run, not after it: ':PAGE' sits inside
@@ -378,7 +378,7 @@ class BrowserScraper(BaseScraper):
         Bodies are read inside the handler: once the page navigates away, the
         response they belong to is gone, and a browser row's whole reason to
         exist is that the interesting request happens mid-behavior."""
-        pattern = (self.api.response_parse_json or {}).get("url") or ""
+        pattern = (self.api.parse_json or {}).get("url") or ""
 
         def on_response(response: Any) -> None:
             if pattern and pattern not in response.url:
@@ -477,7 +477,7 @@ class BrowserScraper(BaseScraper):
         return True
 
     def extract(self, page: Page) -> dict[str, list[dict[str, Any]]]:
-        """Every selector in ``output_tables_json``, read off the page.
+        """Every selector in ``record_map_json``, read off the page.
 
         ``response_parse_json`` holds the rules, either once for every selector
         (the usual case -- one screen, one table) or per selector::
@@ -500,9 +500,9 @@ class BrowserScraper(BaseScraper):
             {"isin": "td:nth-child(1)",
              "url":  {"css": "td:nth-child(2) a", "attr": "href"}}
         """
-        spec = self.api.response_parse_json or {}
+        spec = self.api.parse_json or {}
         out: dict[str, list[dict[str, Any]]] = {}
-        for selector in (self.api.output_tables_json or {}):
+        for selector in (self.api.record_map_json or {}):
             rules = spec.get(selector)
             if not (isinstance(rules, dict) and "rows" in rules):
                 rules = spec
@@ -549,7 +549,7 @@ class BrowserScraper(BaseScraper):
         a login row and the rows that depend on it line up without either
         naming the other; ``response_parse_json['state']`` overrides it for a
         site whose login lives on a different host than its screens."""
-        spec = self.api.response_parse_json or {}
+        spec = self.api.session_json or {}
         if spec.get("state"):
             return str(spec["state"])
         # httpx only to parse the url -- the same host-matching this project
@@ -578,7 +578,7 @@ class BrowserScraper(BaseScraper):
         ``blocked`` marker (a site's refusal page). No browser row has met a
         refusal yet, so that half is not here; when one does, this is where
         it goes."""
-        marker = (self.api.response_parse_json or {}).get("logged_out")
+        marker = (self.api.session_json or {}).get("logged_out")
         if marker and page.query_selector(marker) is not None:
             raise SessionExpired(f"{self.api.api_id}: '{marker}' is on the page")
 

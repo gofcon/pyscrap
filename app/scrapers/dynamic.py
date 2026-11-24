@@ -388,7 +388,7 @@ class DynamicApiScraper(BaseScraper):
             for k, v in (api.header_json or {}).items()
         }
         kwargs: dict[str, Any] = {
-            "method": api.request_type.upper(),
+            "method": (api.method or 'GET').upper(),
             "url": resolve_env_placeholders(self._substitute_placeholders(api.api_url)),
             "headers": headers,
         }
@@ -443,7 +443,7 @@ class DynamicApiScraper(BaseScraper):
         Checked *before* raise_for_status because that is often how it
         arrives: KRX's data endpoint answers HTTP 400 with the body ``LOGOUT``
         rather than a status a client could read on its own. So the row names
-        the tell itself -- ``response_parse_json['logged_out']``, a string
+        the tell itself -- ``session_json['logged_out']``, a string
         that appears in the body (a css selector for a browser row; same key,
         same job, read the way that transport can read it).
 
@@ -453,7 +453,7 @@ class DynamicApiScraper(BaseScraper):
         second, so this check has to cost nothing for the rows it does not
         concern. Scoped by configuration rather than by host, which is
         tighter -- only the rows that asked are ever examined."""
-        cfg = self.api.response_parse_json or {}
+        cfg = self.api.session_json or {}
         marker, blocked = cfg.get("logged_out"), cfg.get("blocked")
         if not marker and not blocked:
             return
@@ -624,16 +624,16 @@ class DynamicApiScraper(BaseScraper):
     # ---- response parsing -----------------------------------------------
 
     def parse(self, response: httpx.Response) -> dict[str, list[dict[str, Any]]]:
-        """Run every selector in ``output_tables_json`` against the response,
+        """Run every selector in ``record_map_json`` against the response,
         returning ``{selector: [record, ...]}``. For JSON responses,
         ``merge_fields_json`` (if set) then injects extra fields sourced from
         elsewhere in the same response into those records, and
         ``persist_env_json`` (if set) persists fields to ``.env`` -- see
         ``ApiMst.merge_fields_json``/``ApiMst.persist_env_json`` and
         :meth:`_apply_merge_fields`/:meth:`_persist_env_fields`."""
-        mapping = self.api.output_tables_json or {}
+        mapping = self.api.record_map_json or {}
         if not mapping and not self.api.persist_env_json:
-            raise ValueError(f"{self.api.api_id}: output_tables_json is empty")
+            raise ValueError(f"{self.api.api_id}: record_map_json is empty")
 
         if self.api.response_type == "binary":
             # The document *is* the result -- nothing to extract from it. It
@@ -661,7 +661,7 @@ class DynamicApiScraper(BaseScraper):
             # checked (and handled) before any content-type sniffing below.
             # No real "selector" concept applies to a flat delimited file
             # (unlike an XML/JSON path into a nested response) -- every key
-            # in output_tables_json just gets the same full record list,
+            # in record_map_json just gets the same full record list,
             # same as a single selector normally would if there were only one.
             if self.api.response_type == "zip_delimited":
                 records = self._parse_zip_delimited(response)
@@ -691,7 +691,7 @@ class DynamicApiScraper(BaseScraper):
         default: the zip's first entry), then hand the text to
         _parse_delimited_text. Verified live against fo_idx_code_mts.mst.zip
         ('|'-delimited, cp949, 9 columns/line, no header)."""
-        spec = self.api.response_parse_json or {}
+        spec = self.api.parse_json or {}
         encoding = spec.get("encoding", "utf-8")
 
         zf = zipfile.ZipFile(io.BytesIO(response.content))
@@ -702,8 +702,8 @@ class DynamicApiScraper(BaseScraper):
     def _parse_delimited(self, response: httpx.Response) -> list[dict[str, Any]]:
         """response_type='delimited': the response body itself (no zip) is
         the delimited text -- a plain .csv/.txt download. Same
-        response_parse_json shape as zip_delimited, minus 'inner_file'."""
-        spec = self.api.response_parse_json or {}
+        parse_json shape as zip_delimited, minus 'inner_file'."""
+        spec = self.api.parse_json or {}
         encoding = spec.get("encoding", "utf-8")
         text = response.content.decode(encoding)
         return self._parse_delimited_text(text, spec)
@@ -743,7 +743,7 @@ class DynamicApiScraper(BaseScraper):
         response_parse_json adds "table_index" (default 0) for a document
         with more than one table.
         """
-        spec = self.api.response_parse_json or {}
+        spec = self.api.parse_json or {}
         from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -766,7 +766,7 @@ class DynamicApiScraper(BaseScraper):
         as text so a code with leading zeros stays a code rather than
         becoming a number the sheet happened to store.
         """
-        spec = self.api.response_parse_json or {}
+        spec = self.api.parse_json or {}
         sheet_no = int(spec.get("sheet", 0))
         cells: list[list[str]]
         if self.api.response_type == "xlsx":
@@ -851,7 +851,7 @@ class DynamicApiScraper(BaseScraper):
         password fails the login job instead of quietly failing every job
         after it."""
         response = self.fetch()
-        expect = (self.api.response_parse_json or {}).get("expect")
+        expect = (self.api.session_json or {}).get("expect")
         if expect and expect not in response.text:
             raise ValueError(f"{self.api.api_id}: login reply does not contain "
                              f"{expect!r} -- {response.text[:200]}")

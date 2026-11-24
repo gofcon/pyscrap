@@ -104,7 +104,7 @@ def make_crud_router(
         while a filter is on.
 
         Any field of the model can be used as an exact-match filter --
-        ?execution_cycle=3m_call&is_active=true -- and ``q`` matches a
+        ?schedule_tag=3m_call&is_active=true -- and ``q`` matches a
         substring of the primary key, which is the search box a UI wants.
         Filters rather than paging alone because most of api_job is finished
         backfill: paging through 160,000 rows to reach the one job you care
