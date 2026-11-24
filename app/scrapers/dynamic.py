@@ -446,6 +446,18 @@ class DynamicApiScraper(BaseScraper):
         # Paced *inside* the retry, so a retried attempt (e.g. after a rate-
         # limit rejection) takes its own slot rather than firing immediately.
         _pace_host(request_kwargs["url"], self._option_float("min_interval_sec"))
+        # 요청별 타임아웃. 공용 클라이언트의 기본값(30)을 이 행만 덮는다 --
+        # 클라이언트가 프로세스 하나뿐이라 클라이언트 쪽에 둘 수 없다.
+        #
+        # 최악을 묶는 유일한 손잡이다. httpx 의 timeout 은 connect·read 각각에
+        # 걸리므로 한 시도가 최대 2배이고, 재시도가 3회라 한 잡이 6배까지 간다
+        # -- 기본값이면 3분이다. KB 가 2026-10-03 에 ETF 사이트를 옮기고 옛
+        # 호스트가 "연결이 안 되는 곳" 으로 302 를 돌려줬을 때 잡마다 정확히 그
+        # 3분을 먹었고, 10-12 밤 사이클은 852개를 들고 다섯 시간을 쓰고 성공
+        # 둘로 끝났다. 운용사 사이트처럼 빨라야 정상인 곳은 10초면 충분하다.
+        timeout = self._option_float("timeout_sec")
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
         response = get_http_client().request(**request_kwargs)
         self._check_reply_markers(response)
         response.raise_for_status()

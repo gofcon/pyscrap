@@ -157,6 +157,7 @@ class BaseScraper:
         "empty_is_pending",   # 0행 성공을 "끝났다" 로 보지 않는다
         "min_interval_sec",   # 이 API 의 요청 간격 바닥값 (호스트 간격 위에 얹힌다)
         "page_delay_sec",     # 페이지 사이 지연
+        "timeout_sec",        # 이 API 의 요청 타임아웃 (기본 30)
     })
 
     def _warn_unknown_options(self) -> None:
