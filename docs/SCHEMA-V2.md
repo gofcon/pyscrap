@@ -173,7 +173,8 @@ MART   ─ (선택) 분석 쪽. 외부 테이블 XT_* 와 export 프로시저
 
 ```sql
 -- SCRAP → REF : 빌더 매크로 SQL 이 사전 데이터를 읽는다
---   예: {"AMC_ETF_CD": {"db": "SELECT amc_etf_cd FROM mst_etf WHERE ..."}}
+--   예: {"AMC_ETF_CD": {"db": "SELECT amc_etf_cd FROM mst_etf
+--                                 WHERE amc = '미래에셋자산운용' ..."}}
 GRANT SELECT ON ref.mst_etf     TO scrap;
 GRANT SELECT ON ref.mst_bond    TO scrap;
 GRANT SELECT ON ref.mst_fuopt   TO scrap;
@@ -854,6 +855,32 @@ scripts/sql/
 
 계정 이름은 `06` 에도 적지 않는다. SQLcl 치환 변수(`&scrap_user` / `&ref_user`)로
 두고 돌릴 때 채운다 -- 이 저장소는 공개다.
+
+### 사전 데이터 (v1 에서 옮김, 2026-11-24)
+
+10개 표 158,692행. v1 은 읽기만 했고, 컬럼 이름으로 맞춰 5,000행씩 넣었다 --
+`updated_at` 까지 그대로 옮겨 이력을 보존했다. `mst_index` 는 양쪽 컬럼 순서가
+달라 v2 순서로 SELECT/INSERT 목록을 맞췄다.
+
+```
+mst_fuopt       113,463      mst_etf          1,457
+mst_bond         31,876      mst_stock        1,251
+stock_index_his   9,307      meta_maturity      653
+user_etf            511      krx_index_mst      168
+meta_fuopt_info       4      mst_index            2
+```
+
+건수만 보지 않았다. 각 표의 키·주요 컬럼을 이어 `ORA_HASH` 합으로 비교하고,
+`mst_stock` 과 `mst_etf` 는 `updated_at` 을 뺀 **전 컬럼**으로 다시 재서 전부
+일치했다. PK 위반이 한 건도 없었다는 것 자체가 키 중복이 없었다는 뜻이다.
+
+> **`mst_etf.amc` 는 운용사 정식명이다** -- `'미래에셋자산운용'`, `'삼성자산운용'`.
+> `'TIGER'`/`'KODEX'` 같은 약칭이던 시절이 있어서, 그 기억으로 매크로를 쓰면
+> 조용히 0건이 나온다(실제로 검증 중에 그렇게 헷갈렸다). 29개 값이 있고
+> `amc_etf_cd` 가 채워진 것은 1,044개다. 브랜드 약칭은 `prod_snm` 쪽에 있다.
+
+동기화 8개는 돌지만 아직 0건이다 -- SCRAP 의 결과 테이블이 비어 있어서다.
+`v_k2i_atm` 도 같은 이유로 0행이다.
 
 ### 올라가 있는 것 (2026-11-24)
 
