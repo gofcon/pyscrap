@@ -80,6 +80,22 @@ CREATE TABLE api_mst (
   -- (KRX_ETF · KRX_OPTION_DAILY · KRX_INDEX_KOSPI · KRX_STOCK_INFO ·
   -- KRX_STOCK_BASE_INFO)의 그 컬럼에는 **그 키 하나뿐**이었다. 파싱 명세가
   -- 전혀 없으니 parse_json/session_json/staging_json 어디에도 갈 자리가 없다.
+  --
+  -- 이런 스위치가 앞으로 늘 것이므로 JSON 한 칸(options_json)에 모으고 JSON
+  -- 스키마 제약으로 오타를 막는 길을 재봤다. 빈 표에서는 제대로 막힌다 --
+  -- additionalProperties:false 가 오타와 모르는 키를 ORA-40875 로 거부한다.
+  -- 가상 컬럼으로 노출하면 질의도 안 바뀌고, 인덱스도 걸린다.
+  --
+  -- 그런데 **api_mst 에서는 그 제약이 평가되지 않았다.** ENABLED VALIDATED 이고
+  -- 조건을 저장된 행에 직접 걸면 FAIL 인데 INSERT 가 통과한다. 같은 표의
+  -- ck_api_mst_snapshot 은 정상 동작한다(ORA-02290 확인). 빈 표에 같은 조건을
+  -- 그대로 옮기면 거부한다. 원인을 찾지 못했다 -- 스키마의 줄바꿈, 가상 컬럼,
+  -- XMLTYPE 컬럼, JSON 컬럼 여러 개를 하나씩 재현해 봤으나 모두 정상이었다.
+  --
+  -- 오타를 잡는 것이 유일한 목적인 장치를 설명하지 못한 채로 쓸 수는 없어서
+  -- 컬럼으로 둔다. 스위치가 늘면 ALTER TABLE ADD 한 번이고, 대가는 컬럼이
+  -- updated_at 뒤에 붙는 것뿐이다 -- 그 규칙은 읽기 편하라고 둔 것이고
+  -- 정확성 문제가 아니다.
   empty_is_pending   BOOLEAN DEFAULT FALSE NOT NULL,
 
   pagination_json    JSON,
