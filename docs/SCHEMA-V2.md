@@ -10,7 +10,7 @@
 
 | 항목 | 지금 | v2 |
 |---|---|---|
-| 계정 | `GOFCON` 하나에 66개 테이블 | 수집 `SCRAP` / 사전 `REF` 둘 |
+| 계정 | 하나에 66개 테이블 | 수집 `SCRAP` / 사전 `REF` 둘 |
 | 파이썬 매핑 | 전부 로컬 테이블 | REF는 synonym으로 투명하게 |
 | `key_params_list` | 한 컬럼이 세 가지 뜻 | 세 컬럼으로 분리, 예약어 제거 |
 | `macro_params_json` | 이름이 하는 일을 안 말함 | `cartesian_param_json` |
@@ -32,7 +32,7 @@
 실행    api_job 633,996 · api_job_log 2,859,501
 모델    60개 클래스 = 부기 4 + 결과 43 + 사전 11 + 허수 2
 DB      테이블 66 · 인덱스 243 · 시퀀스 44 · 프로시저 18 · 함수 1 · 뷰 2 · MV 1 · 외부테이블 5
-계정    GOFCON 단일 · synonym 0개
+계정    단일 · synonym 0개
 ```
 
 큰 테이블:
@@ -70,7 +70,7 @@ dev ──▶ feat/schema-v2
 
 ```env
 # 현행 v1 (그대로 — 전환이 끝나면 이 블록만 지운다)
-ORACLE_USER=GOFCON
+ORACLE_USER=<v1 계정>
 ORACLE_DSN=..._medium
 ORACLE_WALLET_DIR=...
 
@@ -794,7 +794,7 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 ### 7.6 외부 테이블이 수집 계정에 있다
 
-`XT_*` 5개(최대 9M행)가 `GOFCON`에 있다. `sp_create_external_tables`의 주석 자체가 "분석용 DB에 두는 프로시저"라고 적고 있는데 실제로는 수집 계정에 걸려 있다. 계정 분리 시 MART로 가면 자연히 해소된다.
+`XT_*` 5개(최대 9M행)가 수집 계정에 있다. `sp_create_external_tables`의 주석 자체가 "분석용 DB에 두는 프로시저"라고 적고 있는데 실제로는 수집 계정에 걸려 있다. 계정 분리 시 MART로 가면 자연히 해소된다.
 
 ### 7.7 작은 것들
 
