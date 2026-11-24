@@ -54,11 +54,26 @@ CREATE TABLE api_mst (
   response_type      VARCHAR2(20 CHAR),
   -- v1 의 response_parse_json 을 셋으로 가른 것. 로그인 신호와 파일 적재
   -- 위치는 파싱 명세가 아니다 (docs/SCHEMA-V2.md 4.4).
+  --
+  -- 가르는 기준은 "누가 한 벌로 읽는가" 다. 셋 다 **묶음 명세**이고 -- 키
+  -- 하나만 보면 뜻이 없다 -- 읽는 주체가 각각 다르다. 그래서 그 컴포넌트에
+  -- dict 를 통째로 넘길 수 있다. 이것이 options_json(서로 무관한 스위치
+  -- 모음)과 다른 점이다.
   parse_json         JSON,   -- delimiter fields has_header skip_rows encoding
                              -- inner_file table_index sheet / css spec
+                             -- 읽는 곳: dynamic 의 파서
+  -- 이 응답은 데이터가 아니다 -- 알아보는 법과 그다음에 할 일.
+  --
+  -- blocked("에러페이지 - 한국거래소", 3개 API)가 세션과 직접 관계는 없지만
+  -- 여기 둔다. logged_out · expect 와 **같은 경로가 읽고**(dynamic 의 응답
+  -- 검사) 같은 방식으로 판정한다 -- 본문에서 문자열을 찾는다. 이름이 조금
+  -- 넓게 쓰이는 것을 받아들이는 쪽이, 넷을 둘로 쪼개 읽는 곳을 둘로 만드는
+  -- 것보다 낫다. 옮기지 말 것.
   session_json       JSON,   -- {"login": "<api_id>", "logged_out": "...",
-                             --  "expect": "..."}
+                             --  "blocked": "...", "expect": "..."}
+                             -- 읽는 곳: base/dynamic/browser 의 응답 검사
   staging_json       JSON,   -- {"group": "...", "name": ":KEY.pdf"}
+                             -- 읽는 곳: base 의 파일 적재
 
   persist_env_json   JSON,
   record_map_json    JSON,   -- {셀렉터: 테이블}. v1 output_tables_json --
@@ -98,6 +113,18 @@ CREATE TABLE api_mst (
   --
   -- 오타는 엔진이 알려준다 -- 아는 스위치 이름과 대조해 모르는 키를 경고로
   -- 남긴다. 막지 않고 알리는 쪽이라 스위치를 더하는 자유가 유지된다.
+  --
+  -- **무엇이 여기 들어가는가** -- 세 질문에 다 '예' 여야 한다:
+  --   1. 다른 키 없이 혼자 뜻이 있는가?
+  --      empty_is_pending: true 는 혼자 뜻이 있다. delimiter: '|' 는 fields 나
+  --      has_header 없이는 뜻이 없다 -- 그건 parse_json 의 묶음 명세다.
+  --   2. 읽는 곳이 특정 메커니즘이 아닌가?
+  --      파서·응답 검사·파일 적재가 읽는 것은 그 컴포넌트의 컬럼으로 간다.
+  --      여기 오는 것은 잡 수명/실행 판정처럼 어느 메커니즘에도 속하지 않는
+  --      것이다.
+  --   3. 키 목록이 미리 정해지지 않는가?
+  --      parse_json/session_json/staging_json 은 그 메커니즘이 아는 키가
+  --      고정돼 있어 문서에 적을 수 있다. 여기는 열린 집합이다.
   --
   -- 쓰는 규칙 (측정으로 확인한 성질들):
   --   * 스칼라(불리언·숫자·문자열)는 가상 컬럼으로 노출할 수 있다. 배열과
