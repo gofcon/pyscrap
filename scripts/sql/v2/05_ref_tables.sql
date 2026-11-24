@@ -1,4 +1,4 @@
--- REF 계정: 사전 데이터 테이블 11개
+-- REF 계정: 사전 데이터 테이블 10개
 --
 -- gen_ddl.py 가 app/db/models.py 에서 뽑은 것이다. 손으로 고치지 말고
 -- 모델을 고친 뒤 다시 뽑는다.
@@ -34,15 +34,6 @@ CREATE TABLE krx_index_mst (
 
 CREATE INDEX ix_krx_index_mst_idx_nm ON krx_index_mst (idx_nm);
 CREATE INDEX ix_krx_index_mst_mv_id ON krx_index_mst (mv_id);
-
--- ksd_bond_no_detail: ISINs SEIBRO has no detail for -- so the migration stops asking them.
-CREATE TABLE ksd_bond_no_detail (
-	isin VARCHAR2(12 CHAR) NOT NULL, 
-	marked_at DATE, 
-	note VARCHAR2(100 CHAR), 
-	PRIMARY KEY (isin)
-);
-
 
 -- meta_fuopt_info: What each product family is written on: one row per (``prod_type``,
 CREATE TABLE meta_fuopt_info (

@@ -75,13 +75,37 @@ def _all_models() -> dict:
     return out
 
 
-def ref_tables() -> list[str]:
-    """REF 계정이 갖는 표 -- 결과도 부기도 아닌 것 전부.
+# job_id 가 없어서 TABLE_REGISTRY 에 안 들어가지만 **사전 데이터도 아닌** 표.
+# 수집 상태를 적는 곳이라 수집 계정 몫이다.
+#
+# ksd_bond_no_detail 은 "세이브로에 물어봤는데 상세가 없었다" 를 ISIN 당 한 줄
+# 적는다. 종목의 성질이 아니라 우리 수집 이력이고(그래서 mst_bond 의 컬럼도
+# 아니다), 읽는 쪽도 SCRAP 의 빌더 열 곳이다. 그 표를 쓰는 프로시저
+# sp_ksd_no_detail_mark 도 함께 SCRAP 에 둔다 -- 그러면 그것이 읽는
+# ksd_bond_info 와 api_job_log 가 같은 계정에 있어 교차 권한이 둘 줄어든다.
+#
+# 반대로 krx_index_mst 는 이름이 krx_ 로 시작해 수집물처럼 보이지만 사전
+# 데이터다. 쓰는 곳이 없고(읽기만 한다) 168행을 손으로 고치며, 거래소 어휘와
+# 우리 mv_id 가 만나는 자리다 -- user_etf 와 같은 이유로 REF 에 둔다.
+SCRAP_STATE = {"ksd_bond_no_detail"}
 
-    엔진이 쓰지 않고 프로시저가 관리하는 사전 데이터다. 전부 자연키 PK 라
-    identity 시퀀스가 없다 -- 결과 테이블과 달리 행이 어디서 왔는지가 아니라
-    무엇인지로 식별된다."""
-    return sorted(set(_all_models()) - set(TABLE_REGISTRY) - _BOOKKEEPING)
+
+def ref_tables() -> list[str]:
+    """REF 계정이 갖는 표 -- 사전 데이터.
+
+    엔진이 쓰지 않고 프로시저가 관리한다. 전부 자연키 PK 라 identity 시퀀스가
+    없다 -- 결과 테이블과 달리 행이 어디서 왔는지가 아니라 무엇인지로
+    식별된다.
+
+    "job_id 가 없으면 사전 데이터" 가 아니다. SCRAP_STATE 를 보라 -- v2 의
+    마커 클래스(docs/SCHEMA-V2.md 5.4)도 두 가지가 아니라 세 가지여야 한다:
+    결과 · 사전 · 수집 상태."""
+    return sorted(set(_all_models()) - set(TABLE_REGISTRY) - _BOOKKEEPING - SCRAP_STATE)
+
+
+def scrap_state_tables() -> list[str]:
+    """수집 상태 표 -- SCRAP 소유인데 job_id 가 없어 결과 테이블도 아니다."""
+    return sorted(SCRAP_STATE)
 
 
 def _header(title: str) -> str:
@@ -93,10 +117,17 @@ def _header(title: str) -> str:
 
 
 def typed_ddl() -> str:
-    names = sorted(set(TABLE_REGISTRY) - set(TO_GENERIC) - {"api_rst"})
-    out = [_header(f"SCRAP 계정: 타입 결과 테이블 {len(names)}개")]
+    names = sorted((set(TABLE_REGISTRY) - set(TO_GENERIC) - {"api_rst"})
+                   | set(scrap_state_tables()))
+    out = [_header(f"SCRAP 계정: 타입 결과 테이블 + 수집 상태 표 {len(names)}개")]
+    out.append(
+        "-- ksd_bond_no_detail 도 여기 있다. job_id 가 없어 결과 테이블은 아니지만\n"
+        "-- 수집 상태를 적는 곳이라 이 계정 몫이다 (SCRAP_STATE 참고).\n")
+    # TABLE_REGISTRY 가 아니라 모델 전체에서 찾는다 -- 수집 상태 표는 job_id 가
+    # 없어서 그 레지스트리에 없다.
+    models = _all_models()
     for name in names:
-        table = TABLE_REGISTRY[name].__table__
+        table = models[name].__table__
         out.append(str(CreateTable(table).compile(dialect=_DIALECT)).strip() + ";\n")
         for index in sorted(table.indexes, key=lambda i: i.name or ""):
             out.append(str(CreateIndex(index).compile(dialect=_DIALECT)).strip() + ";")
@@ -190,10 +221,13 @@ if __name__ == "__main__":
     (OUT / "02_scrap_results.sql").write_text(typed_ddl(), encoding="utf-8")
     (OUT / "04_scrap_views.sql").write_text(views_ddl(), encoding="utf-8")
     (OUT / "05_ref_tables.sql").write_text(ref_ddl(), encoding="utf-8")
-    names = sorted(set(TABLE_REGISTRY) - set(TO_GENERIC) - {"api_rst"})
-    cols = sum(len(TABLE_REGISTRY[n].__table__.columns) for n in names)
+    names = sorted((set(TABLE_REGISTRY) - set(TO_GENERIC) - {"api_rst"})
+                   | set(scrap_state_tables()))
+    models0 = _all_models()
+    cols = sum(len(models0[n].__table__.columns) for n in names)
     models = _all_models()
     rcols = sum(len(models[n].__table__.columns) for n in ref_tables())
-    print(f"02_scrap_results.sql  타입 {len(names)}개 표, {cols}컬럼")
+    print(f"02_scrap_results.sql  타입 {len(names)}개 표, {cols}컬럼"
+          f"  (수집 상태 {scrap_state_tables()} 포함)")
     print(f"04_scrap_views.sql    뷰 {len(TO_GENERIC)}개")
     print(f"05_ref_tables.sql     사전 {len(ref_tables())}개 표, {rcols}컬럼")

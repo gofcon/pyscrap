@@ -39,13 +39,13 @@
 --   mst_fuopt           빌더 43개
 --   mst_etf             빌더 11개
 --   mst_bond            빌더 10개
---   ksd_bond_no_detail  빌더 10개
--- 그래도 11개 전부 연다. 전부 "수집 쪽이 읽도록 만든" 사전 데이터이고,
+-- (ksd_bond_no_detail 도 빌더 10개가 읽지만 그 표는 SCRAP 소유다 -- 수집
+--  상태이고 사전 데이터가 아니다. 02_scrap_results.sql 에 있다.)
+-- 그래도 10개 전부 연다. 전부 "수집 쪽이 읽도록 만든" 사전 데이터이고,
 -- 읽기라 위험이 같다. 넷만 열면 새 매크로를 쓸 때마다 ORA-00942 를 만나고
 -- 그때 GRANT 를 한 줄 더하게 되는데, 그 한 줄이 왜 필요한지는 그 순간에만
 -- 분명하다. 지켜야 할 것은 **쓰기가 없다**는 것이고 그것은 유지된다.
 GRANT SELECT ON krx_index_mst      TO &scrap_user;
-GRANT SELECT ON ksd_bond_no_detail TO &scrap_user;
 GRANT SELECT ON meta_fuopt_info    TO &scrap_user;
 GRANT SELECT ON meta_maturity      TO &scrap_user;
 GRANT SELECT ON mst_bond           TO &scrap_user;
@@ -57,6 +57,11 @@ GRANT SELECT ON stock_index_his    TO &scrap_user;
 GRANT SELECT ON user_etf           TO &scrap_user;
 
 -- 1-2. 동기화 프로시저를 SCRAP 이 부를 수 있게 한다.
+--
+-- sp_ksd_no_detail_mark 는 여기 없다. 그것이 쓰는 ksd_bond_no_detail 이 수집
+-- 상태 표라 SCRAP 소유이고, 읽는 ksd_bond_info 와 api_job_log 도 SCRAP 이다.
+-- 그래서 프로시저째로 SCRAP 에 두었고, 그 덕에 교차 권한이 둘 줄었다 --
+-- 계정 경계는 "누가 쓰는가" 로 긋는 것이 읽는 쪽으로 긋는 것보다 적게 샌다.
 --
 -- CLI 의 sync-mst-* / sync-meta-maturity / sync-index-his 는 SCRAP 으로
 -- 접속한 채 이것들을 부른다. 프로시저는 **정의자 권한**(기본값)으로 두어야
@@ -72,13 +77,11 @@ GRANT EXECUTE ON sp_mst_fuopt_sync       TO &scrap_user;
 GRANT EXECUTE ON sp_mst_stock_sync       TO &scrap_user;
 GRANT EXECUTE ON sp_meta_maturity_sync   TO &scrap_user;
 GRANT EXECUTE ON sp_stock_index_his_sync TO &scrap_user;
-GRANT EXECUTE ON sp_ksd_no_detail_mark   TO &scrap_user;
 
 -- 1-3. 동기화 프로시저가 읽는 SCRAP 객체에 synonym 을 건다.
 --      (1-4 로 SCRAP 쪽 GRANT 를 받은 뒤에 쓸 수 있다.)
 --
 -- 어느 프로시저가 무엇을 읽는지:
---   sp_ksd_no_detail_mark     ksd_bond_info, api_job_log
 --   sp_mst_bond_sync          ksd_bond_isin
 --   sp_mst_etf_sync           krx_etf_daily, krx_etf_list,
 --                             v_ace_etf, v_kodex_etf, v_plus_etf, v_sol_etf
@@ -86,7 +89,6 @@ GRANT EXECUTE ON sp_ksd_no_detail_mark   TO &scrap_user;
 --   sp_meta_maturity_sync     fo_idx_code_mst, krx_deriv_info
 --   sp_mst_stock_sync         krx_stock_base
 --   sp_stock_index_his_sync   kis_index_daily, krx_index_daily
-CREATE SYNONYM api_job_log     FOR &scrap_user..api_job_log;
 CREATE SYNONYM fo_idx_code_mst FOR &scrap_user..fo_idx_code_mst;
 CREATE SYNONYM kis_index_daily FOR &scrap_user..kis_index_daily;
 CREATE SYNONYM krx_deriv_info  FOR &scrap_user..krx_deriv_info;
@@ -94,7 +96,6 @@ CREATE SYNONYM krx_etf_daily   FOR &scrap_user..krx_etf_daily;
 CREATE SYNONYM krx_etf_list    FOR &scrap_user..krx_etf_list;
 CREATE SYNONYM krx_index_daily FOR &scrap_user..krx_index_daily;
 CREATE SYNONYM krx_stock_base  FOR &scrap_user..krx_stock_base;
-CREATE SYNONYM ksd_bond_info   FOR &scrap_user..ksd_bond_info;
 CREATE SYNONYM ksd_bond_isin   FOR &scrap_user..ksd_bond_isin;
 
 -- 아래층으로 내린 운용사 목록 넷. sp_mst_etf_sync 가 ace_etf / kodex_etf /
@@ -113,10 +114,6 @@ CREATE SYNONYM v_sol_etf       FOR &scrap_user..v_sol_etf;
 --
 -- 결과 테이블 34개를 통째로 열지 않는다. 사전 데이터를 만드는 데 쓰이는
 -- 것만이고, 그 목록이 곧 "어느 수집물이 마스터의 재료인가" 라는 문서가 된다.
--- api_job 이 아니라 api_job_log 다. sp_ksd_no_detail_mark 가 "그 잡이 0행으로
--- 끝났는가" 를 v1 에서는 api_job.description 문자열로 훑었는데, v2 는
--- api_job_log.record_count 를 숫자로 본다.
-GRANT SELECT ON api_job_log     TO &ref_user;
 GRANT SELECT ON fo_idx_code_mst TO &ref_user;
 GRANT SELECT ON kis_index_daily TO &ref_user;
 GRANT SELECT ON krx_deriv_info  TO &ref_user;
@@ -124,7 +121,6 @@ GRANT SELECT ON krx_etf_daily   TO &ref_user;
 GRANT SELECT ON krx_etf_list    TO &ref_user;
 GRANT SELECT ON krx_index_daily TO &ref_user;
 GRANT SELECT ON krx_stock_base  TO &ref_user;
-GRANT SELECT ON ksd_bond_info   TO &ref_user;
 GRANT SELECT ON ksd_bond_isin   TO &ref_user;
 
 -- 뷰에 주는 SELECT 다. SCRAP 이 api_rst 와 뷰를 모두 소유하므로 그대로 된다.
@@ -136,7 +132,6 @@ GRANT SELECT ON v_sol_etf       TO &ref_user;
 -- 2-2. 사전 데이터에 synonym 을 건다. 이것이 있어서 모델의 __tablename__ 과
 --      빌더 매크로 SQL 이 v1 그대로 동작한다.
 CREATE SYNONYM krx_index_mst      FOR &ref_user..krx_index_mst;
-CREATE SYNONYM ksd_bond_no_detail FOR &ref_user..ksd_bond_no_detail;
 CREATE SYNONYM meta_fuopt_info    FOR &ref_user..meta_fuopt_info;
 CREATE SYNONYM meta_maturity      FOR &ref_user..meta_maturity;
 CREATE SYNONYM mst_bond           FOR &ref_user..mst_bond;
@@ -154,7 +149,6 @@ CREATE SYNONYM sp_mst_fuopt_sync       FOR &ref_user..sp_mst_fuopt_sync;
 CREATE SYNONYM sp_mst_stock_sync       FOR &ref_user..sp_mst_stock_sync;
 CREATE SYNONYM sp_meta_maturity_sync   FOR &ref_user..sp_meta_maturity_sync;
 CREATE SYNONYM sp_stock_index_his_sync FOR &ref_user..sp_stock_index_his_sync;
-CREATE SYNONYM sp_ksd_no_detail_mark   FOR &ref_user..sp_ksd_no_detail_mark;
 
 -- ===========================================================================
 -- 3. 점검 (양쪽에서 각각 돌린다)

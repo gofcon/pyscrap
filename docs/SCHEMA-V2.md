@@ -377,6 +377,7 @@ class ReferenceTable(SQLModel):
 얻는 것:
 
 - `_discover_table_registry`가 `issubclass(obj, ResultTable)`로 끝난다
+- **마커는 셋이다.** `ResultTable` / `ReferenceTable` / `StateTable` — `ksd_bond_no_detail`이 셋째다 (위 "경계를 어디로 긋는가")
 - `_BOOKKEEPING_TABLES` 하드코딩 집합이 사라진다
 - 허수 2개(`VendorRecordBase` 등)가 자연히 빠진다
 - `create_all`을 계정별로 가를 수 있다 — `ResultTable.metadata`만 SCRAP에 만든다
@@ -760,12 +761,35 @@ api_rst : id · api_id · job_id · result_json · target_day · updated_at
 
 뷰를 모델에서 생성할 수 있는 것이 이 둘 위에 있다.
 
+### 경계를 어디로 긋는가
+
+"job_id 가 없으면 사전 데이터" 가 아니다. 세 가지다.
+
+| | 무엇 | 계정 |
+|---|---|---|
+| 결과 | 엔진이 쓴다. job_id 가 있다 | SCRAP |
+| **수집 상태** | 엔진이 아니라 프로시저가 쓰지만 **우리 수집 이력**이다 | **SCRAP** |
+| 사전 | 종목·만기·지수가 무엇인가 | REF |
+
+`ksd_bond_no_detail` 이 가운데다. "세이브로에 물어봤는데 상세가 없었다" 를
+ISIN 당 한 줄 적는 971행짜리 표인데, 종목의 성질이 아니라 우리가 긁어본
+결과다(그래서 `mst_bond` 의 컬럼도 아니다). 읽는 쪽도 SCRAP 의 빌더 열 곳이다.
+
+그래서 그 표를 쓰는 `sp_ksd_no_detail_mark` 도 함께 SCRAP 에 둔다. 그러면 그것이
+읽는 `ksd_bond_info` 와 `api_job_log` 가 같은 계정이 되어 **교차 synonym 이 넷
+줄었다** -- 경계는 "누가 쓰는가" 로 긋는 것이 읽는 쪽으로 긋는 것보다 적게 샌다.
+
+반대 방향의 예가 `krx_index_mst` 다. 이름이 `krx_` 로 시작해 수집물처럼 보이지만
+**쓰는 곳이 없다** -- 거래소가 지수를 추가·폐지할 때만 손으로 고치는 168행이고,
+거기서 거래소 어휘와 우리 `mv_id` 가 만난다. `user_etf` 와 같은 이유로 REF 다:
+다시 만들 수 없다.
+
 ### REF 와 교차 권한
 
-사전 11개 표는 전부 **자연키 PK** 라 identity 가 하나도 없다 -- 결과 테이블과
+사전 10개 표는 전부 **자연키 PK** 라 identity 가 하나도 없다 -- 결과 테이블과
 달리 행이 어디서 왔는지가 아니라 무엇인지로 식별된다. 시퀀스가 생기지 않는다.
 
-프로시저 7개가 REF 소유다. **정의자 권한**(기본값)으로 두어야 본문이 REF 의
+프로시저 6개가 REF 소유다. **정의자 권한**(기본값)으로 두어야 본문이 REF 의
 권한으로 돌아 REF 표에 쓸 수 있고, SCRAP 은 `EXECUTE` 만 받는다 -- 사전
 데이터에 쓰는 권한이 수집 계정에 가지 않는다. 확인했다:
 
@@ -779,11 +803,11 @@ SCRAP 에서 sp_mst_etf_sync 호출 ->  ok
 
 | | 무엇을 | 몇 개 |
 |---|---|---|
-| REF → SCRAP | 사전 11개 표 SELECT + 프로시저 7개 EXECUTE | synonym 18 |
-| SCRAP → REF | 동기화가 읽는 결과 10개 + 뷰 4개 + `api_job_log` | synonym 14 |
+| REF → SCRAP | 사전 10개 표 SELECT + 프로시저 6개 EXECUTE | synonym 16 |
+| SCRAP → REF | 동기화가 읽는 결과 8개 + 뷰 4개 | synonym 12 |
 
-사전 11개 중 빌더 매크로가 실제로 읽는 것은 넷이다(`mst_fuopt` 43개 빌더,
-`mst_etf` 11, `mst_bond` 10, `ksd_bond_no_detail` 10). 그래도 11개를 다 연다 --
+사전 10개 중 빌더 매크로가 실제로 읽는 것은 셋이다(`mst_fuopt` 43개 빌더,
+`mst_etf` 11, `mst_bond` 10). 그래도 10개를 다 연다 --
 전부 수집 쪽이 읽도록 만든 사전 데이터이고 읽기라 위험이 같다. 지켜야 할 것은
 쓰기가 없다는 것이고 그것은 유지된다.
 
@@ -814,10 +838,10 @@ SCRAP 에서 sp_mst_etf_sync 호출 ->  ok
 ```
 scripts/sql/v2/
   01_scrap_config.sql      부기 4개 표 (v2 컬럼). 손으로 적는다
-  02_scrap_results.sql     타입 34개 표 594컬럼. 생성물
+  02_scrap_results.sql     타입 34개 + 수집 상태 1개 = 597컬럼. 생성물
   03_scrap_api_rst.sql     파티션 api_rst. 손으로 적는다
   04_scrap_views.sql       뷰 8개. 생성물
-  05_ref_tables.sql        사전 11개 표 121컬럼. 생성물
+  05_ref_tables.sql        사전 10개 표 118컬럼. 생성물
   06_grants_synonyms.sql   교차 GRANT + synonym + 점검 블록
   gen_ddl.py               02 · 04 · 05 를 models.py 에서 뽑는다
 
@@ -836,8 +860,8 @@ scripts/sql/
 지우지 않고 남겼다. 계획의 3~4 단계가 끝난 상태다.
 
 ```
-SCRAP   테이블 44 · 인덱스 179 · 뷰 8 · 파티션 1 · 프로시저 2 · synonym 18
-REF     테이블 11 · MV 1 · 인덱스 33 · 프로시저 7 · synonym 14
+SCRAP   테이블 45 · 뷰 8 · 파티션 1 · 프로시저 3 · synonym 16
+REF     테이블 10 · MV 1 · 프로시저 6 · synonym 12
 무효 객체 없음. 동기화 8개 전부 SCRAP 에서 호출돼 0건으로 정상 종료.
 ```
 
