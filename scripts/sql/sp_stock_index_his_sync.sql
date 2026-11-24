@@ -46,30 +46,29 @@ CREATE OR REPLACE PROCEDURE sp_stock_index_his_sync (p_merged OUT NUMBER) AS
 -- ON DEMAND MV 라 COMPLETE 로 다시 만든다. 1,700 행 남짓이라 그 편이
 -- 빠르고, FAST 는 로그 테이블을 요구해서 원본 쪽에 부담을 남긴다.
 --
--- 병렬 DML 을 끄는 이유: MV 가 읽는 stock_index_his 를 바로 위에서 고쳤는데,
--- 그 MERGE 가 병렬로 돌면 같은 트랜잭션에서 그 테이블을 다시 읽을 수 없다
--- (ORA-12838). 커밋으로 풀 수도 있지만 이 프로시저는 커밋하지 않는다 --
--- 호출하는 쪽이 다른 작업과 묶을 수 있어야 해서다. 수십 행짜리 MERGE 라
--- 병렬로 얻을 것도 없다.
+-- 아래 MERGE 들에 NO_PARALLEL 을 붙이는 이유: MV 가 읽는 stock_index_his 를
+-- 바로 위에서 고쳤는데, 그 MERGE 가 병렬로 돌면 같은 트랜잭션에서 그 테이블을
+-- 다시 읽을 수 없다(ORA-12838). 커밋으로 풀 수도 있지만 이 프로시저는 커밋하지
+-- 않는다 -- 호출하는 쪽이 다른 작업과 묶을 수 있어야 해서다. 수십 행짜리
+-- MERGE 라 병렬로 얻을 것도 없다.
 --
--- 세션 설정이라 되돌린다. 이 DB 는 병렬 DML 이 기본 활성이고(그래서 위
--- 오류가 났다), 안 되돌리면 배치의 다음 단계까지 직렬이 된다.
+-- v1 은 이것을 세션 설정으로 했다(ALTER SESSION DISABLE PARALLEL DML). 그쪽은
+-- 트랜잭션이 열려 있으면 **ORA-12841 로 죽는다** -- 이 프로시저가 배치의 다른
+-- 단계 뒤에 불리면 그렇게 된다. v2 에서 앞에 dedup 이 붙으면서 실제로 그렇게
+-- 됐다. 문장 힌트는 세션 상태를 건드리지 않아 그 문제가 없고, 되돌릴 것도
+-- 없어서 예외 핸들러가 필요하지 않다. 저장소의 다른 프로시저들이 이미 같은
+-- 방식이다(sp_mst_etf_sync 등 여덟 곳).
 BEGIN
-  EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL DML';
 
-  -- kis_index_daily 의 중복 정리. 아래 MERGE 가 이 표를 읽으므로 (날짜,
-  -- 종목코드) 가 한 건이어야 한다 -- 소스 키가 중복되면 ORA-30926 이다.
-  -- 겹침이 생기는 경로: 빌더가 롤링 기간을 쓰던 때 쌓인 것과, save_mode=
-  -- overwrite 가 '같은 job_id 의 이전 결과' 만 지우는 성질. 지금 빌더는
-  -- 하루짜리라 새로 생기지는 않지만, 옛 행이 남아 있고 기간을 다시 넓힐
-  -- 여지도 있어 접는 쪽을 둔다.
-  DELETE FROM kis_index_daily
-   WHERE id IN (
-     SELECT id FROM (
-       SELECT id, ROW_NUMBER() OVER (PARTITION BY stck_bsop_date, short_code
-                                     ORDER BY updated_at DESC, id DESC) rn
-         FROM kis_index_daily)
-      WHERE rn > 1);
+  -- kis_index_daily 의 중복 정리는 여기서 하지 않는다. 아래 MERGE 가 그 표를
+  -- 소스로 읽으므로 (날짜, 종목코드) 가 한 건이어야 하는 것은 그대로지만,
+  -- 지우는 일은 sp_kis_index_daily_dedup(SCRAP 소유)이 맡는다 -- 이 프로시저는
+  -- REF 소유이고 kis_index_daily 는 SCRAP 소유라, REF 에 DELETE 를 주면 사전
+  -- 데이터를 만드는 쪽이 수집물을 지울 수 있게 된다. 계정을 나눈 이유가 바로
+  -- 그것을 막는 것이다.
+  --
+  -- 배치는 이 프로시저 앞에 dedup 을 부른다. 중복이 남아 있으면 아래 MERGE 가
+  -- ORA-30926 으로 죽으므로, 빠뜨리면 조용히 넘어가지 않는다.
 
   -- 1. KIS: 없는 날만. 이미 있는 행은 건드리지 않는다 -- 거래소가 확정한 값을
   -- 덜 확정된 값으로 되돌리지 않기 위해서다. 단위를 거래소 쪽에 맞춘다: KIS 는
@@ -80,7 +79,7 @@ BEGIN
   -- mv_id 는 meta_fuopt_info 에서 온다. 그 표가 기초자산의 코드(KIS
   -- unas_short_code)와 시계열에서의 이름을 같은 행에 들고 있다 -- 거래소 쪽이
   -- krx_index_mst 로 이름을 푸는 것과 같은 자리다.
-  MERGE INTO stock_index_his t
+  MERGE /*+ NO_PARALLEL */ INTO stock_index_his t
   USING (
     SELECT TO_DATE(k.stck_bsop_date, 'YYYYMMDD') AS trade_date,
            u.mv_id                               AS mv_id,
@@ -104,7 +103,7 @@ BEGIN
 
   -- 2. 거래소: 확정분. 이미 있는 행도 덮는다 -- 위에서 KIS 로 채운 당일 행이
   -- 여기서 확정값으로 바뀐다.
-  MERGE INTO stock_index_his t
+  MERGE /*+ NO_PARALLEL */ INTO stock_index_his t
   USING (
     SELECT TO_DATE(k.bas_dd, 'YYYYMMDD')        AS trade_date,
            m.mv_id                              AS mv_id,
@@ -154,7 +153,7 @@ BEGIN
 
   -- 전일대비/등락률: 직전 영업일 종가 대비. 이미 값이 있는 행은 건드리지 않아
   -- 다른 소스로 채운 과거분과 충돌하지 않음.
-  MERGE INTO stock_index_his t
+  MERGE /*+ NO_PARALLEL */ INTO stock_index_his t
   USING (
     SELECT trade_date, mv_id,
            close_price - prev AS chg,
@@ -168,10 +167,4 @@ BEGIN
   WHEN MATCHED THEN UPDATE SET t.price_change = s.chg, t.change_rate = s.rate;
 
   DBMS_MVIEW.REFRESH('v_k2i_atm', 'C');
-
-  EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL DML';
-EXCEPTION
-  WHEN OTHERS THEN
-    EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL DML';
-    RAISE;
 END;

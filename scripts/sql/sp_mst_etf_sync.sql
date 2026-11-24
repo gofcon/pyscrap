@@ -1,4 +1,12 @@
 CREATE OR REPLACE PROCEDURE sp_mst_etf_sync (p_inserted OUT NUMBER) AS
+-- v2: 운용사별 목록 넷(ace/kodex/plus/sol)은 타입 테이블이 아니라 api_rst
+-- 위의 뷰다 -- v_ace_etf 등. 운용사가 늘 때마다 모델을 더하고 배포해야 했던
+-- 것이 그 표들이라 아래층으로 내렸다 (docs/SCHEMA-V2.md 9.5). 컬럼 이름과
+-- 타입은 그대로이므로 FROM 절의 이름만 바뀐다.
+--
+-- 이 프로시저는 REF 계정 소유다. 읽는 SCRAP 객체에는 synonym 이 걸려 있고
+-- (06_grants_synonyms.sql), 정의자 권한으로 두어야 REF 표에 쓸 수 있다.
+--
 -- krx_etf_list(거래소 ETF 종목 목록)와 운용사 상품목록들에서 mst_etf(정제
 -- 마스터)를 채운다.
 --
@@ -122,20 +130,20 @@ BEGIN
            MAX(amc_etf_cd) KEEP (DENSE_RANK FIRST ORDER BY amc) AS amc_etf_cd
       FROM (
         SELECT stkticker AS isu_cd, 'KODEX' AS amc, fid AS amc_etf_cd
-          FROM kodex_etf WHERE stkticker IS NOT NULL
+          FROM v_kodex_etf WHERE stkticker IS NOT NULL
         UNION ALL
         SELECT etf_cd6,             'SOL',          fund_cd
-          FROM sol_etf   WHERE etf_cd6   IS NOT NULL
+          FROM v_sol_etf   WHERE etf_cd6   IS NOT NULL
         UNION ALL
         SELECT namecode,            'PLUS',         prod_id
-          FROM plus_etf  WHERE namecode  IS NOT NULL
+          FROM v_plus_etf  WHERE namecode  IS NOT NULL
         UNION ALL
         -- ACE 만 ISIN 을 주므로 단축코드는 거기서 잘라 쓴다. ISIN 의 4~9번째가
         -- 단축코드다(KR7105190003 -> 105190 = ACE 200, 실물 3건 대조 확인).
         -- 자릿수를 잘라내는 방향이라 안전하다 -- 반대로 단축코드에서 ISIN 을
         -- 만드는 것은 체크디지트를 지어내는 일이라 하지 않는다.
         SELECT SUBSTR(stockcd, 4, 6),'ACE',          fundcd
-          FROM ace_etf   WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
+          FROM v_ace_etf   WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
       )
      GROUP BY isu_cd
   ) s
@@ -173,7 +181,7 @@ BEGIN
   USING (
     SELECT SUBSTR(stockcd, 4, 6) AS isu_cd,
            MAX(stockcd) KEEP (DENSE_RANK FIRST ORDER BY fundcd) AS isin
-      FROM ace_etf
+      FROM v_ace_etf
      WHERE stockcd IS NOT NULL AND LENGTH(stockcd) = 12
      GROUP BY SUBSTR(stockcd, 4, 6)
   ) s

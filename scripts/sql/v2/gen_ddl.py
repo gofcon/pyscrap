@@ -31,6 +31,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
+import app.db.models as _models  # noqa: E402
 from app.services.export import TABLE_REGISTRY  # noqa: E402
 
 OUT = pathlib.Path(__file__).parent
@@ -53,6 +54,35 @@ TO_GENERIC = {
 _DIALECT = oracle.dialect()
 _SKIP_IN_VIEW = {"id", "api_id", "job_id", "updated_at"}
 
+_BOOKKEEPING = {"api_mst", "api_job_builder", "api_job", "api_job_log"}
+# SQLModel 은 table=True 가 아닌 베이스 클래스에도 __tablename__ 을 만들어 준다.
+# 실제 표가 아니므로 빼낸다 (docs/SCHEMA-V2.md 1절의 "허수 2개").
+_NOT_TABLES = {"vendorrecordbase", "mdcrecordbase"}
+
+
+def _all_models() -> dict:
+    import inspect
+
+    from sqlmodel import SQLModel
+
+    out = {}
+    for obj in vars(_models).values():
+        if not (inspect.isclass(obj) and issubclass(obj, SQLModel) and obj is not SQLModel):
+            continue
+        name = getattr(obj, "__tablename__", None)
+        if name and name not in _NOT_TABLES:
+            out[name] = obj
+    return out
+
+
+def ref_tables() -> list[str]:
+    """REF 계정이 갖는 표 -- 결과도 부기도 아닌 것 전부.
+
+    엔진이 쓰지 않고 프로시저가 관리하는 사전 데이터다. 전부 자연키 PK 라
+    identity 시퀀스가 없다 -- 결과 테이블과 달리 행이 어디서 왔는지가 아니라
+    무엇인지로 식별된다."""
+    return sorted(set(_all_models()) - set(TABLE_REGISTRY) - _BOOKKEEPING)
+
 
 def _header(title: str) -> str:
     return (f"-- {title}\n"
@@ -67,6 +97,30 @@ def typed_ddl() -> str:
     out = [_header(f"SCRAP 계정: 타입 결과 테이블 {len(names)}개")]
     for name in names:
         table = TABLE_REGISTRY[name].__table__
+        out.append(str(CreateTable(table).compile(dialect=_DIALECT)).strip() + ";\n")
+        for index in sorted(table.indexes, key=lambda i: i.name or ""):
+            out.append(str(CreateIndex(index).compile(dialect=_DIALECT)).strip() + ";")
+        out.append("")
+    return "\n".join(out)
+
+
+def ref_ddl() -> str:
+    names = ref_tables()
+    models = _all_models()
+    out = [_header(f"REF 계정: 사전 데이터 테이블 {len(names)}개")]
+    out.append(
+        "-- 엔진은 읽기만 한다. 채우는 것은 sp_*_sync 프로시저이고, 그 둘을\n"
+        "-- 계정으로 가르면 권한이 그 사실을 강제한다 -- 파이썬이 실수로\n"
+        "-- mst_etf 에 INSERT 할 수 없다.\n"
+        "--\n"
+        "-- user_etf 가 이 계정을 나누는 가장 큰 이유다. 손으로 적은 값이라\n"
+        "-- 다시 만들 수 없는데 v1 에서는 날마다 비워지는 결과 테이블과 같은\n"
+        "-- 계정에 있었다.\n")
+    for name in names:
+        table = models[name].__table__
+        doc = (models[name].__doc__ or "").strip().splitlines()
+        if doc:
+            out.append(f"-- {name}: {doc[0].strip()}")
         out.append(str(CreateTable(table).compile(dialect=_DIALECT)).strip() + ";\n")
         for index in sorted(table.indexes, key=lambda i: i.name or ""):
             out.append(str(CreateIndex(index).compile(dialect=_DIALECT)).strip() + ";")
@@ -135,7 +189,11 @@ def views_ddl() -> str:
 if __name__ == "__main__":
     (OUT / "02_scrap_results.sql").write_text(typed_ddl(), encoding="utf-8")
     (OUT / "04_scrap_views.sql").write_text(views_ddl(), encoding="utf-8")
+    (OUT / "05_ref_tables.sql").write_text(ref_ddl(), encoding="utf-8")
     names = sorted(set(TABLE_REGISTRY) - set(TO_GENERIC) - {"api_rst"})
     cols = sum(len(TABLE_REGISTRY[n].__table__.columns) for n in names)
+    models = _all_models()
+    rcols = sum(len(models[n].__table__.columns) for n in ref_tables())
     print(f"02_scrap_results.sql  타입 {len(names)}개 표, {cols}컬럼")
     print(f"04_scrap_views.sql    뷰 {len(TO_GENERIC)}개")
+    print(f"05_ref_tables.sql     사전 {len(ref_tables())}개 표, {rcols}컬럼")

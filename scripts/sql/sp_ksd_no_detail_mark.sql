@@ -10,15 +10,24 @@ CREATE OR REPLACE PROCEDURE sp_ksd_no_detail_mark (p_marked OUT NUMBER) AS
 -- 800 이 아니라 398 건씩 받고 있었다. 창 맨 앞이 막혀 있어서다(정렬이
 -- first_seen DESC 라 최근에 물어본 것이 앞에 온다).
 --
--- 표여야 하는 이유: 근거는 "INFO 잡이 0행으로 닫혔다" 인데 그 잡은 90일 뒤
--- sp_purge_jobs 가 지운다. 잡 위에 올린 뷰는 그때 기억을 잃고 전부 다시 묻기
+-- 표여야 하는 이유: 근거는 "INFO 잡이 0행으로 끝났다" 인데 그 로그는
+-- sp_purge_job_logs 가 지운다. 잡 위에 올린 뷰는 그때 기억을 잃고 전부 다시 묻기
 -- 시작한다. 그래서 지워지지 않는 곳에 한 번 적어 둔다. mst_bond 의 칼럼이
 -- 아닌 이유는 그 표가 종목 마스터이고, 우리가 긁는 데 성공했는지는 종목의
 -- 성질이 아니기 때문이다.
 --
--- 판정은 둘을 다 본다. is_active = 0 은 잡이 닫혔다는 뜻이고(일회성 잡은
--- 성공해야 닫힌다), description 은 그 성공이 0행이었다는 뜻이다. 둘 중 하나만
--- 보면 손으로 비활성화한 잡(KB_ETF_PDF 때처럼)이 "상세 없음" 으로 섞인다.
+-- 판정은 실행 로그 한 줄이다: 그 잡이 0행으로 성공한 기록이 있는가.
+--
+-- v1 에서는 api_job.description 을 문자열로 훑어야 했다
+-- (LIKE 'ksd_bond_info: 0%'). 적재 건수가 거기 문자열로 들어갔기 때문인데,
+-- 그 칸은 사람이 적는 설명과 같은 자리였고 다음 실행이 덮어썼다. 그래서
+-- is_active = 0 을 함께 봐야 했다 -- 손으로 비활성화한 잡(KB_ETF_PDF 때처럼)이
+-- 섞이지 않게 하려고.
+--
+-- v2 는 api_job_log.record_count 가 숫자로 있다. 0행으로 성공한 기록이 있다는
+-- 것 자체가 근거이고, 손으로 비활성화한 잡에는 그런 기록이 없다. is_active 를
+-- 볼 이유가 없어진다. status 를 둘로 받는 이유는 엔진이 0행을 SUCCESS 로
+-- 남길지 EMPTY 로 남길지에 이 프로시저가 걸리지 않게 하려는 것이다.
 --
 -- 다시 묻고 싶으면(세이브로가 뒤늦게 공시한 경우) 그 행을 지우면 된다. 다음
 -- 밤 창에 다시 들어온다.
@@ -31,10 +40,10 @@ BEGIN
     FROM mst_bond m
    WHERE NOT EXISTS (SELECT 1 FROM ksd_bond_info b WHERE b.isin = m.isin)
      AND NOT EXISTS (SELECT 1 FROM ksd_bond_no_detail n WHERE n.isin = m.isin)
-     AND EXISTS (SELECT 1 FROM api_job j
-                  WHERE j.job_id = 'KSD_BOND_INFO_web_' || m.isin
-                    AND j.is_active = 0
-                    AND j.description LIKE 'ksd_bond_info: 0%');
+     AND EXISTS (SELECT 1 FROM api_job_log l
+                  WHERE l.job_id = 'KSD_BOND_INFO_web_' || m.isin
+                    AND l.status IN ('SUCCESS', 'EMPTY')
+                    AND l.record_count = 0);
   p_marked := SQL%ROWCOUNT;
 
   DBMS_OUTPUT.PUT_LINE('  ISIN(s) with no SEIBRO detail: ' || p_marked);

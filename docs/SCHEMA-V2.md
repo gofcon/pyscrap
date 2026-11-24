@@ -760,19 +760,100 @@ api_rst : id · api_id · job_id · result_json · target_day · updated_at
 
 뷰를 모델에서 생성할 수 있는 것이 이 둘 위에 있다.
 
+### REF 와 교차 권한
+
+사전 11개 표는 전부 **자연키 PK** 라 identity 가 하나도 없다 -- 결과 테이블과
+달리 행이 어디서 왔는지가 아니라 무엇인지로 식별된다. 시퀀스가 생기지 않는다.
+
+프로시저 7개가 REF 소유다. **정의자 권한**(기본값)으로 두어야 본문이 REF 의
+권한으로 돌아 REF 표에 쓸 수 있고, SCRAP 은 `EXECUTE` 만 받는다 -- 사전
+데이터에 쓰는 권한이 수집 계정에 가지 않는다. 확인했다:
+
+```
+SCRAP 에서 INSERT INTO mst_etf  ->  ORA-41900: missing INSERT privilege
+SCRAP 에서 sp_mst_etf_sync 호출 ->  ok
+```
+
+권한은 양방향이고 **GRANT 가 synonym 보다 먼저**다. 순서를 바꾸면 ORA-00980
+(번역 실패)이 아니라 ORA-01031 이 나서 원인이 덜 보인다.
+
+| | 무엇을 | 몇 개 |
+|---|---|---|
+| REF → SCRAP | 사전 11개 표 SELECT + 프로시저 7개 EXECUTE | synonym 18 |
+| SCRAP → REF | 동기화가 읽는 결과 10개 + 뷰 4개 + `api_job_log` | synonym 14 |
+
+사전 11개 중 빌더 매크로가 실제로 읽는 것은 넷이다(`mst_fuopt` 43개 빌더,
+`mst_etf` 11, `mst_bond` 10, `ksd_bond_no_detail` 10). 그래도 11개를 다 연다 --
+전부 수집 쪽이 읽도록 만든 사전 데이터이고 읽기라 위험이 같다. 지켜야 할 것은
+쓰기가 없다는 것이고 그것은 유지된다.
+
+### 프로시저를 고쳐야 했던 세 곳
+
+**`sp_mst_etf_sync`** -- `ace_etf`/`kodex_etf`/`plus_etf`/`sol_etf` 다섯 군데를
+`v_*` 로. 컬럼 이름과 타입이 그대로라 `FROM` 절의 이름만 바뀐다.
+
+**`sp_ksd_no_detail_mark`** -- v1 은 `api_job.description` 을 문자열로 훑었다
+(`LIKE 'ksd_bond_info: 0%'`). 적재 건수가 거기 문자열로 들어갔기 때문이고, 그
+칸은 사람이 적는 설명과 같은 자리였다. v2 는 `api_job_log.record_count = 0` 을
+숫자로 본다. 덤으로 `is_active = 0` 조건이 필요 없어졌다 -- 손으로 비활성화한
+잡에는 그런 로그가 없으므로 섞이지 않는다.
+
+**`sp_stock_index_his_sync`** -- 둘이 걸렸다.
+
+1. `DELETE FROM kis_index_daily` 를 하고 있었다. SCRAP 소유 결과 테이블이라
+   REF 에 DELETE 를 주면 사전 데이터를 만드는 쪽이 수집물을 지울 수 있게 된다.
+   `sp_kis_index_daily_dedup`(SCRAP 소유)으로 떼어냈다 --
+   `sp_krx_stock_base_dedup` 이라는 선례가 이미 있다. 배치는 sync 앞에 부른다.
+2. `ALTER SESSION DISABLE PARALLEL DML` 이 **ORA-12841 로 죽었다** -- 트랜잭션이
+   열려 있으면 세션 병렬 상태를 바꿀 수 없고, v2 에서 앞에 dedup 이 붙으면서
+   실제로 그렇게 됐다. 세 MERGE 에 `/*+ NO_PARALLEL */` 을 붙이고 세션 설정과
+   예외 핸들러를 걷어냈다. 저장소의 다른 여덟 곳이 이미 같은 방식이다.
+
 ### 산출물
 
 ```
 scripts/sql/v2/
-  01_scrap_config.sql    부기 4개 표 (v2 컬럼). 손으로 적는다
-  02_scrap_results.sql   타입 34개 표 594컬럼. 생성물
-  03_scrap_api_rst.sql   파티션 api_rst. 손으로 적는다
-  04_scrap_views.sql     뷰 8개. 생성물
-  gen_ddl.py             02 와 04 를 models.py 에서 뽑는다
+  01_scrap_config.sql      부기 4개 표 (v2 컬럼). 손으로 적는다
+  02_scrap_results.sql     타입 34개 표 594컬럼. 생성물
+  03_scrap_api_rst.sql     파티션 api_rst. 손으로 적는다
+  04_scrap_views.sql       뷰 8개. 생성물
+  05_ref_tables.sql        사전 11개 표 121컬럼. 생성물
+  06_grants_synonyms.sql   교차 GRANT + synonym + 점검 블록
+  gen_ddl.py               02 · 04 · 05 를 models.py 에서 뽑는다
+
+scripts/sql/
+  sp_kis_index_daily_dedup.sql   새로 (위 참고)
+  sp_mst_etf_sync.sql            v_* 로
+  sp_ksd_no_detail_mark.sql      record_count 로
+  sp_stock_index_his_sync.sql    dedup 분리 + NO_PARALLEL
 ```
 
-v2 계정에 전부 올려 **161개 테이블·인덱스 + 뷰 8개, 오류 0건**으로 확인한 뒤
-지웠다. 뷰가 타입까지 맞게 돌려주는 것도 확인했다(`rank` → NUMBER, `wg` → 33.4).
+계정 이름은 `06` 에도 적지 않는다. SQLcl 치환 변수(`&scrap_user` / `&ref_user`)로
+두고 돌릴 때 채운다 -- 이 저장소는 공개다.
+
+### 올라가 있는 것 (2026-11-24)
+
+지우지 않고 남겼다. 계획의 3~4 단계가 끝난 상태다.
+
+```
+SCRAP   테이블 44 · 인덱스 179 · 뷰 8 · 파티션 1 · 프로시저 2 · synonym 18
+REF     테이블 11 · MV 1 · 인덱스 33 · 프로시저 7 · synonym 14
+무효 객체 없음. 동기화 8개 전부 SCRAP 에서 호출돼 0건으로 정상 종료.
+```
+
+> REF 의 시퀀스 183개와 양쪽 휴지통(943 / 4,559)은 v2 와 무관한 잔재다. 옛 표를
+> PURGE 없이 드롭하면 identity 시퀀스가 휴지통의 표를 따라 남는다.
+> `PURGE RECYCLEBIN` 으로 함께 사라지지만 되돌릴 수 없으므로 사용자 확인 대기.
+
+### 남은 프로시저 (SCRAP 쪽)
+
+| | 무엇 |
+|---|---|
+| `sp_retire_expired_jobs` | `execution_cycle` · `key_params_list` · `response_parse_json` 세 컬럼이 전부 바뀌었다 |
+| `fn_export_day_col` | `*_etf_pdf` 넷이 뷰가 되었다 |
+| `sp_run_export` | 같음. `p_name` 을 버킷 프리픽스로도 쓰므로 이름을 그대로 둘 수 없다 |
+| `sp_archive_exported` · `sp_export_bulk` · `sp_export_parquet` | `ALTER SESSION PARALLEL` 을 쓴다. ORA-12841 여지가 같다 |
+| `sp_create_external_tables` | MART 몫. 외부 테이블 5개가 아직 SCRAP 에 있다 |
 
 ---
 
