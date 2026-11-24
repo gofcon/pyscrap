@@ -33,56 +33,44 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from app.db.models.base import ResultTable
 from sqlmodel import SQLModel
 
 from app.db import models as _models
 from app.object_storage import bucket_name, get_client as get_object_storage_client
 
-# Tables that are the engine's own bookkeeping (config/job/log), not a
-# scraped-result table a "table_name" in output_tables_json could ever name
-# -- excluded from the auto-discovery below. Deliberately small and stable:
-# these four are fixed by the engine's own design, unlike result tables,
-# which grow every time a new scraper's typed output table is added.
-#
-# Note this exclusion is still needed alongside the job_id rule in
-# _discover_table_registry: api_job is keyed *by* job_id and api_job_log
-# references it, so both would otherwise qualify as result tables.
-_BOOKKEEPING_TABLES = {"api_mst", "api_job_builder", "api_job", "api_job_log"}
-
-
 def _discover_table_registry() -> dict[str, type[SQLModel]]:
-    """table_name -> SQLModel class, for every ``table=True`` model defined
-    in app.db.models except the engine's own bookkeeping tables. Two kinds
-    of target model are supported (see
-    app.scrapers.dynamic.DynamicApiScraper.run_and_save):
-    - "generic" (has a result_json field, e.g. ApiRst): the whole record
-      dict is stored as-is, no per-site code needed.
-    - "typed" (no result_json field, e.g. KisFutoptChart): the record dict
-      is spread as constructor kwargs, so its keys must line up with real
-      columns (extra keys are silently dropped by pydantic's default
-      extra="ignore").
+    """table_name -> SQLModel class, for every result table in app.db.models.
 
-    Auto-discovered (via each class's __tablename__) instead of a
-    hand-maintained dict, so adding a new result table (e.g. a future
-    KisFutoptPrice) to models.py is the *only* step needed -- there's no
-    second place to remember to register it.
+    결과 표란 ``app.db.models.base.ResultTable`` 을 상속한 것이다. 두 종류가
+    있고 둘 다 지원된다(app.scrapers.dynamic.DynamicApiScraper.run_and_save):
 
-    A ``job_id`` column is what marks a model as one of these: it is the
-    column every write path here depends on (run_and_save stamps it,
-    _clear_previous_results deletes by it, the Parquet key is derived from
-    it), so a table without one cannot be a scrape target in the first
-    place. models.py also holds reference tables -- expiry calendars,
-    instrument masters, daily index series -- that are keyed on their own
-    data and maintained DB-side by procedures rather than by this engine;
-    requiring job_id keeps those out, so pointing an output_tables_json at
-    one fails loudly in run_and_save ("unknown target table") instead of
-    half-working."""
+    - "generic" (result_json 필드가 있다, 예: ApiRst): 레코드 dict 를 통째로
+      담는다. 소스별 코드가 필요 없다.
+    - "typed" (result_json 이 없다, 예: KisFutoptChart): 레코드 dict 를 생성자
+      인자로 펴므로 키가 실제 컬럼과 맞아야 한다(없는 키는 pydantic 의
+      extra="ignore" 가 조용히 버린다).
+
+    ``__tablename__`` 으로 자동 발견하므로, 새 결과 표를 더하는 일은 모델을
+    쓰는 것 하나로 끝난다 -- 등록할 두 번째 자리가 없다.
+
+    v1 은 "job_id 컬럼이 있으면 결과 표" 로 찾았다. 지금 데이터에서는 맞지만
+    우연히 맞는 것이었다: api_job 은 job_id 로 키가 잡히고 api_job_log 는
+    그것을 참조해서 둘 다 걸렸으므로, 부기 표 이름 넷을 하드코딩해 빼야 했다.
+    그리고 job_id 가 없는 수집 상태 표(ksd_bond_no_detail)는 그 규칙으로
+    분류할 자리가 아예 없었다.
+
+    마커로 말하면 그 둘이 사라진다. ReferenceTable 과 StateTable 은 상속이
+    다르므로 저절로 빠지고, 부기 표는 아무 마커도 달지 않는다 -- 그래서
+    output_tables_json 이 그런 표를 가리키면 run_and_save 가 "unknown target
+    table" 로 크게 실패한다. 반쯤 동작하지 않는다."""
     registry: dict[str, type[SQLModel]] = {}
     for obj in vars(_models).values():
-        if not (inspect.isclass(obj) and issubclass(obj, SQLModel) and obj is not SQLModel):
+        if not (inspect.isclass(obj) and issubclass(obj, ResultTable)
+                and obj is not ResultTable):
             continue
         table_name = getattr(obj, "__tablename__", None)
-        if table_name and table_name not in _BOOKKEEPING_TABLES and "job_id" in obj.model_fields:
+        if table_name:
             registry[table_name] = obj
     return registry
 
