@@ -28,7 +28,7 @@ SELECT api_id, job_id,
 CREATE OR REPLACE VIEW v_ace_etf_pdf AS
 SELECT api_id, job_id,
        JSON_VALUE(result_json, '$.fundcd' RETURNING VARCHAR2(20 CHAR)) AS fundcd,
-       JSON_VALUE(result_json, '$.std_dt' RETURNING VARCHAR2(10 CHAR)) AS std_dt,
+       REGEXP_REPLACE(JSON_VALUE(result_json, '$.std_dt' RETURNING VARCHAR2(10 CHAR)), '\D') AS std_dt,
        JSON_VALUE(result_json, '$.rank' RETURNING NUMBER) AS rank,
        JSON_VALUE(result_json, '$.jm_ksc_cd' RETURNING VARCHAR2(20 CHAR)) AS jm_ksc_cd,
        JSON_VALUE(result_json, '$.sec_nm' RETURNING VARCHAR2(200 CHAR)) AS sec_nm,
@@ -166,6 +166,12 @@ SELECT api_id, job_id,
 -- 질의가 전체 스캔으로 떨어진다 (측정: 인덱스 있으면 타입
 -- 테이블의 1.1x, 없으면 전수 스캔 2.5x). LOCAL 이라 파티션
 -- 프루닝과 함께 동작한다.
+--
+-- **인덱스 식은 위 뷰에 적힌 식을 그대로 베껴야 한다.** 정규화가
+-- 씌워진 컬럼(std_dt)은 뷰가 REGEXP_REPLACE 를 거치므로, 맨
+-- JSON_VALUE 에 건 인덱스는 그 조건에 쓰이지 않는다 -- 인덱스가
+-- 있는데도 전체 스캔이 나오면 먼저 이것을 본다.
 -- 예:
 -- CREATE INDEX ix_api_rst_std_dt ON api_rst
---   (JSON_VALUE(result_json, '$.std_dt' RETURNING VARCHAR2(8))) LOCAL;
+--   (REGEXP_REPLACE(JSON_VALUE(result_json, '$.std_dt'
+--    RETURNING VARCHAR2(10 CHAR)), '\D')) LOCAL;

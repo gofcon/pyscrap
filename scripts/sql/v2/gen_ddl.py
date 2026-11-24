@@ -159,6 +159,27 @@ def ref_ddl() -> str:
     return "\n".join(out)
 
 
+# 모델의 검증기가 하던 정규화를 뷰가 재현해야 한다. 아래층으로 내리면 그
+# 믹스인을 타지 않으므로(범용 저장 경로는 ApiRst 를 쓴다), 뷰가 대신 하지
+# 않으면 **승격할 때 값이 바뀐다** -- 같은 소스가 아래층에서는 '2026-11-24',
+# 위층에서는 '20261124' 가 된다.
+#
+# EtfPdfDateMixin 은 std_dt 에서 숫자만 남긴다. 운용사가 저마다 다른 표기로
+# 주기 때문이다(ACE 는 2026-11-24, 키움은 2026.11.24).
+_NORMALIZE = {
+    ("EtfPdfDateMixin", "std_dt"): r"REGEXP_REPLACE({expr}, '\D')",
+}
+
+
+def _normalizer(model, column_name: str) -> str | None:
+    """이 컬럼에 씌울 식, 없으면 None."""
+    for base in model.__mro__:
+        key = (base.__name__, column_name)
+        if key in _NORMALIZE:
+            return _NORMALIZE[key]
+    return None
+
+
 def _json_path(column) -> str:
     """뷰에서 쓸 JSON_VALUE 식. 모델의 컬럼 타입을 그대로 돌려준다.
 
@@ -186,6 +207,16 @@ def _json_path(column) -> str:
             f" AS {column.name}")
 
 
+def _view_column(model, column) -> str:
+    """뷰의 한 컬럼. 모델에 정규화가 걸려 있으면 그 식을 씌운다."""
+    expr = _json_path(column)
+    value, _, alias = expr.rpartition(" AS ")
+    wrap = _normalizer(model, column.name)
+    if wrap:
+        return f"{wrap.format(expr=value)} AS {alias}"
+    return expr
+
+
 def views_ddl() -> str:
     out = [_header(f"SCRAP 계정: api_rst 위의 뷰 {len(TO_GENERIC)}개")]
     out.append("-- 컬럼 목록은 내려보낸 모델에서 뽑았다. 이 뷰를 조회하는 질의는\n"
@@ -195,7 +226,7 @@ def views_ddl() -> str:
         model = TABLE_REGISTRY[name]
         table = model.__table__
         cols = [c for c in table.columns if c.name not in _SKIP_IN_VIEW]
-        body = ",\n".join("       " + _json_path(c) for c in cols)
+        body = ",\n".join("       " + _view_column(model, c) for c in cols)
         doc = (model.__doc__ or "").strip().splitlines()
         first = doc[0] if doc else ""
         ids = ", ".join(f"'{a}'" for a in api_ids)
@@ -211,9 +242,15 @@ def views_ddl() -> str:
                "-- 질의가 전체 스캔으로 떨어진다 (측정: 인덱스 있으면 타입\n"
                "-- 테이블의 1.1x, 없으면 전수 스캔 2.5x). LOCAL 이라 파티션\n"
                "-- 프루닝과 함께 동작한다.\n"
+               "--\n"
+               "-- **인덱스 식은 위 뷰에 적힌 식을 그대로 베껴야 한다.** 정규화가\n"
+               "-- 씌워진 컬럼(std_dt)은 뷰가 REGEXP_REPLACE 를 거치므로, 맨\n"
+               "-- JSON_VALUE 에 건 인덱스는 그 조건에 쓰이지 않는다 -- 인덱스가\n"
+               "-- 있는데도 전체 스캔이 나오면 먼저 이것을 본다.\n"
                "-- 예:\n"
                "-- CREATE INDEX ix_api_rst_std_dt ON api_rst\n"
-               "--   (JSON_VALUE(result_json, '$.std_dt' RETURNING VARCHAR2(8))) LOCAL;")
+               "--   (REGEXP_REPLACE(JSON_VALUE(result_json, '$.std_dt'\n"
+               "--    RETURNING VARCHAR2(10 CHAR)), '\\D')) LOCAL;")
     return "\n".join(out)
 
 

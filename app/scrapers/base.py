@@ -98,6 +98,17 @@ def rows_to_records(rows: list[list[str]], spec: dict[str, Any]) -> list[dict[st
     return records
 
 
+def _fold_keys(record: dict[str, Any]) -> dict[str, Any]:
+    """레코드의 키를 소문자로 접는다. 범용 저장 경로에서만 쓴다.
+
+    타입 테이블은 VendorRecordBase 의 검증기가 같은 접기를 하므로, 두 층이
+    같은 키를 갖게 된다 -- 아래층에서 위층으로 승격할 때 모양이 이미 같다.
+
+    같은 이름이 대소문자만 달라 겹치면 나중 것이 이긴다. dict 순서가 그
+    판단이고, 호출부가 key_params 를 먼저 놓으므로 소스의 값이 남는다."""
+    return {str(k).lower(): v for k, v in record.items()}
+
+
 class SessionExpired(RuntimeError):
     """The site answered as if nobody were logged in.
 
@@ -366,11 +377,22 @@ class BaseScraper:
             typed_rows: list[dict[str, Any]] = []
             for record in records:
                 if is_generic:
+                    # 타입 경로와 **같은 모양**으로 담는다: 스탬프된 값을
+                    # 합치고, 키를 소문자로 접는다. 뷰가 '$.<컬럼명>' 하나로
+                    # 읽을 수 있어야 하기 때문이다 (docs/SCHEMA-V2.md 9.5).
+                    #
+                    # v1 은 둘로 나눠 담았고(key_params_json + result_json) 원본
+                    # 키를 그대로 뒀다. 그래서 한 행이 두 컬럼에 걸쳐 있었고
+                    # 소스마다 표기가 달랐다 -- ACE 는 std_DT·sec_NM·jm_KSC_CD,
+                    # KRX 는 전부 대문자. 측정해 보니 v_ace_etf_pdf 가 wg 하나만
+                    # 돌려주고(우연히 소문자였다) 나머지를 NULL 로 줬다.
+                    #
+                    # 순서는 타입 경로와 같다: key_params 먼저, record 나중.
+                    # 이름이 진짜로 겹치면 소스의 값이 잡 파라미터를 이긴다.
                     obj = model_cls(
                         api_id=self.api.api_id,
                         job_id=job_id,
-                        key_params_json=key_params or None,
-                        result_json=record,
+                        result_json=_fold_keys({**key_params, **record}),
                     )
                 else:
                     # model_validate (not plain __init__) so string values from

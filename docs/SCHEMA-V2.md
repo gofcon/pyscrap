@@ -965,16 +965,44 @@ api_rst : id · api_id · job_id · result_json · target_day · updated_at
 | `snapshot_grain` | `snapshot_unit` | `grain` 대신. 구현은 `_floor_datetime` 이라 `snapshot_floor` 가 정확하지만 명사로 어색하다 |
 | `last_result` | `engine_note` | `note` 와 같은 명사에 주인만 다르게. `engine_log` 는 `api_job_log` 와 겹쳐 피했다 |
 
-### 전제 둘 (엔진 변경)
+### 전제 둘 (엔진 변경) -- 완료 2026-11-25
 
-범용 저장 경로(`run_and_save` 의 generic 분기) 한 곳에 둘이 필요하다.
+범용 저장 경로(`run_and_save` 의 generic 분기) 한 곳에 둘이 필요했다.
 
-1. **레코드 키를 소문자로 접기.** 지금은 원본 키가 그대로 들어가서 JSON 경로가
-   소스마다 다르다(ACE 는 `std_DT`, KRX 는 전부 대문자). 타입 테이블은
+1. **레코드 키를 소문자로 접기.** 원본 키가 그대로 들어가서 JSON 경로가
+   소스마다 달랐다(ACE 는 `std_DT`, KRX 는 전부 대문자). 타입 테이블은
    `VendorRecordBase` 가 이미 같은 접기를 한다.
 2. **`{**key_params, **record}` 로 합쳐 넣기.** 타입 경로는 이미 그렇게 한다.
 
 뷰를 모델에서 생성할 수 있는 것이 이 둘 위에 있다.
+
+측정으로 확인했다. 고치기 전 `ACE_ETF_PDF` 를 돌리면 저장된 JSON 이
+`{"std_DT":…,"sec_NM":…,"jm_KSC_CD":…,"wg":23.19}` 라서 `v_ace_etf_pdf` 가
+**`wg` 하나만** 돌려주고(우연히 소문자였다) 나머지를 NULL 로 줬다. 고친 뒤
+9컬럼 전부 NULL 0개.
+
+### 검증기 정규화는 뷰가 한다 (`_NORMALIZE`)
+
+위 둘을 고친 직후 남은 차이가 하나 있었다. `std_dt` 가 아래층에서는
+`2026-11-24`, 타입 테이블에서는 `20261124` 였다. `ace_etf_pdf` 가
+`EtfPdfDateMixin` 을 쓰는데(운용사마다 표기가 달라 숫자만 남긴다), **범용
+경로는 그 믹스인을 타지 않는다.**
+
+쓰는 쪽에서 고칠 수는 없다. 그 API 의 `record_map_json` 은
+`{"pdfList":"api_rst"}` 이고, 엔진이 손에 쥐는 모델은 `ApiRst` 다 -- `AceEtfPdf`
+라는 이름은 엔진에 오지 않는다. 쓰기 때 정규화하려면 엔진이 `api_id` 로 모델을
+찾아야 하는데, 그러면 "새 표가 생겨도 models.py 를 안 고친다" 는 아래층의
+존재 이유가 사라진다.
+
+그래서 읽는 쪽에 둔다. `gen_ddl.py` 의 `_NORMALIZE` 가 (믹스인, 컬럼) → 식
+이고, `_view_column` 이 그 식을 `JSON_VALUE` 위에 씌워 뷰를 만든다. 모델은
+**설명**으로만 쓰이고 그 설명을 강제하는 곳이 뷰다. 검증 결과
+`v_ace_etf_pdf.std_dt` = `20261124`.
+
+대가 하나: 저장된 JSON 에는 `2026-11-24` 가 남는다. `api_rst` 를 뷰 없이 직접
+읽으면 원본 표기를 본다. 그리고 **함수기반 인덱스를 뷰에 적힌 식 그대로 걸어야
+한다** -- 맨 `JSON_VALUE` 에 건 인덱스는 `REGEXP_REPLACE` 가 씌워진 조건에
+쓰이지 않는다. 생성되는 `04_scrap_views.sql` 꼬리에 그 예를 적어 뒀다.
 
 ### 경계를 어디로 긋는가
 
