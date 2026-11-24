@@ -18,7 +18,7 @@ CREATE OR REPLACE PROCEDURE sp_retire_expired_jobs (p_retired OUT NUMBER) AS
 --    것 사이의 선택이다.
 --
 -- 3. 자료가 끝내 안 온 KRX 오픈API 일별 잡. 그 API 들은 아직 안 낸 날을 0행으로
---    답하고, 그런 행(api_mst.empty_is_pending)은 0행이면
+--    답하고, 그런 행(api_mst.options_json 의 empty_is_pending)은 0행이면
 --    잡을 닫지 않고 다음 사이클에 다시 묻는다 (app.services.execution.run_job).
 --    휴장일은 영영 0행이라 그 잡은 스스로 끝나지 않는다 -- 7일 지나면 놓는다.
 --    기준 날짜는 잡의 BASDD 다.
@@ -76,7 +76,9 @@ BEGIN
   UPDATE /*+ NO_PARALLEL */ api_job j
      SET j.is_active = 0
    WHERE j.is_active = 1
-     AND j.api_id IN (SELECT api_id FROM api_mst WHERE empty_is_pending = TRUE)
+     AND j.api_id IN (SELECT api_id FROM api_mst
+                       WHERE JSON_VALUE(options_json, '$.empty_is_pending'
+                                        RETURNING BOOLEAN) = TRUE)
      AND JSON_VALUE(j.params_json, '$.BASDD')
          < TO_CHAR(TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE)) - 7, 'YYYYMMDD');
   n3 := SQL%ROWCOUNT;

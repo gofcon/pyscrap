@@ -138,6 +138,48 @@ class BaseScraper:
     def __init__(self, api: ApiMst, params: dict[str, Any] | None = None):
         self.api = api
         self.params = params or {}
+        self._warn_unknown_options()
+
+    # ---- options_json ----------------------------------------------------
+
+    # 엔진이 아는 스위치. options_json 에 이것 말고 다른 키가 있으면 경고한다
+    # -- 막지는 않는다.
+    #
+    # 제약으로 막지 않는 이유: JSON 스키마를 걸면 새 스위치마다
+    # ALTER CONSTRAINT 가 필요해서, 자유롭게 더할 수 있다는 성질을 포기하면서
+    # 오타 검사만 사는 거래가 된다 (docs/SCHEMA-V2.md 6.6).
+    #
+    # 경고가 두 몫을 한다. 오타('empty_is_pendign')도 잡지만, **배포 어긋남**도
+    # 잡는다 -- DB 설정은 두 환경이 공유하는데 배포는 수동이라, "설정에는
+    # 스위치가 켜져 있는데 이 서버의 엔진은 그걸 모른다" 가 실제로 일어난다.
+    # 둘 다 증상이 같다: 아무 일도 일어나지 않고 오류도 없다.
+    KNOWN_OPTIONS: frozenset[str] = frozenset({
+        "empty_is_pending",   # 0행 성공을 "끝났다" 로 보지 않는다
+        "min_interval_sec",   # 이 API 의 요청 간격 바닥값 (호스트 간격 위에 얹힌다)
+        "page_delay_sec",     # 페이지 사이 지연
+    })
+
+    def _warn_unknown_options(self) -> None:
+        unknown = sorted(set(self.api.options_json or {}) - self.KNOWN_OPTIONS)
+        if unknown:
+            logger.warning("{}: options_json 에 모르는 키 {} (아는 것: {})",
+                           self.api.api_id, unknown, sorted(self.KNOWN_OPTIONS))
+
+    def _option_float(self, key: str) -> float | None:
+        """options_json 의 수치 스위치. 없거나 수로 못 읽으면 None 이다.
+
+        못 읽는 값을 조용히 무시하지 않고 경고하는 이유: 이 스위치들은 "안
+        걸려도 그냥 도는" 종류라, 틀려도 증상이 느려지거나 빨라지는 것뿐이고
+        오류가 안 난다."""
+        raw = (self.api.options_json or {}).get(key)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning("{}: options_json['{}'] = {!r} 은 수가 아니다 -- 무시한다",
+                           self.api.api_id, key, raw)
+            return None
 
     # ---- shared request building -----------------------------------------
 

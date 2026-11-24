@@ -203,13 +203,22 @@ def _interval_for(host: str) -> float:
     return _REQUEST_MIN_INTERVAL_SEC
 
 
-def _pace_host(url: str) -> None:
+def _pace_host(url: str, api_min: float | None = None) -> None:
     """Block until this host's next request slot is due, so a whole cycle's
     worth of jobs can't burst past the site's rate limit. Reserves the slot
     while holding the lock and only *then* sleeps, so concurrent callers each
-    get their own slot instead of all waking on the same one."""
+    get their own slot instead of all waking on the same one.
+
+    ``api_min`` (ApiMst.options_json['min_interval_sec']) 은 호스트 간격을
+    **대체하지 않고 바닥을 올린다** -- 둘 중 큰 값을 쓴다. 슬롯이 호스트별로
+    하나이기 때문이다: 같은 호스트의 두 API 가 각자 0.5s 를 선언하면 호스트는
+    1 req/s 가 아니라 2 req/s 를 받는다. 지금 seibro.or.kr 에 API 가 16개,
+    data-dbg.krx.co.kr 에 9개 있으므로 가정이 아니라 실제 상황이다.
+    """
     host = httpx.URL(url).host or ""
     interval = _interval_for(host)
+    if api_min is not None:
+        interval = max(interval, api_min)
     if interval <= 0:
         return
     with _pace_lock:
@@ -428,7 +437,7 @@ class DynamicApiScraper(BaseScraper):
         request_kwargs = self.build_request()
         # Paced *inside* the retry, so a retried attempt (e.g. after a rate-
         # limit rejection) takes its own slot rather than firing immediately.
-        _pace_host(request_kwargs["url"])
+        _pace_host(request_kwargs["url"], self._option_float("min_interval_sec"))
         response = get_http_client().request(**request_kwargs)
         self._check_reply_markers(response)
         response.raise_for_status()
@@ -585,6 +594,9 @@ class DynamicApiScraper(BaseScraper):
         ``delay`` (seconds between requests) defaults to ``PAGE_DELAY_SEC``;
         it is politeness layered on the per-host rate pacing in fetch()."""
         spec = self._pagination_spec() or {}
+        # 인자로 준 것이 가장 세고, 그다음이 이 행의 설정, 마지막이 기본값이다.
+        if delay is None:
+            delay = self._option_float("page_delay_sec")
         delay = _PAGE_DELAY_SEC if delay is None else delay
         max_pages = int(spec.get("max_pages", 100))
         if spec.get("mode", "page") == "page":

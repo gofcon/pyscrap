@@ -167,16 +167,6 @@ CREATE TABLE api_mst (
     CHECK (snapshot_column IS NULL OR is_repeated = TRUE)
 );
 
--- SQL 이 거르는 스위치만 컬럼처럼 노출한다. 저장이 아니라 메타데이터라 데이터
--- 이동이 없고, 인덱스도 걸린다. 적어만 두는 스위치는 노출하지 않는다 --
--- 엔진이 options_json 을 직접 읽으면 된다.
---
--- empty_is_pending 은 sp_retire_expired_jobs 가 'empty_is_pending = TRUE' 로
--- 거르므로 노출한다.
-ALTER TABLE api_mst ADD (
-  empty_is_pending GENERATED ALWAYS AS
-    (JSON_VALUE(options_json, '$.empty_is_pending' RETURNING BOOLEAN))
-);
 
 CREATE INDEX ix_api_mst_source ON api_mst (source);
 CREATE INDEX ix_api_mst_domain ON api_mst (domain);

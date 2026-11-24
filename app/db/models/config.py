@@ -140,13 +140,13 @@ class ApiMst(SQLModel, table=True):
     #
     # 쓰는 규칙: 불리언은 반드시 true 로 쓴다(JSON_VALUE 가 LAX 라 "true" 도
     # TRUE 로 읽히지만 1 은 NULL 이 된다). 의미는 **키가 있으면 켠 것**이고,
-    # false 를 명시적 off 로 쓰지 않는다. 배열·중첩 객체는 담을 수는 있지만
-    # DB 쪽 가상 컬럼으로 노출되지 않는다(ORA-54004).
+    # false 를 명시적 off 로 쓰지 않는다.
+    #
+    # SQL 쪽도 JSON 경로를 직접 읽는다 -- 가상 컬럼으로 노출하지 않는다.
+    # 스위치 하나를 컬럼으로도 두면 어느 쪽이 정본인지 흐려지고(생성 컬럼이라
+    # 쓸 수도 없다), 스위치가 늘 때마다 ALTER 가 따라붙어 이 컬럼을 둔 이유가
+    # 줄어든다. sp_retire_expired_jobs 가 그렇게 읽는 예다.
     options_json: Optional[dict] = Field(default=None, sa_type=JSONText)
-
-    # DB 에는 options_json 위의 가상 컬럼 empty_is_pending 이 있다 --
-    # sp_retire_expired_jobs 가 SQL 로 거르기 때문이다. 모델에는 두지 않는다:
-    # 생성 컬럼이라 쓸 수 없고, 파이썬은 options_json 을 직접 읽으면 된다.
 
     # {source_dot_path: ENV_VAR_NAME} -- JSON 응답을 파싱한 뒤 각 값을 뽑아
     # app.auth_config.persist_env_var 로 남긴다(os.environ 과 디스크의 .env
