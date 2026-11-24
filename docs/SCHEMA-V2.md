@@ -574,6 +574,79 @@ user_code_map  source, src_code_set, src_value  →  code_set, code
    레지스트리의 값은 "모든 코드를 정리했다" 가 아니라 "정리한 것이 어디 적혀
    있는지 한 곳에서 안다" 다.
 
+### 표 셋 (확정)
+
+```
+SRC_CODE       SCRAP   결과 컬럼에서 수확한 값        프로시저
+  PK (table_name, column_name, code_value)
+  source · row_cnt · distinct_cnt · first_seen · last_seen
+
+USER_CODE_MAP  REF     원천 값 -> 우리 코드            사람
+  PK (table_name, column_name, code_value)   ← SRC_CODE 와 같은 키
+  code_group · code                          → MST_CODE 를 가리킨다
+
+MST_CODE       REF     우리 어휘                      사람
+  PK (code_group, code)
+  code_nm · parent_code · sort_order
+```
+
+매핑은 **PK → PK** 다. SRC_CODE 에서는 값 자체가 키의 일부라 "키와 값" 이 따로가
+아니다.
+
+```
+SRC_CODE       ksd_bond_isin · codevalue_nm · '국채'
+USER_CODE_MAP  ksd_bond_isin · codevalue_nm · '국채'  ->  BOND_TYPE · GOVT
+MST_CODE       BOND_TYPE · GOVT · '국채'
+```
+
+키를 `(표, 컬럼, 값)` 으로 두는 이유는 측정이 말해 주었다. 값만으로 키를 잡으면
+**뜻이 다른 것이 합쳐진다** -- 둘 이상의 컬럼에 나오는 값 109개가 거의 다 그런
+경우였다.
+
+```
+'2'         12개 컬럼   atm_cls_code · info_type · prdy_vrss_sign …  뜻이 다 다르다
+'20261123'   6개 컬럼   stck_bsop_date · trade_date …
+```
+
+컬럼 기준이면 매핑이 1.40배(615 → 862줄) 늘지만, 그 늘어남이 곧 "이 두 컬럼의
+'국채' 는 같은 뜻" 이라는 판단이다. 글자가 같으니 자동으로 같다고 두면 안 된다.
+
+별도 선언 표를 두지 않는다. `USER_CODE_MAP` 에 어떤 `(표, 컬럼)` 이 등장하면 그
+자체가 "이 컬럼은 코드 컬럼이고 이 어휘를 쓴다" 는 선언이다. 그래서 셋으로 끝난다.
+
+외래키는 걸지 않는다 -- 원천이 아직 안 보낸 값을 미리 매핑해 둘 수 있어야 하고
+(`MBS`·`SLBS` 가 그 경우), 수확이 SRC_CODE 를 다시 만들 때 제약이 걸린다.
+
+### 수확 (`sp_src_code_sync`, SCRAP)
+
+후보는 **통계로** 고른다. `user_tab_columns.num_distinct` 가 555개 문자 컬럼
+전부에 채워져 있고 저카디널리티에서는 실측과 정확히 맞는다(`codevalue_nm`
+11=11, `mkt_id` 6=6, `mkt_nm` 2=2). 그래서 418개 컬럼에 `COUNT(DISTINCT)` 를
+돌리는 전수 스캔 없이 후보 165개만 `GROUP BY` 한다.
+
+v1 실데이터로 돌려 확인했다.
+
+```
+765개 값 · 8.3초
+KSD 컬럼 51 값 283 · KRX 22/280 · AMC 12/103 · KIS 10/99
+```
+
+빼야 했던 것 셋을 검증 중에 찾았다.
+
+- **날짜처럼 생긴 이름** -- `bas_dd`(17종)는 임계값을 통과하지만 코드가 아니고,
+  두면 거래일마다 행이 하나씩 쌓인다. 값(8자리 숫자)이 아니라 **이름**으로
+  거른다 -- 8자리 숫자 코드가 있을 수 있어서다
+- **엔진 부기** -- `api_job.save_mode`, `api_job_log.status` 는 원천이 보낸 것이
+  아니라 우리가 정한 값이다. `JOB_ID` 가 있으면 결과 테이블이라는 판정이
+  이것들을 잡는다
+- **외부 테이블** -- 같은 데이터의 사본이라 값이 두 벌로 들어오고, 스캔이
+  오브젝트 스토리지를 타서 **45초가 144초가 됐다**. `user_tables` 로 조인해서는
+  안 걸러진다 -- Oracle 은 외부 테이블도 거기 넣는다. `user_external_tables` 를
+  봐야 한다. 고치니 8.3초
+
+지우지 않는다. 원천이 더는 보내지 않는 값은 `last_seen` 이 멈추는 것으로
+드러나고, 과거 데이터에는 그 값이 아직 남아 있다.
+
 ### 용량은 이유가 아니다
 
 큰 표에서 코드성 한글이 반복되는 비용은 **27MB** -- 전체 테이블 4.7GB 의 0.6%다.
@@ -1028,4 +1101,4 @@ REF     테이블 10 · MV 1 · 프로시저 6 · synonym 12
 | 4 | 과거 데이터를 v2로 옮기는가 | 안 옮기면 v1을 조회용으로 계속 둬야 한다 |
 | 5 | 2단계(모델 분할)를 먼저 `dev`에 병합하는가 | v2 결정과 무관하게 이득이다 |
 | 6 | `bf1m_*` 37개 이행 사이클은 끝났는가 | 끝났으면 v2로 안 옮기면 된다 |
-| 7 | 코드 레지스트리(6.5)를 v2 에 넣는가 | 표 셋(`mst_code` · `std_code` · `user_code_map`)과 접는 프로시저 하나. 결과 테이블은 안 바뀐다 |
+| ~~7~~ | ~~코드 레지스트리를 넣는가~~ | **넣는다. 표 셋 + `sp_src_code_sync`. DDL 과 수확을 v1 실데이터로 검증했다 (6.5)** |
