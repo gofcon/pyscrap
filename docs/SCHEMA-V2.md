@@ -151,9 +151,29 @@ ORACLE_WALLET_DIR / _PASSWORD / ORACLE_DSN   공용
 ```
 
 `REF` 쌍은 `Settings` 필드로 **두지 않는다**. 엔진이 REF 로 붙을 일이 없기
-때문이다 -- 사전 데이터는 synonym 으로 읽고, 동기화 프로시저도 SCRAP 에서
-synonym 으로 불린다(실측: 10개 전부 호출된다). REF 자격이 필요한 것은 그 계정
-소유 객체를 만들거나 MV 를 갱신하는 관리 작업뿐이고 그것은 앱 경로가 아니다.
+때문이다.
+
+처음에는 "MV 갱신은 소유 계정에서 해야 하니 REF 자격이 운영에도 필요하겠다"
+고 보았는데, 재 보니 아니었다. `sp_stock_index_his_sync` 를 **SCRAP 에서**
+부르면 `v_k2i_atm` 의 `last_refresh` 가 움직인다:
+
+```
+갱신 전 14:06:14  ->  SCRAP 에서 sp_stock_index_his_sync 호출  ->  14:16:31
+```
+
+definer-rights 프로시저라 안의 `DBMS_MVIEW.REFRESH` 가 REF 로 돈다. 사전
+데이터도 synonym 으로 읽고, 동기화 프로시저 10개 전부 SCRAP 에서 호출된다.
+
+그래서 REF 자격이 필요한 자리는 **REF 소유 객체를 만드는 DDL 뿐**이다
+(`05_ref_tables.sql`, `06`·`07` 의 REF 절반, `v_code_*` 뷰, `v_k2i_atm`).
+사람이 환경마다 한 번씩 하는 일이지 앱 경로가 아니다.
+
+**타이머가 도는 인스턴스의 `.env` 에는 넣지 않는다.** 거기서 쓸 일이 없고,
+REF 는 자기 스키마에 객체를 만들고 지울 수 있는 계정이다 -- SCRAP 은 받은
+SELECT/EXECUTE 밖으로 못 나가므로 새는 경우의 범위가 다르다. (FastAPI Cloud
+는 애초에 `.env` 를 배포에서 빼고 플랫폼 환경변수를 쓴다 --
+`.fastapicloudignore`.)
+
 아무도 읽지 않는 필드를 선언하면 "엔진이 REF 로도 붙는다" 는 오해만 남는다.
 
 **대가 하나.** 이행 스크립트가 v1 을 읽는데 그 변수가 이제 v2 를 가리킨다.

@@ -13,13 +13,22 @@ class Settings(BaseSettings):
     # 같아서, 가리키는 곳은 oracle_dsn 이 정한다. 그래서 두 층 전환에 이
     # 파일도 app.db.engine 도 고칠 것이 없었다.
     #
-    # .env 에는 ORACLE_USER_REF / ORACLE_PASSWORD_REF 도 있는데 여기 필드로
-    # 두지 않는다. 엔진이 REF 로 접속할 일이 없기 때문이다 -- 사전 데이터는
-    # synonym 으로 읽고(06_grants_synonyms.sql), 동기화 프로시저도 SCRAP 에서
-    # synonym 으로 불린다(실측: 10개 전부 호출된다). REF 자격이 필요한 것은
-    # 그 계정 소유 객체를 만들거나 MV 를 갱신하는 관리 작업뿐이고, 그것은
-    # 앱 경로가 아니다. 아무도 읽지 않는 필드를 선언하면 "엔진이 REF 로도
-    # 붙는다" 는 오해만 남는다.
+    # REF 계정은 여기 없다. **엔진이 REF 로 접속하지 않기 때문이다.**
+    #
+    # 사전 데이터는 synonym 으로 읽고(06_grants_synonyms.sql), 동기화
+    # 프로시저도 SCRAP 에서 synonym 으로 불린다 -- 실측으로 10개 전부
+    # 호출되고, REF 소유 MV 갱신까지 그 길로 된다(sp_stock_index_his_sync 를
+    # SCRAP 에서 부르면 v_k2i_atm 의 last_refresh 가 움직인다. definer-rights
+    # 라 안의 DBMS_MVIEW.REFRESH 가 REF 로 돈다).
+    #
+    # 그래서 REF 자격이 필요한 자리는 **REF 소유 객체를 만드는 DDL 뿐**이고
+    # (05_ref_tables.sql, 06·07 의 REF 절반, v_code_* 뷰, v_k2i_atm) 그것은
+    # 사람이 한 번씩 하는 일이지 앱 경로가 아니다. 타이머가 도는 인스턴스의
+    # .env 에도 넣지 않는 편이 낫다 -- 쓸 일이 없고, REF 는 자기 스키마에
+    # 객체를 만들고 지울 수 있는 계정이라 새면 범위가 다르다.
+    #
+    # 아무도 읽지 않는 필드를 선언하면 "엔진이 REF 로도 붙는다" 는 오해만
+    # 남는다.
     oracle_user: str
     oracle_password: str
     # Easy Connect string, a full (description=...) connect descriptor, or --
