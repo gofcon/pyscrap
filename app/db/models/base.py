@@ -103,6 +103,18 @@ class VendorRecordBase(SQLModel):
                 for k, v in data.items()}
 
 
+# data.krx.co.kr 화면이 숫자를 사람이 읽는 모양으로 보낸다: 천 단위 콤마
+# ("1,163"), 없는 값은 '-'. 콤마가 붙은 것만 골라 떼는 이유는 종목명 안에도
+# 콤마가 있기 때문이다 ("코스피200 C 202609 1,000.0" -- 행사가가 이름에 박혀
+# 있다). 그래서 값 전체를 훑지 않고 숫자로만 이뤄진 문자열에만 손댄다.
+_MDC_NUMERIC_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
+# 이 상수가 쓰는 클래스와 같은 모듈에 있어야 한다. models.py 를 패키지로 가를
+# 때(3db887f) 클래스만 옮겨서 이것은 krx.py 에 남았고, 쓰는 검증기는 여기로
+# 왔다 -- import 도 없이. NameError 가 **콤마 붙은 숫자를 만날 때만** 나므로
+# 테스트도 import 검사도 잡지 못했고, v2 에서 KRX_INDEX_KOSPI 를 실제로
+# 돌려서야 드러났다.
+
+
 class MdcRecordBase(VendorRecordBase):
     """VendorRecordBase 에 data.krx.co.kr 화면의 습관 둘을 더한 것.
 

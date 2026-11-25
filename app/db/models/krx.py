@@ -316,13 +316,6 @@ class KrxStockBase(ResultTable, VendorRecordBase, table=True):
                 sa_column=Column(DateTime, server_default=func.now(), onupdate=func.now()))
 
 
-# data.krx.co.kr 화면이 숫자를 사람이 읽는 모양으로 보낸다: 천 단위 콤마
-# ("1,163"), 없는 값은 '-'. 콤마가 붙은 것만 골라 떼는 이유는 종목명 안에도
-# 콤마가 있기 때문이다 ("코스피200 C 202609 1,000.0" -- 행사가가 이름에 박혀
-# 있다). 그래서 값 전체를 훑지 않고 숫자로만 이뤄진 문자열에만 손댄다.
-_MDC_NUMERIC_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
-
-
 class KrxStockDaily(ResultTable, VendorRecordBase, table=True):
     """Typed output table for KRX_STOCK_INFO (``sto/stk_bydd_trd``) -- one row
     per listed share per trading day, field names kept as KRX's own.
