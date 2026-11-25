@@ -1052,6 +1052,53 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.9 브라우저 행 · 검증 정리 (2026-11-26)
+
+`KRX_ISIN_SRCH` -- `protocol='BROWSER'`, `response_type='dom'`. **v1 에서도 이
+행으로 데이터를 만든 적이 없다**(`api_rst` 0행, 빌더가 양쪽 다 비활성)이라
+비교 기준이 없다. 그래서 "도는지, 무엇을 뽑는지" 를 봤다.
+
+```
+생성 KRX_ISIN_SRCH_KR2 -> SUCCESS · 271행 · 177초 · 56페이지
+page 56 repeats the previous one, stopping      <- 페이징 종료 판정도 동작
+```
+
+필드 10개가 **271/271 전부** 채워졌다. `row_stamp_json {"CODE":"code"}` 도
+찍혔다(`code = KR2` 전행).
+
+```
+{"code":"KR2","isin":"KR2077022GB6","prod_type":"채권",
+ "kor_name":"경북지역개발채권 26-11","issuer":"경상북도",
+ "issue_dd":"2026-11-30","mat_dd":"2031-11-30","list_yn":"상장",
+ "list_dd":"2026-11-02","grant_dd":"2026-10-…"}
+```
+
+Playwright 의 `fill` → `eval`(jQuery 로 `pageIndex` 주입) → `wait_load`
+networkidle 세 단계와, `rows`/`fields` CSS 셀렉터 추출, 그리고 범용 저장 경로의
+키 소문자 접기가 함께 동작한 것이다.
+
+#### 검증 정리 -- 설정 계열 전부 돌렸다
+
+| 계열 | 모양 | 결과 |
+|---|---|---|
+| KRX 오픈API | JSON · `row_stamp` · overwrite | 값까지 일치 (8.5) |
+| SEIBRO | XML payload · XPath 셀렉터 | 일치 (8.6) |
+| 운용사 목록 | payload 네 가지 · 페이징 · api_rst | 일치 (8.6) |
+| 운용사 PDF | xlsx · xls · SSL 예외 서버 | 일치 (8.6) |
+| KIS 오픈API | 페이징 · 곁다리 api_rst · append 스냅샷 | 일치 (8.8) |
+| 브라우저 | Playwright behavior · DOM 셀렉터 | 동작, 271행 (여기) |
+
+3분 잡(`KIS_FUTOPT_PRICE` 496 · `_A2` 334)만 안 돌렸다 -- 사용자 요청이다.
+
+**찾은 것 둘.** `_MDC_NUMERIC_RE` 고아(활성 잡 1,202개를 막고 있었다, 8.5)와
+0행 성공이 지우는 것(5행, 8.6~8.7). 둘 다 **샘플 복사로는 보이지 않는** 것들이고,
+잡을 실제로 돌려야 나왔다.
+
+**내가 세 번 틀린 비교.** `KRX_ETF` 두 배(append), `FO_IDX_CODE_MST`·
+`KIS_ETF_PDF` 총계(누적 스냅샷), 그리고 노출 범위를 10행으로 센 것
+(`save_mode` 를 안 봤다). `append`/`is_repeated` 행에서는 **무엇끼리 비교할지**가
+먼저다.
+
 ### 8.8 KIS 계열 (3분 제외) (2026-11-26)
 
 토큰 갱신 둘을 먼저 돌렸다 -- `persist_env_json` 이 `.env` 에 새 토큰을 적고
