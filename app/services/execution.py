@@ -253,9 +253,52 @@ def _execute_job(session: Session, job: ApiJob, attempt_no: int = 1) -> ScrapeEr
         # 나오면 곁다리고, 혼자면 본 저장소다.
         targets = set((api.record_map_json or {}).values())
         sidecars = {"api_rst"} if len(targets) > 1 and "api_rst" in targets else set()
+        saved = sum(n for table, n in counts.items() if table not in sidecars)
+
+        # 0행 성공이 **지우는** 경우를 막는다 (options_json['empty_keeps_previous']).
+        #
+        # save_mode='overwrite' 는 받기 전에 그 job_id 의 행을 지운다
+        # (_clear_previous_results). 받은 것이 0행이어도 그 삭제는 성공으로
+        # 커밋된다 -- 대신 들어온 것이 없는데 옛것이 사라진다.
+        #
+        # 그 함수의 주석이 이미 원칙을 적고 있다: 실패했을 때 어제 행이 남는
+        # 것이 "overwrite 의 뜻 -- 교체되거나, 손대지 않거나" 라고. 2026-10-02
+        # 에 KRX 포털이 공지 페이지를 돌려줘 27개 잡이 전부 실패하고
+        # krx_deriv_info 23,000행이 비었던 뒤에 넣은 것이다. **실패는 막혔고
+        # 0행 성공은 안 막혀 있었다.**
+        #
+        # empty_is_pending 으로는 덮이지 않는다. 그 판정이 not is_repeated 를
+        # 요구하는데, 노출된 다섯 행은 전부 is_repeated 다 -- job_id 가 고정이라
+        # 매 실행이 같은 행을 덮는다 (ACE/KODEX/PLUS/SOL_ETF_LIST,
+        # KRX_DERIV_INFO). 날짜가 job_id 에 있는 행은 새 날짜에 지울 것이
+        # 없어 애초에 노출되지 않는다.
+        #
+        # 전역으로 하지 않고 행 단위 스위치인 이유: 0행이 **진짜 답**인 행이
+        # 있다. KSD 채권 상세는 상세가 없는 ISIN 에 빈 응답을 주고, 그것을
+        # ksd_bond_no_detail 이 기록한다. 전역 가드는 그 행들에서 옛 데이터를
+        # 붙잡아 둔다. empty_is_pending 을 행 단위로 둔 것과 같은 결이다.
+        keeps_previous = (job.save_mode == "overwrite" and saved == 0
+                          and bool((api.options_json or {}).get("empty_keeps_previous")))
+        if keeps_previous:
+            note = job.engine_note
+            # 실패 경로와 같은 방식이다 -- 이 잡이 세션에 올린 것(그 DELETE)을
+            # 버린다. 0행이라 되돌릴 결과 행은 없다.
+            session.rollback()
+            job = session.get(ApiJob, job.job_id)
+            job.engine_note = f"empty reply, previous rows kept ({note})"
+            session.add(job)
+            _log(session, job.job_id, "EMPTY", commit=False,
+                 record_count=0,
+                 duration_ms=int((time.monotonic() - started) * 1000),
+                 attempt_no=attempt_no, target_date=target_date)
+            session.commit()
+            logger.warning("{}: 응답이 0행이라 이전 행을 지우지 않았다 ({})",
+                           job.api_id, job.job_id)
+            return None
+
         pending_empty = (not is_repeated
                          and bool((api.options_json or {}).get("empty_is_pending"))
-                         and sum(n for table, n in counts.items() if table not in sidecars) == 0)
+                         and saved == 0)
         if pending_empty:
             job.engine_note = f"no data yet ({job.engine_note})"
         elif not is_repeated:

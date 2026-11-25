@@ -1052,6 +1052,41 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.7 `empty_keeps_previous` (2026-11-26)
+
+8.6 이 찾은 "0행 성공이 지운다" 를 막는다. 전역 가드가 아니라 **행 단위
+스위치**로 했다 -- 0행이 진짜 답인 행이 있기 때문이다. KSD 채권 상세는 상세가
+없는 ISIN 에 빈 응답을 주고 그것을 `ksd_bond_no_detail` 이 기록한다. 전역이면
+그 800×9 개 잡에서 옛 데이터를 붙잡아 둔다. `empty_is_pending` 을 행 단위로 둔
+것과 같은 결이다.
+
+동작은 실패 경로와 같다 -- `session.rollback()` 으로 그 DELETE 를 버리고,
+status `EMPTY` 로 적고, 잡은 그대로 둔다. 0행이라 되돌릴 결과 행은 없다.
+
+**실제 0행 응답으로 검증했다.** PLUS 가 그 시각에 빈 응답을 주고 있었으므로
+같은 잡으로 전후를 비교할 수 있었다:
+
+```
+가드 없이   87 → 0    SUCCESS  record_count=0
+가드 켜고   87 → 87   EMPTY    engine_note "empty reply, previous rows kept (api_rst: 0)"
+                               + WARNING 한 줄
+```
+
+노출된 다섯 행에 켰다(`09_scrap_api_config.sql` 에 기록, `JSON_TRANSFORM` 이라
+다른 스위치를 덮지 않고 멱등):
+
+```
+ACE_ETF_LIST · KODEX_ETF_LIST · PLUS_ETF_LIST · SOL_ETF_LIST   각 잡 1개
+KRX_DERIV_INFO                                                 잡 27개
+```
+
+#### v1 은 그대로다
+
+같은 노출이 v1 에도 있다 -- 설정이 같고 엔진 코드도 거기엔 이 가드가 없다.
+`krx_deriv_info` 는 만기 달력과 선물옵션 마스터의 원천이고, 2026-10-02 에 한 번
+비워진 전례가 있다. v1 에 반영할지는 결정 사항이다: 엔진 코드를 배포해야 하고
+(그 가드가 코드에 있다), v1 은 지금 운영으로 돌고 있다.
+
 ### 8.6 SEIBRO · 운용사 계열도 돌렸다 (2026-11-26)
 
 설정 모양이 서로 다른 10개를 골라 v1 과 맞췄다.

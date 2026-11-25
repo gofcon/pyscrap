@@ -94,6 +94,46 @@ USING (SELECT 'ISIN_BOND_INFO_DAILY' build_id FROM dual) s
 
 COMMIT;
 
+-- ===========================================================================
+-- empty_keeps_previous -- 0행 성공이 지우지 않게 (2026-11-26)
+-- ===========================================================================
+-- save_mode='overwrite' 는 받기 전에 그 job_id 의 행을 지운다. 받은 것이
+-- 0행이어도 그 삭제가 성공으로 커밋되므로, 대신 들어온 것 없이 옛것이
+-- 사라진다. 실측으로 재현했다 -- PLUS_ETF_LIST 가 빈 응답을 받은 실행에서
+-- 87행이 0행이 됐다.
+--
+-- _clear_previous_results 의 주석이 이미 원칙을 적고 있었다: 실패했을 때
+-- 어제 행이 남는 것이 "overwrite 의 뜻 -- 교체되거나, 손대지 않거나". 그것은
+-- 2026-10-02 에 KRX 포털이 공지 페이지를 돌려줘 27개 잡이 전부 실패하고
+-- krx_deriv_info 23,000행이 비었던 뒤에 넣은 것이다. 실패는 막혔고 0행
+-- 성공은 안 막혀 있었다.
+--
+-- empty_is_pending 으로는 덮이지 않는다 -- 그 판정이 not is_repeated 를
+-- 요구하는데 아래 다섯은 전부 is_repeated 다(job_id 가 고정이라 매 실행이 같은
+-- 행을 덮는다). 날짜가 job_id 에 있는 행은 새 날짜에 지울 것이 없어 애초에
+-- 노출되지 않는다.
+--
+-- 전역 가드로 하지 않은 이유: 0행이 **진짜 답**인 행이 있다. KSD 채권 상세는
+-- 상세가 없는 ISIN 에 빈 응답을 주고 그것을 ksd_bond_no_detail 이 기록한다.
+-- 전역이면 그 행들에서 옛 데이터를 붙잡아 둔다. empty_is_pending 을 행 단위로
+-- 둔 것과 같은 결이다.
+--
+-- 노출된 다섯 (is_repeated + save_mode=overwrite):
+--   ACE/KODEX/PLUS/SOL_ETF_LIST  운용사 ETF 목록 (각 잡 1개)
+--   KRX_DERIV_INFO               파생 전종목 기본정보 (잡 27개) -- 만기 달력과
+--                                선물옵션 마스터가 이것으로 만들어진다.
+--                                2026-10-02 에 비었던 그 표다.
+--
+-- JSON_TRANSFORM 으로 키만 더한다 -- 나중에 다른 스위치가 생겨도 덮지 않는다.
+
+UPDATE api_mst
+   SET options_json = JSON_TRANSFORM(NVL(options_json, JSON('{}')),
+                                     SET '$.empty_keeps_previous' = TRUE)
+ WHERE api_id IN ('ACE_ETF_LIST', 'KODEX_ETF_LIST', 'PLUS_ETF_LIST',
+                  'SOL_ETF_LIST', 'KRX_DERIV_INFO');
+
+COMMIT;
+
 -- 확인
 -- ---------------------------------------------------------------------------
 -- 축이 채권만 돌려주나 (주식 0·7·8·G, ETF 7 이 섞이면 설정이 틀렸다):
