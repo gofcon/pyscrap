@@ -1052,6 +1052,85 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.4 v1 샘플로 DB 쪽을 검증했다 (2026-11-25)
+
+타이머도 네트워크도 없이, v1 의 결과 데이터 일부를 v2 로 떠 와서
+(`scripts/load_sample_from_v1.py`, 43개 표 **473,341행**) DB 쪽 절반을 돌려
+봤다. v1 은 읽기만 한다.
+
+조각을 랜덤으로 뜨지 않는다. 동기화는 표 사이의 조인으로 접으므로
+(`mst_bond` 는 `ksd_bond_isin ⋈ ksd_bond_info`) 안 맞는 조각을 뜨면 또 0건이
+된다. 규칙을 표마다 적었고, dry-run 을 실측과 맞추며 **샘플링 버그 셋**을
+잡았다: `ksd_bond_isin` 이 1,882,422행(매일 덧붙이는 목록이라 ISIN 조인만으로는
+모든 날짜가 걸린다), `kis_etf` 가 3행(`snap_at` 이 초 단위라 MAX 가 한 틱),
+`GIJUNYMD` 미검출(`_YMD` 가 아니라 `YMD`). 그리고 날짜 컬럼을 컬럼 순서로
+고르지 않게 했다 -- 후보가 둘인 표가 넷이고 셋은 우연히 맞았지만
+`ksd_bond_isin` 은 `issu_dt`(채권 발행일)를 골라 10행이 나왔다.
+
+#### 뷰 8개
+
+전부 읽힌다. `std_dt` 정규화도 먹는다(`20261125` -- 숫자만). NULL 뿐인 컬럼
+6개(`kodex_etf_pdf.basrprt`·`pdftype`, `plus_etf` 넷)는 **v1 원본도 전부
+NULL** 이라 뷰 문제가 아니라 원천이 그 값을 안 주는 것이다.
+
+#### 동기화가 실제로 접힌다
+
+```
+sp_krx_stock_base_dedup   935 중복 삭제      sp_mst_bond_sync   130 new issue
+sp_mst_stock_sync         935 merged         sp_mst_etf_sync  1,191 merged
+sp_mst_fuopt_sync          18 merged
+```
+
+REF 표가 늘었다: `mst_bond` 31,876 → 32,006, `mst_etf` 1,457 → 1,459,
+`mst_fuopt` 113,463 → 113,481. **교차 계정 쓰기가 된다**는 뜻이다.
+
+#### 되찾은 코드 컬럼 11개 -- 예측과 정확히 일치
+
+```
+v_ace_etf.fundtypenm 5 · v_kodex_etf.monthlyyn 3 · typelnm 8 · typenm 6
+v_plus_etf.fundtype 7 · productoption 2
+v_sol_etf.asset_tag 7 · pension_tag 2 · theme_tag 16
+v_sol_etf_pdf.etf_cd6 22 · fund_cd 22
+```
+
+고유값 수까지 v1 에서 센 것과 같다(6.5 의 목록). 두 층 이전이 깎아 놓은 것이
+뷰 수확으로 되돌아온다.
+
+#### 통계가 수확량을 좌우한다 (주석을 고쳤다)
+
+```
+통계 모으기 전   표 후보  22 → 수확 100건
+GATHER 뒤        표 후보 112 → 수확 773건
+```
+
+프로시저 주석이 "통계가 낡으면 후보가 조금 틀릴 뿐" 이라고 했는데 22 대 112 는
+조금이 아니다. 평소에는 Oracle 의 자동 수집이 따라와 하루 늦는 정도지만,
+**대량 적재나 새 소스의 첫날에는 먼저 통계를 모아야 한다** -- 증상이 "0건" 이
+아니라 "적게" 라서 눈에 안 띈다. 주석을 측정값으로 고쳤다.
+
+최종 `src_code` 818행:
+
+```
+KSD 컬럼 52 · 값 305      KRX 컬럼 23 · 값 287
+AMC 컬럼 14 · 값 145      KIS 컬럼 10 · 값  81
+```
+
+한글 코드가 들어온다 -- `ksd_bond_info.regi_org_tpcd_nm` = `KSD`(30,457행) ·
+`해당없음`(238) · `한국은행`(340). 6.5 가 노린 것이 그것이다.
+
+#### 내보내기
+
+`v_fuopt_price` 를 만든 뒤 147,898행이 읽힌다. 13개 대상 전부 날짜 컬럼이
+풀린다(`SUBSTR(trade_at,1,8)` · `bas_dd` · `REPLACE(gijunymd,'.')` …). 버킷에
+쓰는 것은 돌리지 않았다 -- 외부로 나가는 동작이라 확인 후에 한다.
+
+#### 여전히 검증되지 않은 절반
+
+`parse_json` · `record_map_json` · `row_stamp_json` · `session_json` ·
+`staging_json`. 데이터를 복사하면 스크래퍼를 건너뛴다. 설정 변환이 맞는지는
+요청을 실제로 보내 봐야 드러난다(8.1). 이 샘플이 초록인 것이 그쪽 보증은
+아니다.
+
 ### 8.3 타이머가 부를 것을 v2 에 올렸다 (2026-11-25)
 
 `sp_run_daily_batch2` · `sp_run_daily_early`. 둘 다 순차 호출만 하는 껍데기이고
