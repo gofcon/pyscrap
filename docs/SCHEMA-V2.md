@@ -993,7 +993,7 @@ KRX_ISIN_SRCH, KSD_BOND_CREDIT_HIS_web)는 v1 때부터 거기 쓰던 행이다.
    맞췄다. 전부 일치. (v1 의 `{}` 는 NULL 로 적재했다 -- 엔진이 `or {}` 로
    읽으므로 같고, v2 의 그 컬럼들은 nullable 이다.)
 
-#### 검증이 잡은 것: 조용히 버려지던 값 5개
+#### 검증이 잡은 것: 적을 수 없던 의도 5개
 
 `validate_api_config` 가 세 행에서 `SchemaError` 를 냈다.
 
@@ -1003,18 +1003,38 @@ KIS_FUTOPT_DAILY  DATE1 DATE2  -> 'date1' 'date2' 컬럼이 없다
 KIS_INDEX_DAILY   DATE1 DATE2  -> 같음
 ```
 
-v1 에서 이 값들은 **조용히 버려지고 있었다**. 문자열 항목은 컬럼 이름을
-소문자로 끌어내는데(`"BAR_SEC"` → `bar_sec`) 그 컬럼이 없었고, `key_params` 가
-결과 행에 합쳐질 때 pydantic 이 모르는 필드를 무시하므로 오류도 로그도 없었다.
+**의도는 맞았다** (작성자 확인). 셋 다 요청에는 필요하고 저장할 필요는 없는
+파라미터다 -- 조회 시작일·종료일·봉 간격이고, URL 의 `fid_input_date_1` ·
+`fid_input_date_2` · `fid_hour_cls_code` 로 나간다. 응답이 되돌려주지 않고
+(`output1` 을 열어 봐도 간격 필드가 없다), 행마다 찍을 날짜는 API 가 주는
+`stck_bsop_date` 다 -- 한 요청이 여러 날을 돌려주므로 DATE1 도 DATE2 도 아니다.
 
-셋 다 **요청 범위를 정하는 파라미터**다 -- 조회 시작일·종료일·봉 간격. 행
-데이터가 아니고, 저장된 날짜는 API 가 돌려주는 `stck_bsop_date` 다. v1 에서
-의도대로 적었다면 `{"BAR_SEC": "none_mapped"}` 였을 것이다.
+틀린 것은 **v1 설정이 그 의도를 적을 수 없었다**는 점뿐이다. 문자열 항목은
+컬럼 이름을 소문자로 끌어내므로(`"BAR_SEC"` → `bar_sec`) "이 컬럼에 찍어라"
+로 읽히고, 의도대로 적으려면 `{"BAR_SEC": "none_mapped"}` 라야 했다. 그렇게
+안 적혀 있어서 엔진은 찍으려 했고, 그 컬럼이 없으니 pydantic 이 모르는 필드로
+무시했다 -- 결과는 의도와 같았지만 그 경로가 "설정에 적힌 대로" 가 아니라
+"조용히 떨어짐" 이었다. 검증기는 의도를 못 읽으니 후자로 보고 걸었다.
 
-그래서 이행 때 `row_stamp_json` 에서 빼고 `job_key_params` 에는 남겼다(job_id
-를 만드는 역할은 그대로다). 기능 변경이 아니라 **이미 일어나던 일을 설정에
-적는 것**이다. 사람이 적은 dict 는 건드리지 않는다 -- 그게 틀렸으면
-`SchemaError` 로 드러나야 한다.
+**v2 는 예약어 없이 그대로 표현된다.** `job_key_params` 와 `row_stamp_json` 이
+다른 컬럼이므로 -- 요청에 필요하면 앞에 넣고, 저장할 필요가 없으면 뒤에서
+빼면 끝이다. `none_mapped` 가 없어진 이유가 이것이고(4.1), 이행이 한 것도
+정확히 그것이다.
+
+저장되는 데이터와 job_id 둘 다 그대로다. 값은 `api_job.params_json` 과 job_id
+에 남아 있어서 잃는 것이 없다.
+
+```
+job_id      KIS_FUTOPT_CHART_A01609_20260814_60      <- 끝의 _60 이 BAR_SEC
+params_json {"SHORT_CODE":…,"DATE":…,"HHMM":…,"BAR_SEC":"60"}
+```
+
+v1/v2 의 job_id 자리 구성을 맞춰 확인했다 -- `<api>_<SHORT_CODE>_<DATE…>_<BAR_SEC>`
+로 같다. 이것이 실제 위험이었다: 세 파라미터가 `job_key_params` 에서 빠지면
+job_id 가 달라져 어제까지 받은 잡과 오늘 만든 잡이 다른 것이 된다.
+
+사람이 적은 dict 는 건드리지 않는다 -- 그게 틀렸으면 `SchemaError` 로 드러나야
+한다.
 
 #### 끝까지 돌려 본 것: 활성 빌더 40개
 

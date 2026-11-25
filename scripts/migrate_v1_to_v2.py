@@ -346,14 +346,23 @@ def transform_api(row: dict, demoted: list[str] | None = None) -> dict:
     # row_stamp_json 에서 뺀다. job_key_params 에는 남는다 -- job_id 를
     # 만드는 역할은 그대로다.
     #
-    # v1 에서 이것들은 **조용히 버려지고 있었다**: key_params 가 결과 행에
-    # 합쳐질 때 pydantic 이 모르는 필드를 무시하므로 오류도 로그도 없었다.
-    # 세 행이 그랬다 -- KIS_FUTOPT_CHART 의 BAR_SEC, KIS_FUTOPT_DAILY 와
-    # KIS_INDEX_DAILY 의 DATE1/DATE2. 셋 다 요청 범위를 정하는 파라미터이고
-    # (조회 시작일·종료일·봉 간격) 행 데이터가 아니다 -- 저장된 날짜는 API 가
-    # 돌려주는 stck_bsop_date 다. 그래서 v2 에서 뺀 것은 기능 변경이 아니라
-    # 이미 일어나던 일을 설정에 적는 것이다. 사람이 적은 dict 는 건드리지
-    # 않는다: 그게 틀렸으면 SchemaError 로 드러나야 한다.
+    # 세 행이 그렇다 -- KIS_FUTOPT_CHART 의 BAR_SEC, KIS_FUTOPT_DAILY 와
+    # KIS_INDEX_DAILY 의 DATE1/DATE2. **저장하지 않는 것이 의도였다**(작성자
+    # 확인): 요청에는 필요하고(fid_input_date_1 · fid_input_date_2 ·
+    # fid_hour_cls_code) 응답이 되돌려주지 않으며, 행마다 찍을 날짜는 API 가
+    # 주는 stck_bsop_date 다 -- 한 요청이 여러 날을 돌려주므로 DATE1 도 DATE2
+    # 도 아니다.
+    #
+    # v1 설정이 그 의도를 적을 수 없었던 것이 문제였다. 문자열 항목은 컬럼
+    # 이름을 소문자로 끌어내므로 "이 컬럼에 찍어라" 로 읽히고, 의도대로
+    # 적으려면 {"BAR_SEC": "none_mapped"} 라야 했다. 그렇게 안 적혀 있어서
+    # 엔진은 찍으려 했고, 컬럼이 없으니 pydantic 이 모르는 필드로 무시했다 --
+    # 결과는 의도와 같았지만 경로가 "설정에 적힌 대로" 가 아니라 "조용히
+    # 떨어짐" 이었다.
+    #
+    # v2 는 두 컬럼이 갈려 있어 예약어 없이 그대로 표현된다. 그래서 여기서
+    # 빼는 것은 기능 변경이 아니라 의도를 설정에 적는 것이다. 사람이 적은
+    # dict 는 건드리지 않는다: 그게 틀렸으면 SchemaError 로 드러나야 한다.
     known = _typed_columns(record_map)
     if known is not None:
         for param in sorted(row_stamp):
@@ -529,8 +538,8 @@ def main() -> int:
             print(f"  {api_id:12} {why}")
 
     if demoted:
-        print(f"\n[이행 중 고침] row_stamp_json 에서 뺀 파라미터 {len(demoted)}개 -- v1 에서도 "
-              "조용히 버려지던 값이다 (job_key_params 에는 남는다):")
+        print(f"\n[이행 중 명시] row_stamp_json 에서 뺀 파라미터 {len(demoted)}개 -- 요청에만 "
+              "필요하고 저장하지 않는 값이다 (job_key_params 에는 남는다):")
         for line in demoted:
             print(f"  {line}")
 
