@@ -35,7 +35,7 @@ from tenacity import (retry, retry_if_exception, stop_after_attempt,
                       wait_exponential)
 
 from app.auth_config import persist_env_var, resolve_env_placeholders
-from app.errors import ParamError, SessionExpired, SourceRefused, classify
+from app.errors import MappingError, ParamError, SessionExpired, SourceRefused, classify
 from app.scrapers.base import BaseScraper, merge_records, rows_to_records
 
 # payload_type is stored verbatim as the httpx request kwarg name, so each
@@ -691,6 +691,10 @@ class DynamicApiScraper(BaseScraper):
             records = self._parse_html_table(response)
             return {selector: records for selector in mapping}
 
+        if self.api.response_type == "html_block":
+            records = self._parse_html_block(response)
+            return {selector: records for selector in mapping}
+
         if self.api.response_type in ("xlsx", "xls"):
             records = self._parse_spreadsheet(response)
             return {selector: records for selector in mapping}
@@ -794,6 +798,62 @@ class DynamicApiScraper(BaseScraper):
         rows = [[cell.get_text(" ", strip=True) for cell in tr.find_all(["td", "th"])]
                 for tr in table.find_all("tr")]
         return rows_to_records([r for r in rows if any(r)], spec)
+
+    def _parse_html_block(self, response: httpx.Response) -> list[dict[str, Any]]:
+        """response_type='html_block': 자르기만 하고 읽지 않는다.
+
+        ``parse_json['blocks']`` 에 맞는 요소를 **통째로** 한 레코드씩 담는다.
+        필드를 뽑지 않는 것이 요점이다 -- 어떤 페이지는 수집기가 해석할 모양이
+        아니고, 그때 해석을 아래층으로 미루는 것이 맞다. 이 모드가 하는 일은
+        "어디를 자를지" 뿐이고 그 판단도 코드가 아니라 설정에 있다.
+
+        ``html_table`` 과 가르는 이유: 그쪽은 사각형을 가정하고
+        ``rows_to_records`` 로 위치를 맞춘다. 라벨/값 격자에서는 그 가정이
+        깨진다 -- KRX 표준코드 상세 페이지의 한 행은
+        ``['발행기관코드','06757','발행기관명','엔브이에이치코리아(주)']`` 이라
+        라벨이 데이터 자리에 들어가고, 한 표 안에서도 열 수가 2·3·4·5 로
+        섞인다.
+
+        설정 키 둘::
+
+            {"blocks": "table:not(:has(table)):has(td:not(:empty))",
+             "label":  "th"}
+
+        ``blocks`` 는 요소 종류를 가리지 않는다 -- ``table`` 이든 ``div.card``
+        이든 ``ul#result > li`` 이든 같다. 그래서 "래퍼 표를 버린다", "값이
+        있는 것만" 같은 규칙이 코드가 아니라 셀렉터에 적힌다(soupsieve 가
+        ``:has()``·``:not()``·``:empty`` 를 지원한다 -- 실측). 그 규칙을 코드에
+        넣으면 다음 페이지가 ``dd`` 나 ``span`` 을 쓸 때 또 분기가 생긴다.
+
+        ``label`` 은 선택이고, 블록 **안에서** 한 요소를 찾아 그 텍스트를
+        ``label`` 로 남긴다. 번호 대신 이름으로 블록을 집기 위한 것이다:
+        셀렉터가 빈 블록을 걸러내면 ``block_index`` 가 문서마다 달라진다(이
+        채권은 주식관련사채·유동화 섹션이 비어 빠지고, 그게 있는 채권은
+        남는다). 번호를 안정적으로 두려면 걸러내지 말고 전부 담아야 하는데
+        그쪽은 빈 섹션 마크업을 같이 저장한다(실측: 12블록 10,836B vs
+        16블록 15,364B). 어느 쪽이든 ``label`` 이 있으면 이름으로 찾는다.
+
+        ``block_index`` 는 **버리기 전에** 매긴다. 거른 뒤에 매기면 그 번호가
+        무엇을 가리키는지가 문서마다 달라진다.
+        """
+        spec = self.api.parse_json or {}
+        selector = spec.get("blocks")
+        if not selector:
+            raise MappingError(f"{self.api.api_id}: parse_json needs 'blocks' "
+                               f"(a css selector for one block) for response_type='html_block'")
+        from bs4 import BeautifulSoup
+
+        label_selector = spec.get("label")
+        soup = BeautifulSoup(response.text, "html.parser")
+        records: list[dict[str, Any]] = []
+        for index, element in enumerate(soup.select(selector)):
+            record: dict[str, Any] = {"block_index": index, "html": str(element)}
+            if label_selector:
+                found = element.select_one(label_selector)
+                record["label"] = found.get_text(" ", strip=True) if found else None
+            records.append(record)
+        logger.info("{}: {} block(s) from {!r}", self.api.api_id, len(records), selector)
+        return records
 
     def _parse_spreadsheet(self, response: httpx.Response) -> list[dict[str, Any]]:
         """response_type='xlsx'/'xls': a real spreadsheet file.

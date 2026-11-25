@@ -13,7 +13,11 @@ raw INSERT 로는 그것을 검증하지 못한다 (JSON 컬럼에 문자열을 
 기본은 dry-run 이다. ``--apply`` 를 줘야 쓴다.
 
     python scripts/migrate_v1_to_v2.py            # 변환 결과만 출력
-    python scripts/migrate_v1_to_v2.py --apply    # v2 에 적재
+    python scripts/migrate_v1_to_v2.py --apply    # v2 에 적재 (일회성)
+
+이행이 끝난 뒤 v2 에서 설정을 고치면(ISIN_BOND_INFO 가 그렇다) 다시
+적재하면 그 작업이 사라진다. --apply 는 v1 에 없는 api_id 가 v2 에
+있으면 멈춘다 -- apply_to_v2 참고.
 """
 
 from __future__ import annotations
@@ -429,21 +433,44 @@ def _point_env_at_v2() -> None:
         os.environ[dst] = os.environ[src]
 
 
-def apply_to_v2(apis: list[dict], builders: list[dict]) -> None:
-    """v2 의 두 표를 비우고 새로 채운다.
+def apply_to_v2(apis: list[dict], builders: list[dict], force: bool = False) -> None:
+    """v2 의 두 표를 비우고 새로 채운다. **일회성 부트스트랩이다.**
 
     api_job / api_job_log 는 건드리지 않는다. 로그는 job_id 가 FK 가 아닌
-    평범한 컬럼이라 일부러 독립이고(ApiJobLog docstring), 오늘 검증한 기록을
-    남겨 둔다. 다만 테스트용 빌더가 사라지면 그걸 참조하는 테스트 잡은
-    고아가 되므로 그 잡만 지운다."""
+    평범한 컬럼이라 일부러 독립이고(ApiJobLog docstring), 검증한 기록을
+    남겨 둔다. 다만 빌더가 사라지면 그걸 참조하는 잡은 고아가 되므로 잡은
+    지운다.
+
+    **갈라진 v2 에는 쓰지 않는다.** 이행이 끝난 뒤의 설정 변경은 v2 에서
+    일어나고 v1 에는 없다 -- 예를 들어 ISIN_BOND_INFO 는 v1 의 ISIN_INFO 를
+    이름부터 고쳐 html_block 설정을 손으로 채운 행이다. 그 상태에서 다시
+    적재하면 v1 에 있는 것만 남아 그 작업이 전부 사라지고, 잡 수만 행도 같이
+    지워진다. 그래서 **v1 에 없는 api_id 가 v2 에 있으면 멈춘다.**
+
+    이것을 override 표로 풀지 않은 이유: 그러면 이 스크립트가 설정 관리
+    도구가 되고, 같은 설정이 두 곳(여기와 DB)에 살면서 어느 쪽이 정본인지
+    흐려진다. 이행 스크립트는 이행만 한다."""
     _point_env_at_v2()
     from sqlalchemy import delete as sa_delete
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from app.db.engine import engine
     from app.db.models import ApiJob, ApiJobBuilder, ApiMst
 
     with Session(engine) as s:
+        incoming = {row["api_id"] for row in apis}
+        existing = set(s.exec(select(ApiMst.api_id)).all())
+        drifted = sorted(existing - incoming)
+        if drifted and not force:
+            raise SystemExit(
+                "v2 가 v1 에서 갈라져 있다 -- v1 에 없는 api_id 가 v2 에 "
+                f"{len(drifted)}개 있다:\n  " + "\n  ".join(drifted)
+                + "\n\n다시 적재하면 그 행과 그 설정이 사라진다. 이행은 이미 끝났고,"
+                "\n이 스크립트는 일회성 부트스트랩이다. 정말 v1 상태로 되돌리려면"
+                "\n--force 를 준다 (그 행들과 모든 api_job 이 지워진다)."
+            )
+        if drifted:
+            print(f"--force: v1 에 없는 {len(drifted)}개를 지운다 -- {', '.join(drifted)}")
         # 빌더 -> api 순으로 지운다. FK 는 없지만 읽는 사람에게 순서가 뜻을 준다.
         s.exec(sa_delete(ApiJob))
         s.exec(sa_delete(ApiJobBuilder))
@@ -483,6 +510,8 @@ def main() -> int:
     load_dotenv(".env")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="v2 에 실제로 적재한다")
+    parser.add_argument("--force", action="store_true",
+                        help="v2 가 v1 에서 갈라져 있어도 적재한다 (갈라진 행이 지워진다)")
     args = parser.parse_args()
 
     v1_apis, v1_builders = read_v1()
@@ -561,7 +590,7 @@ def main() -> int:
         print("\ndry-run 이다. 적재하려면 --apply")
         return 0
 
-    apply_to_v2(apis, builders)
+    apply_to_v2(apis, builders, force=args.force)
     return 0
 
 

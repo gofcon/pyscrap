@@ -198,8 +198,17 @@ def _json_path(column) -> str:
         returning = sql_type
     elif sql_type.startswith(("NUMBER", "INTEGER", "FLOAT", "BINARY_DOUBLE", "DECIMAL")):
         returning = "NUMBER"
+    elif sql_type.startswith(("CLOB", "NCLOB")):
+        # CLOB 은 반드시 CLOB 으로 꺼낸다. VARCHAR2(4000) 으로 두면 4000자를
+        # 넘는 순간 **에러 없이 NULL** 이다 -- 기본이 NULL ON ERROR 라서다
+        # (실측: ERROR ON ERROR 를 붙이면 ORA-61723 "exceeds maximum (4000)").
+        # 지금 생성되는 뷰 8개에는 CLOB 이 없어서 아무것도 안 깨지고 있었지만,
+        # 아래층에 긴 텍스트를 담는 행이 생기면 조용히 비어 보인다
+        # (ISIN_BOND_INFO 의 html 블록이 그 경우다 -- 그 뷰는 모델이 없어
+        #  손으로 적었다, 08_scrap_block_views.sql).
+        returning = "CLOB"
     else:
-        # DATE/CLOB/JSON 등은 문자열로 꺼내고 쓰는 쪽에서 변환한다. JSON 에는
+        # DATE/JSON 등은 문자열로 꺼내고 쓰는 쪽에서 변환한다. JSON 에는
         # 원래 문자열로 들어가 있고, 여기서 TO_DATE 를 걸면 형식이 하나로
         # 고정되어 소스가 다른 표기를 보내는 순간 전체 질의가 죽는다.
         returning = "VARCHAR2(4000)"
