@@ -1052,6 +1052,59 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.3 타이머가 부를 것을 v2 에 올렸다 (2026-11-25)
+
+`sp_run_daily_batch2` · `sp_run_daily_early`. 둘 다 순차 호출만 하는 껍데기이고
+부르는 8개가 전부 v2 에 있어서, 포팅 자체는 컴파일이 끝이었다. 실제 위험은
+계정 분리 쪽이었는데 -- SCRAP 이 REF 소유 프로시저를 synonym 으로 부를 수 있나
+-- 먼저 재서 없다는 것을 확인했다(10개 전부 호출된다).
+
+v2 에서 실행:
+
+```
+sp_run_daily_early   0.4s   retire 0 · krx_stock_base dedup 0 · mst_stock 0
+                            meta_maturity 0 · mst_fuopt 0
+sp_run_daily_batch2  2.7s   retire 0 · mst_bond 0 · mst_etf 0 · no_detail_mark 0
+                            src_code 45 (v_ace_etf_pdf 세 컬럼)
+```
+
+전부 0건인 것이 맞다 -- v2 결과 표가 비어 있다. 확인한 것은 **단계가 순서대로
+끝까지 간다**는 것이다.
+
+#### 부르는 곳이 없던 프로시저 둘
+
+올리면서 드러났다. v2 에서 새로 만든 둘이 **아무도 부르지 않는 상태**였다.
+
+`sp_kis_index_daily_dedup` 은 자기 주석에 "배치는 sync 앞에 이것을 부른다" 고
+적혀 있는데 그 배치가 v2 에 없었다. `kis_index_daily` 를 (영업일, 지수코드) 당
+한 행으로 접는 일이고, `sp_stock_index_his_sync` 의 MERGE 가 그 표를 소스로
+읽으므로 키가 한 건이어야 한다 -- 아니면 ORA-30926 이다. v1 에서는 그 DELETE 가
+sync 안에 있었는데 v2 는 계정이 갈려 그럴 수 없다(sync 는 REF 소유,
+`kis_index_daily` 는 SCRAP 소유이고, REF 에 DELETE 를 주면 계정을 나눈 이유가
+없어진다). `sp_run_export` 의 sync 바로 앞에 넣었다.
+
+`sp_src_code_sync` 도 호출부가 없었다. `sp_run_daily_batch2` 끝에 넣었는데,
+그 프로시저는 사이클 **앞**에 도므로 수확되는 것은 직전 사이클까지의 값이다 --
+어휘가 하루 늦는다. 코드 값은 드물게 새로 나타나므로 그 지연은 값을 치르지
+않는다. 사이클 뒤로 옮기려면 systemd 유닛에 `ExecStart` 한 줄이 더 필요하고
+그건 배포 작업이다.
+
+그 호출은 **블록으로 감쌌다**. 수확은 보조적인 일인데 이 유닛은
+`Type=oneshot` 이라 첫 실패에서 멈춘다 -- 감싸지 않으면 수확이 깨질 때 그 밤의
+수집이 아예 돌지 않는다. 프로시저 안의 컬럼 단위 예외 처리는 컬럼 하나가 깨질
+때의 이야기이고, 이 블록은 그 바깥(접속·권한·표 없음)을 막는다.
+
+#### 남은 구멍: `v_fuopt_price`
+
+`sp_run_export` 가 그 뷰를 `p_query` 로 부르는데 **v2 에 없다.** 동적 SQL 이라
+프로시저는 VALID 이고 실행 시점에 ORA-00942 로 죽는다. 그리고 **그 뷰의 DDL 이
+저장소에 없다** -- `v_fut_cont`·`v_k2i_atm` 은 `scripts/sql/` 에 있지만 그것은
+없고, v1 에만 있었고 v1 은 이제 닿지 않는다(2.4).
+
+그래서 export 를 v2 에서 돌리려면 그 뷰를 먼저 만들어야 하고, 정의를 v1 에서
+떠 오려면 `ORACLE_*_V1` 을 한 번 넣어야 한다. 수집 사이클에는 영향이 없다 --
+내보내기 유닛만의 문제다.
+
 ### 8.2 6단계 완료 (2026-11-25)
 
 v1 의 `api_mst` 58행 · `api_job_builder` 95행에서 **57행 · 94행**이 v2 로
@@ -1951,8 +2004,9 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 | 수익증권 (popup4) | 샘플 ISIN 이 없어 확인 못 했다 (8.2) |
 | ~~`sp_src_code_sync` 가 뷰도 훑기~~ | **완료 2026-11-25 (6.5)** |
 | 반복 빌더 셋의 `snapshot_unit` | v1 동작 보존으로 NULL. 단위를 줄지 결정 (8.2) |
-| `v_fuopt_price` · `v_fut_cont` | v1 에 있고 v2 에 없는 뷰 둘. 내보내기 대상이고 빌더는 안 읽는다 |
-| `sp_run_daily_batch2` · `sp_run_daily_early` | 타이머가 부르는 오케스트레이션. v2 에 아직 없다 |
+
+| ~~`sp_run_daily_batch2` · `sp_run_daily_early`~~ | **완료 2026-11-25 (8.3)** |
+| `v_fuopt_price` | **DDL 이 저장소에 없다.** v1 에만 있고 v1 은 이제 닿지 않는다 -- `sp_run_export` 가 그 뷰를 부른다 |
 
 ---
 

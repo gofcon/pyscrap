@@ -45,6 +45,18 @@ BEGIN
   -- 그 MV 를 읽으므로 순서가 실제 의존이고, 예전엔 서비스 파일이 두 명령을
   -- 차례로 불러 지켰다. 여기 두면 그 순서가 코드에 있다. 날짜 범위로 과거를 다시
   -- 내보낼 때도 같이 도는데, MERGE 와 MV 갱신은 멱등이라 몇 초의 값이다.
+  --
+  -- 그 앞에 kis_index_daily 를 (영업일, 지수코드) 당 한 행으로 접는다. sync 의
+  -- MERGE 가 그 표를 소스로 읽으므로 키가 한 건이어야 하고, 아니면 ORA-30926
+  -- 이다. v1 에서는 이 DELETE 가 sync 안에 있었는데 v2 는 계정이 갈려 그럴 수
+  -- 없다 -- sync 는 REF 소유이고 kis_index_daily 는 SCRAP 소유다. REF 에
+  -- DELETE 를 주면 사전 데이터를 만드는 쪽이 수집물을 지울 수 있게 되고,
+  -- 계정을 나눈 이유가 그것을 막는 것이다 (sp_kis_index_daily_dedup 주석).
+  --
+  -- 그래서 떼어낸 뒤 **부르는 곳이 없었다.** 그 프로시저의 주석은 "배치는
+  -- sync 앞에 이것을 부른다" 고 적고 있었지만 그 배치가 v2 에 없었다.
+  sp_kis_index_daily_dedup(n);
+  DBMS_OUTPUT.PUT_LINE('sp_kis_index_daily_dedup: ' || n || ' duplicate row(s) removed');
   sp_stock_index_his_sync(n);
   DBMS_OUTPUT.PUT_LINE('sp_stock_index_his_sync: ' || n || ' row(s) merged');
 
