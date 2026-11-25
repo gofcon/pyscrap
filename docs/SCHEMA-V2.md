@@ -139,8 +139,11 @@ SCRAP_TARGET=v1        # v1 | v2 | both
 것이 없었다. 확인:
 
 ```
-접속 계정 GOF · api_mst 57행 · source_name 5종  -> v2
+접속 계정 <SCRAP> · api_mst 57행 · source_name 5종  -> v2
 ```
+
+(계정 이름은 적지 않는다 -- 이 저장소는 공개다. 06_grants_synonyms.sql 이
+`&scrap_user`/`&ref_user` 치환을 쓰는 것과 같은 이유다.)
 
 `.env` 의 모양:
 
