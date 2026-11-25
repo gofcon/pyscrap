@@ -924,6 +924,167 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.2 6단계 완료 (2026-11-25)
+
+`scripts/migrate_v1_to_v2.py`. 한 번 쓰고 버리는 스크립트가 아니라 **매핑의
+기록**이다 -- v1 의 한 컬럼이 v2 의 여러 컬럼으로 갈린 자리마다 어느 값이
+어디로 갔는지 거기 적혀 있다. 기본이 dry-run 이고 `--apply` 로 적재한다.
+
+쓰기를 SQLModel 로 한다. JSON·XMLTYPE·BOOLEAN 바인딩을 **엔진이 런타임에 쓰는
+그 경로**로 통과시키려는 것이다 -- 옮긴 행이 엔진으로 다시 읽히는지가 합격
+조건이고, raw INSERT 로는 그것을 검증하지 못한다(JSON 컬럼에 문자열을
+바인딩하면 JSON 스칼라로 들어가는 함정을 1절 측정에서 한 번 밟았다).
+
+**`api_group` 13개 → `source` × `domain` 격자.** api_id 접두사로 정한다.
+그룹 값으로는 안 된다 -- `ETF_PDF` 한 그룹에 운용사 5곳과 KRX 와 KIS 가 섞여
+있어서 그룹→source 가 함수가 아니다.
+
+| source | domain | 행 |
+|---|---|---|
+| AMC | ETF | 13 |
+| KIS | AUTH 2 · DERIV 5 · ETF 1 · INDEX 1 | 9 |
+| KRX | AUTH 1 · DERIV 7 · ETF 3 · ETN 1 · INDEX 1 · STOCK 4 | 17 |
+| KSD | BOND | 16 |
+| DART | DISCLOSURE | 2 |
+| TEST | (없음) | 1 |
+
+오픈API(`KRX_API`)와 데이터포털(`KRX_DATA`)을 source 로 가르지 않았다. 같은
+기관이고, 포털이 막힐 때 오픈API 는 멀쩡하다는 구분은 **호스트 단위 차단기가
+이미** 하고 있다(`execution._HostIndex`). `Seibro_api`/`Seibro_web` 도 같은
+이유로 하나다 -- api/web 은 전송 방식이지 소스가 아니다.
+
+**`response_parse_json` → 네 컬럼.** 어느 키가 어디로 가는지는 v2 엔진이
+실제로 읽는 자리로 정했다. 모르는 키가 나오면 스크립트가 **멈춘다** -- 조용히
+한쪽에 넣으면 그 행의 기능 하나가 말없이 사라지고 증상이 "아무 일도 일어나지
+않음" 이다. 14종 전부 자리가 있었다.
+
+```
+parse_json    7행   fields has_header skip_rows delimiter encoding rows
+session_json  6행   login logged_out blocked expect
+staging_json  1행   group name unzip
+options_json  5행   empty_is_pending
+```
+
+**`key_params_list` → 네 컬럼.** v1 의 한 항목이 세 가지를 동시에 뜻했다.
+`job_key_params` 에는 문자열 항목만이 아니라 **dict 항목의 키도** 들어가야
+한다 -- v1 의 `_build_job_id` 가 NOW 를 뺀 모든 항목의 파라미터 이름으로
+job_id 를 만들었으므로, 안 그러면 옮긴 뒤 job_id 가 달라지고 어제까지 받은
+잡과 오늘 만든 잡이 다른 것이 된다. 결과: 반복 11행(그중 `snapshot_column`
+있는 것 5행), `job_key_params` 50행, `row_stamp_json` 49행.
+
+**`execution_cycle` → `schedule_tag` + `snapshot_unit`.** v1 에서 실제로
+절삭됐던 값만 단위를 받는다(`3m_call`·`3m_put` → `3m`, 2행). 나머지 93행은
+NULL -- 임의로 채우면 이행이 동작 변경을 몰래 끼워 넣는 일이 된다.
+
+**`output_tables_json` → `record_map_json`.** 두 층으로 내린 8개 표를 쓰던
+행은 `api_rst` 를 가리키게 바꿨다. 합쳐서 14행이 `api_rst` 를 가리킨다 --
+8개는 본 저장소로 바뀐 것이고, 나머지 6개(DART 둘, KIS_FUTOPT 둘,
+KRX_ISIN_SRCH, KSD_BOND_CREDIT_HIS_web)는 v1 때부터 거기 쓰던 행이다.
+
+#### 검증 셋
+
+1. **CHECK 제약 사전검사.** 네 제약(`ck_api_mst_body`·`payload`·`snapshot`·
+   `protocol`)과 길이 제한을 파이썬에서 먼저 확인했다. 한 행이라도 걸리면
+   커밋이 통째로 돌아가므로 미리 어느 행인지 알고 싶었다. 58+95 전부 통과.
+2. **설정 검증.** `validate_api_config` 를 쓰기 **전에** 58행 전부에 돌린다.
+   실패가 있으면 적재하지 않는다 -- 통째로 실패하는 쪽이 절반 적재된 상태로
+   멈춰 "어디까지 들어갔지" 를 세는 쪽보다 낫다.
+3. **왕복 비교.** 적재한 153행을 엔진의 모델로 다시 읽어 변환 결과와 필드별로
+   맞췄다. 전부 일치. (v1 의 `{}` 는 NULL 로 적재했다 -- 엔진이 `or {}` 로
+   읽으므로 같고, v2 의 그 컬럼들은 nullable 이다.)
+
+#### 검증이 잡은 것: 조용히 버려지던 값 5개
+
+`validate_api_config` 가 세 행에서 `SchemaError` 를 냈다.
+
+```
+KIS_FUTOPT_CHART  BAR_SEC      -> 'bar_sec' 컬럼이 없다
+KIS_FUTOPT_DAILY  DATE1 DATE2  -> 'date1' 'date2' 컬럼이 없다
+KIS_INDEX_DAILY   DATE1 DATE2  -> 같음
+```
+
+v1 에서 이 값들은 **조용히 버려지고 있었다**. 문자열 항목은 컬럼 이름을
+소문자로 끌어내는데(`"BAR_SEC"` → `bar_sec`) 그 컬럼이 없었고, `key_params` 가
+결과 행에 합쳐질 때 pydantic 이 모르는 필드를 무시하므로 오류도 로그도 없었다.
+
+셋 다 **요청 범위를 정하는 파라미터**다 -- 조회 시작일·종료일·봉 간격. 행
+데이터가 아니고, 저장된 날짜는 API 가 돌려주는 `stck_bsop_date` 다. v1 에서
+의도대로 적었다면 `{"BAR_SEC": "none_mapped"}` 였을 것이다.
+
+그래서 이행 때 `row_stamp_json` 에서 빼고 `job_key_params` 에는 남겼다(job_id
+를 만드는 역할은 그대로다). 기능 변경이 아니라 **이미 일어나던 일을 설정에
+적는 것**이다. 사람이 적은 dict 는 건드리지 않는다 -- 그게 틀렸으면
+`SchemaError` 로 드러나야 한다.
+
+#### 끝까지 돌려 본 것: 활성 빌더 40개
+
+적재가 끝이 아니다. 옮긴 설정으로 **잡이 실제로 생성되는가**가 이행의 마지막
+관문이고, 거기서 하나가 걸렸다.
+
+```
+생성 성공 38 / 실패 2
+FAIL  3m_call  KIS_FUTOPT_PRICE_3M_CALL  ORA-00942: "V_K2I_ATM" does not exist
+FAIL  3m_put   KIS_FUTOPT_PRICE_3M_PUT   같음
+```
+
+`v_k2i_atm` 은 MV 이고 v2 REF 에 **이미 만들어져 있었다**. 빠진 것은 GRANT 와
+synonym 이다. 그래서 `api_mst` 쪽은 멀쩡해 보이고, 원인이 설정이 아니라
+권한이라는 것이 한 겹 숨었다.
+
+왜 06 의 점검이 못 잡았나: 그 블록은 `user_synonyms` 를 훑었다. **없는
+synonym 은 루프를 돌지 않는다.** "있는 것이 멀쩡한가" 와 "있어야 할 것이
+있나" 는 다른 질문이고, 아픈 쪽은 후자다. 기대 목록을 적어 두고 비교하도록
+고쳤다 -- MISSING · DENIED · EXTRA 셋으로 보고한다.
+
+같은 종류가 더 있는지 전수로 봤다. 빌더 95개의 `db` 축이 참조하는 이름은
+8개(`api_rst` · `ksd_bond_info` · `ksd_bond_no_detail` · `ksd_kacd_code` ·
+`mst_bond` · `mst_etf` · `mst_fuopt` · `v_k2i_atm`)이고, `v_k2i_atm` 하나만
+읽히지 않았다. 그것을 읽는 빌더는 41개다 -- 3분 사이클 둘과 과거 1분봉 이행
+39개.
+
+MV 는 비어 있었다(생성만 되고 `DBMS_MVIEW.REFRESH` 가 한 번도 안 돌았다).
+REF 에서 한 번 갱신했다 -- 0.36초, 1,765행, 최신 2026-11-23. 갱신은
+`sp_stock_index_his_sync` 끝에서 하고 그 프로시저는 REF 에 있으니, 소유 관계는
+맞다(REFRESH 는 소유 계정에서 불려야 한다).
+
+그 뒤 **40개 전부 생성**된다.
+
+```
+3m_call       496      daily_batch1   3,205
+3m_put        334      daily_batch2  10,999
+daily_early    29      daily_start        7      합계 15,070
+```
+
+> 이 잡 15,070행은 검증으로 만든 것이다. 생성은 멱등이라 다시 돌려도 늘지
+> 않지만, v2 의 `api_job` 을 비운 상태에서 시작하고 싶으면 지워도 된다.
+> v2 에는 아직 타이머가 없어서 저절로 실행되지는 않는다.
+
+#### 사람이 정할 것
+
+**돈 적 없는 행 둘.** 옮기기는 했고 `note` 에 메모를 남겼다. 지울지는 결정
+사항이다.
+
+| api_id | 왜 |
+|---|---|
+| `ISIN_INFO` | `KRX_ISIN_SRCH`(브라우저 행)로 대체. `api_job` 이 하나도 없다 |
+| `TEST` | `api_url` 이 `'https://'` 뿐인 스텁. `api_job` 이 하나도 없다 |
+
+`TEST` 때문에 `source` 축에 `TEST` 가 하나 남아 있다. 7.4 가 "`test` 는
+`is_active` 또는 별도 플래그로 옮긴다" 고 한 자리인데, `api_mst` 에는
+`is_active` 가 없어서 지우는 것이 가장 깔끔하다.
+
+**관측 시각을 찍는데 버킷이 없는 빌더 셋.** v1 에서도 절삭이 no-op 이었고,
+동작을 바꾸지 않으려고 NULL 로 뒀다. 단위를 줄지는 결정 사항이다.
+
+```
+FO_IDX_CODE_MST   schedule_tag=daily_early
+KIS_ETF_PDF       schedule_tag=daily_batch2
+KSD_ISIN_ALL      schedule_tag=daily_batch1
+```
+
+셋 다 하루 한 번 도는 행이라 `1d` 가 자연스럽지만, 그러면 같은 날 두 번
+돌렸을 때 두 실행의 스탬프가 같아진다 -- `save_mode` 와 함께 봐야 한다.
+
 ### 8.1 이중 운행 비교
 
 `SCRAP_TARGET=both`가 하는 일은 같은 작업을 양쪽에 적재하고 **행 수와 값을 비교**하는 것이다.
@@ -1415,8 +1576,12 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 | | 무엇 |
 |---|---|
 | `sp_create_external_tables` | MART 몫. 외부 테이블 5개가 아직 SCRAP 에 있다 |
-| `api_mst` 58행 · 빌더 95행 이행 | v1 모양에서 v2 모양으로. `validate_api_config` 가 그 관문이다 |
-| v2 접속 정보를 `db_config` 로 | 지금은 테스트가 `ORACLE_*` 환경변수를 바꿔 끼운다 |
+| ~~`api_mst` 58행 · 빌더 95행 이행~~ | **완료 2026-11-25 (8.2)** |
+| v2 접속 정보를 `db_config` 로 | 지금은 이행 스크립트와 테스트가 `ORACLE_*` 환경변수를 바꿔 끼운다 |
+| `ISIN_INFO` · `TEST` 두 행 | 돈 적 없다. 지울지 결정 (8.2) |
+| 반복 빌더 셋의 `snapshot_unit` | v1 동작 보존으로 NULL. 단위를 줄지 결정 (8.2) |
+| `v_fuopt_price` · `v_fut_cont` | v1 에 있고 v2 에 없는 뷰 둘. 내보내기 대상이고 빌더는 안 읽는다 |
+| `sp_run_daily_batch2` · `sp_run_daily_early` | 타이머가 부르는 오케스트레이션. v2 에 아직 없다 |
 
 ---
 

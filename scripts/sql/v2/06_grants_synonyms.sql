@@ -55,6 +55,15 @@ GRANT SELECT ON mst_index          TO &scrap_user;
 GRANT SELECT ON mst_stock          TO &scrap_user;
 GRANT SELECT ON stock_index_his    TO &scrap_user;
 GRANT SELECT ON user_etf           TO &scrap_user;
+-- 표가 아니라 MV 다. 빌더 41개가 이것을 읽는다 -- 3분 사이클의 ATM 근처
+-- 행사가를 고르는 데(2개) 와 과거 1분봉 이행에(39개) 쓰인다. 빠뜨리면 그
+-- 빌더들이 생성 단계에서 ORA-00942 로 죽고, api_mst 쪽은 멀쩡해서 원인이
+-- 설정이 아니라 권한이라는 것이 한 겹 숨는다 (실제로 그렇게 드러났다).
+--
+-- REF 소유인 것이 맞다: 읽는 두 표(stock_index_his, meta_maturity)가 둘 다
+-- REF 이고, 갱신하는 sp_stock_index_his_sync 도 REF 에 있다
+-- (DBMS_MVIEW.REFRESH 는 소유 계정에서 불려야 한다).
+GRANT SELECT ON v_k2i_atm          TO &scrap_user;
 
 -- 1-2. 동기화 프로시저를 SCRAP 이 부를 수 있게 한다.
 --
@@ -141,6 +150,7 @@ CREATE SYNONYM mst_index          FOR &ref_user..mst_index;
 CREATE SYNONYM mst_stock          FOR &ref_user..mst_stock;
 CREATE SYNONYM stock_index_his    FOR &ref_user..stock_index_his;
 CREATE SYNONYM user_etf           FOR &ref_user..user_etf;
+CREATE SYNONYM v_k2i_atm          FOR &ref_user..v_k2i_atm;
 
 -- 2-3. 동기화 프로시저 synonym. CLI 가 sp_mst_etf_sync 를 이름 그대로 부른다.
 CREATE SYNONYM sp_mst_bond_sync        FOR &ref_user..sp_mst_bond_sync;
@@ -156,27 +166,72 @@ CREATE SYNONYM sp_stock_index_his_sync FOR &ref_user..sp_stock_index_his_sync;
 -- synonym 이 있는데 권한이 없는 경우를 잡는다. 그 조합이 ORA-01031 로
 -- 나타나는데, 그 메시지만 보고는 권한 문제인지 알기 어렵다. 여기서 미리
 -- 전부 한 번 읽어 보고 깨지는 것을 이름으로 알려 준다.
+--
+-- 기대 목록을 **적어 두고** 비교한다. 있는 것만 훑던 처음 판은 빠진 synonym 을
+-- 볼 수 없었고(없으면 루프를 돌지 않는다), 그래서 v_k2i_atm 이 통과했다 --
+-- 빌더 41개가 그걸 읽는데 생성이 ORA-00942 로 죽어서야 드러났다. "있는 것이
+-- 멀쩡한가" 와 "있어야 할 것이 있나" 는 다른 질문이고, 후자가 실제로 아픈
+-- 쪽이다.
 SET SERVEROUTPUT ON
 DECLARE
-  n NUMBER;
-  bad NUMBER := 0;
+  n       NUMBER;
+  bad     NUMBER := 0;
+  missing NUMBER := 0;
+  -- 이 계정에서 읽을 수 있어야 하는 이름. 양쪽에서 같은 블록을 돌리므로 두
+  -- 목록을 합쳐 두고, 자기 계정에 없는 것은 "다른 쪽 몫" 으로 건너뛴다.
+  TYPE name_list IS TABLE OF VARCHAR2(128);
+  scrap_side name_list := name_list(
+    'krx_index_mst', 'meta_fuopt_info', 'meta_maturity', 'mst_bond', 'mst_etf',
+    'mst_fuopt', 'mst_index', 'mst_stock', 'stock_index_his', 'user_etf',
+    'v_k2i_atm', 'mst_code', 'user_code_map', 'v_code_map', 'v_code_unmapped');
+  ref_side name_list := name_list(
+    'fo_idx_code_mst', 'kis_index_daily', 'krx_deriv_info', 'krx_etf_daily',
+    'krx_etf_list', 'krx_index_daily', 'krx_stock_base', 'ksd_bond_isin',
+    'src_code', 'v_ace_etf', 'v_kodex_etf', 'v_plus_etf', 'v_sol_etf');
+  expected name_list;
+  owns_scrap NUMBER;
 BEGIN
-  FOR s IN (SELECT synonym_name FROM user_synonyms ORDER BY synonym_name) LOOP
+  -- 어느 계정인지는 소유한 표로 안다 -- 계정 이름을 적지 않는다.
+  SELECT COUNT(*) INTO owns_scrap FROM user_tables WHERE table_name = 'API_MST';
+  expected := CASE WHEN owns_scrap > 0 THEN scrap_side ELSE ref_side END;
+
+  FOR i IN 1 .. expected.COUNT LOOP
     BEGIN
-      EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM ' || s.synonym_name || ' WHERE ROWNUM <= 1'
+      EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM ' || expected(i) || ' WHERE ROWNUM <= 1'
         INTO n;
-      DBMS_OUTPUT.PUT_LINE(RPAD(s.synonym_name, 26) || 'ok');
+      DBMS_OUTPUT.PUT_LINE(RPAD(expected(i), 26) || 'ok');
     EXCEPTION
       WHEN OTHERS THEN
-        -- 프로시저 synonym 은 SELECT 가 안 되는 것이 정상이다.
-        IF SQLCODE = -942 OR SQLCODE = -1031 THEN
+        IF SQLCODE = -942 THEN
+          missing := missing + 1;
+          DBMS_OUTPUT.PUT_LINE(RPAD(expected(i), 26) || 'MISSING  synonym 이 없다');
+        ELSIF SQLCODE = -1031 THEN
           bad := bad + 1;
-          DBMS_OUTPUT.PUT_LINE(RPAD(s.synonym_name, 26) || 'FAIL  ' || SQLERRM);
+          DBMS_OUTPUT.PUT_LINE(RPAD(expected(i), 26) || 'DENIED   ' || SQLERRM);
+        ELSE
+          RAISE;
         END IF;
     END;
   END LOOP;
+
+  -- 적어 둔 목록에 없는데 존재하는 synonym. 목록이 낡았다는 뜻이다.
+  FOR s IN (SELECT synonym_name FROM user_synonyms ORDER BY synonym_name) LOOP
+    DECLARE
+      known BOOLEAN := FALSE;
+    BEGIN
+      FOR i IN 1 .. expected.COUNT LOOP
+        IF UPPER(expected(i)) = s.synonym_name THEN known := TRUE; END IF;
+      END LOOP;
+      -- 프로시저 synonym 은 SELECT 대상이 아니라 목록에 없는 것이 정상이다.
+      IF NOT known AND s.synonym_name NOT LIKE 'SP!_%' ESCAPE '!' THEN
+        DBMS_OUTPUT.PUT_LINE(RPAD(LOWER(s.synonym_name), 26)
+                             || 'EXTRA    위 목록에 없다 -- 목록을 고쳐라');
+      END IF;
+    END;
+  END LOOP;
+
   DBMS_OUTPUT.PUT_LINE('--');
-  DBMS_OUTPUT.PUT_LINE(CASE WHEN bad = 0 THEN 'synonym 전부 읽힘'
-                            ELSE bad || ' 개가 권한 없음 -- 위 GRANT 를 다시 확인' END);
+  DBMS_OUTPUT.PUT_LINE('기대 ' || expected.COUNT || ' 개 중 없음 ' || missing
+                       || ' · 권한없음 ' || bad);
 END;
 /
