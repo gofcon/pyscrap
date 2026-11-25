@@ -4,7 +4,13 @@
 v2 의 여러 컬럼으로 갈린 자리마다 "어느 값이 어디로 갔는지" 가 여기 적혀
 있고, 그게 docs/SCHEMA-V2.md 4절의 결정을 실제 데이터에 적용한 모습이다.
 
-읽기는 v1(``ORACLE_*``), 쓰기는 v2 SCRAP(``V2_ORACLE_*_SCRAP``). 쓰기를
+읽기는 v1(``ORACLE_*_V1``), 쓰기는 v2 SCRAP(``ORACLE_*``).
+
+두 접두사가 한 번 뒤바뀌었다. 처음에는 ``ORACLE_*`` 가 v1 이고 v2 가
+``V2_*`` 였는데, v2 가 별도 인스턴스이고 계정 이름·자격이 v1 과 같아서
+``ORACLE_*`` 를 v2 로 돌리는 것이 깔끔했다(그러면 app.db_config 과
+app.db.engine 을 고칠 것이 없다). 그 뒤로 v1 은 ``_V1`` 로만 닿는다 --
+_v1_connect 참고. 쓰기를
 SQLModel 로 하는 이유: JSON·XMLTYPE·BOOLEAN 바인딩을 엔진이 런타임에 쓰는 그
 경로로 통과시킨다 -- 옮긴 행이 엔진으로 다시 읽히는지가 이행의 합격 조건이고,
 raw INSERT 로는 그것을 검증하지 못한다 (JSON 컬럼에 문자열을 바인딩하면 JSON
@@ -270,13 +276,38 @@ SELECT build_id, api_id, JSON_SERIALIZE(macro_params_json), is_active,
 
 
 def _v1_connect():
-    kw: dict[str, Any] = dict(user=os.environ["ORACLE_USER"],
-                              password=os.environ["ORACLE_PASSWORD"],
-                              dsn=os.environ["ORACLE_DSN"])
-    wallet = os.environ.get("ORACLE_WALLET_DIR")
+    """v1 로 접속한다. **v1 전용 변수**를 읽는다.
+
+    처음에는 ``ORACLE_*`` 를 읽었다. 그때는 그것이 v1 이고 v2 는 ``V2_*`` 로
+    따로 있었다. 지금은 뒤바뀌었다 -- v2 가 별도 인스턴스이고 계정 이름과
+    자격이 v1 과 같아서, ``ORACLE_*`` 가 그대로 **v2** 를 가리키고 v1 과의
+    차이는 DSN 뿐이다.
+
+    그래서 그대로 두면 이 스크립트가 v2 를 읽어 v2 에 쓴다. 실제로 그렇게
+    됐고, v1 컬럼 이름으로 질의하다 ORA-00904 로 죽었다 -- 망가지지는
+    않았지만 "엉뚱한 DB 를 읽고 있다" 는 것이 그 메시지에 안 나온다.
+
+    이름을 ``ORACLE_*_V1`` 로 못 박는다. 없으면 멈추고 왜인지 말한다 --
+    이행은 끝났고 이 스크립트는 일회성이므로, 그 변수가 없는 것이 정상이다."""
+    missing = [k for k in ("ORACLE_USER_V1", "ORACLE_PASSWORD_V1", "ORACLE_DSN_V1")
+               if not os.environ.get(k)]
+    if missing:
+        raise SystemExit(
+            "v1 접속 정보가 없다 -- .env 에 " + ", ".join(missing) + " 가 필요하다.\n\n"
+            "이행은 2026-11-25 에 끝났고 이 스크립트는 일회성 부트스트랩이다.\n"
+            "ORACLE_* 는 이제 v2(SCRAP)를 가리키므로 그쪽을 읽게 두면 v2 를\n"
+            "v2 로 '이행' 하게 된다. v1 을 다시 읽어야 할 때만 위 변수를 넣는다."
+        )
+    kw: dict[str, Any] = dict(user=os.environ["ORACLE_USER_V1"],
+                              password=os.environ["ORACLE_PASSWORD_V1"],
+                              dsn=os.environ["ORACLE_DSN_V1"])
+    # 월렛은 인스턴스가 달라도 같은 것을 쓰고 있어 공용 변수를 그대로 받는다.
+    # v1 전용 월렛이 필요하면 ORACLE_WALLET_DIR_V1 로 덮는다.
+    wallet = os.environ.get("ORACLE_WALLET_DIR_V1") or os.environ.get("ORACLE_WALLET_DIR")
     if wallet:
         kw.update(config_dir=wallet, wallet_location=wallet,
-                  wallet_password=os.environ.get("ORACLE_WALLET_PASSWORD"))
+                  wallet_password=(os.environ.get("ORACLE_WALLET_PASSWORD_V1")
+                                   or os.environ.get("ORACLE_WALLET_PASSWORD")))
     return oracledb.connect(**kw)
 
 
@@ -424,15 +455,6 @@ def transform_builder(row: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _point_env_at_v2() -> None:
-    for dst, src in (("ORACLE_USER", "V2_ORACLE_USER_SCRAP"),
-                     ("ORACLE_PASSWORD", "V2_ORACLE_PASSWORD_SCRAP"),
-                     ("ORACLE_DSN", "V2_ORACLE_DSN"),
-                     ("ORACLE_WALLET_DIR", "V2_ORACLE_WALLET_DIR"),
-                     ("ORACLE_WALLET_PASSWORD", "V2_ORACLE_WALLET_PASSWORD")):
-        os.environ[dst] = os.environ[src]
-
-
 def apply_to_v2(apis: list[dict], builders: list[dict], force: bool = False) -> None:
     """v2 의 두 표를 비우고 새로 채운다. **일회성 부트스트랩이다.**
 
@@ -450,7 +472,8 @@ def apply_to_v2(apis: list[dict], builders: list[dict], force: bool = False) -> 
     이것을 override 표로 풀지 않은 이유: 그러면 이 스크립트가 설정 관리
     도구가 되고, 같은 설정이 두 곳(여기와 DB)에 살면서 어느 쪽이 정본인지
     흐려진다. 이행 스크립트는 이행만 한다."""
-    _point_env_at_v2()
+    # 환경변수를 바꿔 끼우지 않는다 -- ORACLE_* 가 곧 v2(SCRAP)이고,
+    # v1 은 _v1_connect 가 _V1 변수로 따로 연다.
     from sqlalchemy import delete as sa_delete
     from sqlmodel import Session, select
 
@@ -489,7 +512,6 @@ def validate(apis: list[dict]) -> list[str]:
 
     쓰기 전에 돈다. 이행이 통째로 실패하는 쪽이, 절반 적재된 상태로 멈춰
     "어디까지 들어갔지" 를 세는 쪽보다 낫다."""
-    _point_env_at_v2()
     from app.db.models import ApiMst
     from app.errors import ScrapeError
     from app.services.job_builder import validate_api_config
