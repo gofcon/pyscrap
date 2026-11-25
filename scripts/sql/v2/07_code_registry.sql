@@ -34,7 +34,9 @@ CREATE TABLE src_code (
   column_name   VARCHAR2(128 CHAR) NOT NULL,
   code_value    VARCHAR2(400 CHAR) NOT NULL,
 
-  source        VARCHAR2(20 CHAR),    -- KRX KSD KIS AMC. 표 이름에서 끌어낸다
+  -- api_mst.source_name 과 같은 어휘이고 같은 이름을 쓴다. 한 개념에
+  -- 이름이 둘이면 조인할 때마다 어느 쪽인지 생각해야 한다.
+  source_name   VARCHAR2(20 CHAR),    -- KRX KSD KIS AMC. 표 이름에서 끌어낸다
   row_cnt       NUMBER,               -- 그 값이 나온 행 수
   distinct_cnt  NUMBER,               -- 그 컬럼의 고유값 수 (후보인지 판단)
 
@@ -133,7 +135,7 @@ COMMENT ON TABLE v_code_map IS '원천 값 -> 우리 코드/이름. 결과 테�
 -- src_code 는 SCRAP 소유이고 여기서는 synonym 으로 닿는다 -- 그 GRANT 에
 -- WITH GRANT OPTION 이 붙어 있어야 이 뷰를 SCRAP 에 되돌려 줄 수 있다.
 CREATE OR REPLACE VIEW v_code_unmapped AS
-SELECT s.source, s.table_name, s.column_name, s.code_value,
+SELECT s.source_name, s.table_name, s.column_name, s.code_value,
        s.row_cnt, s.distinct_cnt, s.first_seen, s.last_seen
   FROM src_code s
  WHERE NOT EXISTS (SELECT 1

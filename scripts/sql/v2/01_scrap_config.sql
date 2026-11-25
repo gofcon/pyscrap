@@ -9,7 +9,7 @@
 --   api_mst.response_parse_json -> parse_json + session_json + staging_json
 --                                + options_json (스위치들)
 --   api_mst.request_type      -> protocol + method
---   api_mst.api_group         -> source + domain
+--   api_mst.api_group         -> source_name + domain
 --   api_mst.output_tables_json -> record_map_json
 --   builder.macro_params_json -> cartesian_param_json
 --   *.execution_cycle         -> schedule_tag + snapshot_unit
@@ -31,7 +31,14 @@ CREATE TABLE api_mst (
 
   -- api_group 을 두 축으로 가른 것. 13개 값이 소스/용도/전송방식을 섞어
   -- 쓰고 있었다 (docs/SCHEMA-V2.md 7.4).
-  source             VARCHAR2(20 CHAR)   NOT NULL,   -- KIS KRX KSD DART AMC
+  --
+  -- source 가 아니라 source_name 이다. 예약어 때문은 아니다 -- Oracle 에서
+  -- source 는 컬럼 이름으로 전 자리에서 통한다(측정). 너무 일반적인 말이라
+  -- 이 저장소의 다른 "source" 와 섞이는 쪽이 문제였다.
+  --
+  -- host 가 아니다. 값이 기관이고 AMC 하나가 운용사 사이트 아홉 곳이다.
+  -- 호스트는 api_url 에서 뽑아 쓰는 별개 개념이다(호출 간격·차단기의 단위).
+  source_name        VARCHAR2(20 CHAR)   NOT NULL,   -- KIS KRX KSD DART AMC
   domain             VARCHAR2(20 CHAR),              -- DERIV ETF BOND STOCK AUTH
 
   -- request_type 이 요청 방식과 HTTP 메서드를 겸하고 있었다. 가르면
@@ -168,7 +175,7 @@ CREATE TABLE api_mst (
 );
 
 
-CREATE INDEX ix_api_mst_source ON api_mst (source);
+CREATE INDEX ix_api_mst_source_name ON api_mst (source_name);
 CREATE INDEX ix_api_mst_domain ON api_mst (domain);
 
 COMMENT ON TABLE  api_mst IS 'API 정의 한 행 = 소스 하나. 코드가 아니라 이 행을 넣어 소스를 붙인다';

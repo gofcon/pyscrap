@@ -309,7 +309,7 @@ response_parse_json  →  parse_json      파싱 명세만
 |---|---|---|
 | `output_tables_json` | `record_map_json` | 키가 테이블이 아니라 셀렉터다. `{셀렉터: 테이블}` |
 | `api_job.description` | `note` + `engine_note` | 지금 사람이 쓴 설명과 마지막 실행 결과가 **같은 칸**을 쓴다 (7.2) |
-| `api_mst.api_group` | `source` + `domain` | 13개 값이 두 축을 섞어 쓴다 (7.4) |
+| `api_mst.api_group` | `source_name` + `domain` | 13개 값이 두 축을 섞어 쓴다 (7.4) |
 | `behavior_json` | 그대로 | 하는 일을 정확히 말한다 |
 | `save_mode` | 그대로 | `overwrite`/`append` 로 충분하다 |
 
@@ -677,7 +677,7 @@ user_code_map  source, src_code_set, src_value  →  code_set, code
 ```
 SRC_CODE       SCRAP   결과 컬럼에서 수확한 값        프로시저
   PK (table_name, column_name, code_value)
-  source · row_cnt · distinct_cnt · first_seen · last_seen
+  source_name · row_cnt · distinct_cnt · first_seen · last_seen
 
 USER_CODE_MAP  REF     원천 값 -> 우리 코드            사람
   PK (table_name, column_name, code_value)   ← SRC_CODE 와 같은 키
@@ -869,7 +869,7 @@ KRX · KRX_API · KRX_DATA · Seibro_api · Seibro_web · test
 `KIS_*`는 소스 기준, `ETF_*`는 용도 기준, `Seibro_api`/`Seibro_web`은 소스+전송방식이다. 같은 컬럼에 세 가지 분류 체계가 있다. 화면 트리 묶기에만 쓰이므로 당장 문제는 없지만, 늘어나면 어디에 넣을지가 매번 판단이 된다.
 
 ```
-api_group  →  source   KIS | KRX | KSD | DART | AMC        누가 주는가
+api_group  →  source_name  KIS | KRX | KSD | DART | AMC    누가 주는가
               domain   DERIV | ETF | BOND | STOCK | AUTH   무엇에 관한가
 ```
 
@@ -938,11 +938,11 @@ v1 의 `api_mst` 58행 · `api_job_builder` 95행에서 **57행 · 94행**이 v2
 조건이고, raw INSERT 로는 그것을 검증하지 못한다(JSON 컬럼에 문자열을
 바인딩하면 JSON 스칼라로 들어가는 함정을 1절 측정에서 한 번 밟았다).
 
-**`api_group` 13개 → `source` × `domain` 격자.** api_id 접두사로 정한다.
+**`api_group` 13개 → `source_name` × `domain` 격자.** api_id 접두사로 정한다.
 그룹 값으로는 안 된다 -- `ETF_PDF` 한 그룹에 운용사 5곳과 KRX 와 KIS 가 섞여
-있어서 그룹→source 가 함수가 아니다.
+있어서 그룹→`source_name` 이 함수가 아니다.
 
-| source | domain | 행 |
+| source_name | domain | 행 |
 |---|---|---|
 | AMC | ETF | 13 |
 | KIS | AUTH 2 · DERIV 5 · ETF 1 · INDEX 1 | 9 |
@@ -951,10 +951,10 @@ v1 의 `api_mst` 58행 · `api_job_builder` 95행에서 **57행 · 94행**이 v2
 | DART | DISCLOSURE | 2 |
 | | | **57** |
 
-`TEST` 는 옮기지 않았다(아래 "돈 적 없던 행 둘"). 그래서 `source` 축은 다섯 종이고
+`TEST` 는 옮기지 않았다(아래 "돈 적 없던 행 둘"). 그래서 `source_name` 축은 다섯 종이고
 분류체계 혼입이 없다.
 
-오픈API(`KRX_API`)와 데이터포털(`KRX_DATA`)을 source 로 가르지 않았다. 같은
+오픈API(`KRX_API`)와 데이터포털(`KRX_DATA`)을 `source_name` 으로 가르지 않았다. 같은
 기관이고, 포털이 막힐 때 오픈API 는 멀쩡하다는 구분은 **호스트 단위 차단기가
 이미** 하고 있다(`execution._HostIndex`). `Seibro_api`/`Seibro_web` 도 같은
 이유로 하나다 -- api/web 은 전송 방식이지 소스가 아니다.
@@ -1113,7 +1113,7 @@ record_map_json   NULL   어느 표에 넣나  <- 이것이 없으면 아무것�
 `api_job` 이 없었다. 겨누던 빌더 `TEST_BUILDER`(비활성)도 함께 빠졌다.
 7.4 가 "`test` 는 `is_active` 또는 별도 플래그로 옮긴다" 고 한 자리인데
 `api_mst` 에는 `is_active` 가 없어서, 빼는 것이 그 뜻에 맞다 -- 남기면
-`source` 축에 `TEST` 가 하나 생겨 7.4 가 없애려던 분류체계 혼입이 된다.
+`source_name` 축에 `TEST` 가 하나 생겨 7.4 가 없애려던 분류체계 혼입이 된다.
 
 **v1 에는 그대로 있다.** 이 스크립트는 v1 을 읽기만 하고, 그쪽은 돌고 있는
 시스템이다. v1 에서도 지울지는 별도 결정이다.
@@ -1270,6 +1270,32 @@ api_rst : id · api_id · job_id · result_json · target_day · updated_at
 | `param_axes_json` | `cartesian_param_json` | "축"은 구현 용어. 곱해진다는 사실을 이름이 말한다 |
 | `snapshot_grain` | `snapshot_unit` | `grain` 대신. 구현은 `_floor_datetime` 이라 `snapshot_floor` 가 정확하지만 명사로 어색하다 |
 | `last_result` | `engine_note` | `note` 와 같은 명사에 주인만 다르게. `engine_log` 는 `api_job_log` 와 겹쳐 피했다 |
+| `source` | `source_name` | 아래 |
+
+**`source` → `source_name` (2026-11-25).** 예약어 때문은 **아니다**. `v$reserved_words`
+가 이 계정에서 안 보여 직접 써 봤고, Oracle 은 `source` 를 컬럼 이름으로 전
+자리에서 받는다.
+
+```
+이름             CREATE     SELECT     WHERE      ORDER BY   VIEW
+source         ok         ok         ok         ok         ok
+domain         ok         ok         ok         ok         ok
+```
+
+바꾼 이유는 **너무 일반적인 말**이라는 것이다. 이 저장소에서 "source" 가
+가리키는 것이 여럿이다 -- `pagination_json` 의 `"source"` 키는 응답의 어느
+자리를 보라는 뜻이고(`{"source": "header:tr_cont"}`), 결과 모델 주석의
+source 는 그 API 자체를 가리킨다.
+
+처음 제안은 `source_host` 였는데 쓰지 않았다. **값이 호스트가 아니다** -- 기관
+이고, `AMC` 하나가 운용사 사이트 아홉 곳이며 `KRX` 는 `data.krx.co.kr` ·
+`isin.krx.co.kr` · 오픈API 셋이다. 그리고 이 프로젝트에는 진짜 호스트 개념이
+따로 있다: `execution._HostIndex` 가 `api_url` 에서 뽑아 호출 간격과 차단기의
+단위로 쓴다. 같은 이름을 두 뜻에 쓰면 그 둘을 구별해 온 이유가 흐려진다.
+
+`src_code.source` 도 같이 바꿨다. 같은 어휘(`KRX`·`KSD`·`KIS`·`AMC`)를 담는
+컬럼이고, 한 개념에 이름이 둘이면 조인할 때마다 어느 쪽인지 생각해야 한다.
+`src_code` 를 읽는 REF 의 `v_code_unmapped` 는 그 때문에 다시 만들었다.
 
 ### 전제 둘 (엔진 변경) -- 완료 2026-11-25
 

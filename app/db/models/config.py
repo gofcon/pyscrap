@@ -53,7 +53,18 @@ class ApiMst(SQLModel, table=True):
 
     # v1 api_group 을 두 축으로 가른 것. 13개 값이 소스/용도/전송방식을 섞어
     # 쓰고 있었다 (docs/SCHEMA-V2.md 7.4).
-    source: str = Field(index=True, max_length=20)              # KIS KRX KSD DART AMC
+    #
+    # 이름이 source 가 아니라 source_name 인 이유는 사람이 읽기 좋게 하려는
+    # 것이다. Oracle 에서 source 는 예약어가 아니다(측정: CREATE·SELECT·
+    # WHERE·ORDER BY·VIEW 전 자리에서 통한다) -- 다만 너무 일반적인 말이고,
+    # 이 저장소에는 "원천" 이라는 뜻으로 쓰이는 자리가 여럿이다
+    # (pagination_json 의 "source" 키는 응답의 어느 자리를 보라는 뜻이고,
+    # 결과 모델 주석의 source 는 그 API 를 가리킨다).
+    #
+    # host 가 아니다. 값이 기관이고, AMC 하나가 운용사 사이트 아홉 곳이며
+    # KRX 는 세 호스트다. 호스트는 api_url 에서 뽑아 쓰는 별개 개념이다
+    # (execution._HostIndex -- 호출 간격과 차단기의 단위).
+    source_name: str = Field(index=True, max_length=20)         # KIS KRX KSD DART AMC
     domain: Optional[str] = Field(default=None, index=True, max_length=20)  # DERIV ETF BOND …
 
     # v1 request_type 이 요청 방식과 HTTP 메서드를 겸했다. 가르면 체크 제약이

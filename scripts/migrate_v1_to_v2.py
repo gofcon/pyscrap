@@ -30,17 +30,17 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ---------------------------------------------------------------------------
-# api_group 13개 -> source + domain
+# api_group 13개 -> source_name + domain
 # ---------------------------------------------------------------------------
 # v1 의 api_group 은 세 가지 분류 체계가 섞여 있었다 (docs/SCHEMA-V2.md 7.4):
 # KIS_* 는 소스 기준, ETF_* 는 용도 기준, Seibro_api/Seibro_web 은 소스+전송
 # 방식. 그래서 "어디에 넣을지" 가 새 행마다 판단이었다.
 #
-# 두 축으로 가른다. source 는 누가 주는가 -- 그 사이트가 막히거나 바뀌면 함께
+# 두 축으로 가른다. source_name 은 누가 주는가 -- 그 사이트가 막히거나 바뀌면 함께
 # 멈추는 단위다. domain 은 무엇에 관한가 -- 분석 쪽에서 묶는 단위다.
 #
 # api_id 접두사로 정한다. 그룹 값으로는 안 된다: ETF_PDF 한 그룹에 운용사 5곳과
-# KRX 와 KIS 가 섞여 있어서, 그룹 -> source 가 함수가 아니다.
+# KRX 와 KIS 가 섞여 있어서, 그룹 -> source_name 이 함수가 아니다.
 _SOURCE_DOMAIN: dict[str, tuple[str, str | None]] = {
     # 운용사가 자기 ETF 를 공시하는 것. 사이트가 저마다 달라 함께 죽지 않지만,
     # 하나가 죽으면 그 운용사 것만 죽는다는 점에서 한 소스로 묶인다.
@@ -60,7 +60,7 @@ _SOURCE_DOMAIN: dict[str, tuple[str, str | None]] = {
     "FO_IDX_CODE_MST":   ("KIS", "DERIV"),
     "KIS_INDEX_":        ("KIS", "INDEX"),
     "KIS_ETF_":          ("KIS", "ETF"),
-    # 거래소. 오픈API(KRX_API)와 데이터포털(KRX_DATA)을 source 로 가르지 않는
+    # 거래소. 오픈API(KRX_API)와 데이터포털(KRX_DATA)을 source_name 으로 가르지 않는
     # 이유: 같은 기관이고, 포털이 막힐 때 오픈API 는 멀쩡하므로 그 구분은
     # 호스트 단위 차단기가 이미 하고 있다 (execution._HostIndex).
     "KRX_DATA_LOGIN":    ("KRX", "AUTH"),
@@ -78,7 +78,7 @@ _SOURCE_DOMAIN: dict[str, tuple[str, str | None]] = {
     # 그쪽은 코드 앞자리로 **목록**을 긁고 이쪽은 ISIN 하나의 상세를 받는다.
     # 아직 돈 적은 없고 쓰기로 결정된 행이다 (2026-11-25).
     "ISIN_INFO":         ("KRX", "STOCK"),
-    # 예탁결제원(세이브로). api/web 은 전송 방식이라 source 가 아니다.
+    # 예탁결제원(세이브로). api/web 은 전송 방식이라 source_name 이 아니다.
     "KSD_":   ("KSD", "BOND"),
     "DART_":  ("DART", "DISCLOSURE"),
 }
@@ -87,7 +87,7 @@ _SOURCE_DOMAIN: dict[str, tuple[str, str | None]] = {
 # 읽기만 한다) -- v2 에만 넣지 않는다.
 #
 # TEST 는 api_url 이 'https://' 뿐인 스텁이고 api_job 이 하나도 없었다.
-# 옮기면 source 축에 'TEST' 가 하나 남는데, 7.4 가 없애자고 한 바로 그
+# 옮기면 source_name 축에 'TEST' 가 하나 남는데, 7.4 가 없애자고 한 바로 그
 # 분류체계 혼입이다. 그 행을 겨누는 빌더(TEST_BUILDER)도 함께 빠진다.
 _DROP = {
     "TEST": "api_url 이 'https://' 뿐인 스텁. api_job 이 하나도 없다",
@@ -133,7 +133,7 @@ def _source_domain(api_id: str) -> tuple[str, str | None]:
     for prefix in sorted(_SOURCE_DOMAIN, key=len, reverse=True):
         if api_id.startswith(prefix):
             return _SOURCE_DOMAIN[prefix]
-    raise SystemExit(f"{api_id}: source/domain 매핑이 없다 -- _SOURCE_DOMAIN 에 더해라")
+    raise SystemExit(f"{api_id}: source_name/domain 매핑이 없다 -- _SOURCE_DOMAIN 에 더해라")
 
 
 def _split_parse(blob: dict[str, Any] | None) -> tuple[dict, dict, dict, dict]:
@@ -341,7 +341,7 @@ def _typed_columns(record_map: dict[str, str]) -> set[str] | None:
 
 
 def transform_api(row: dict, demoted: list[str] | None = None) -> dict:
-    source, domain = _source_domain(row["api_id"])
+    source_name, domain = _source_domain(row["api_id"])
     parse, session, staging, options = _split_parse(row["response_parse_json"])
     job_keys, row_stamp, is_repeated, snapshot_column, derived = \
         _split_key_params(row["key_params_list"])
@@ -386,7 +386,7 @@ def transform_api(row: dict, demoted: list[str] | None = None) -> dict:
 
     return dict(
         api_id=row["api_id"], api_name=row["api_name"],
-        source=source, domain=domain,
+        source_name=source_name, domain=domain,
         protocol=protocol, method=method, api_url=row["api_url"],
         header_json=row["header_json"] or None,
         payload_type=row["payload_type"], payload_json=row["payload_json"],
@@ -498,14 +498,14 @@ def main() -> int:
     apis = [transform_api(r, demoted) for r in v1_apis]
     builders = [transform_builder(r) for r in v1_builders]
 
-    # source x domain 격자
+    # source_name x domain 격자
     grid: dict[tuple[str, str | None], int] = {}
     for row in apis:
-        key = (row["source"], row["domain"])
+        key = (row["source_name"], row["domain"])
         grid[key] = grid.get(key, 0) + 1
-    print("source x domain:")
-    for (source, domain), n in sorted(grid.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
-        print(f"  {source:6} {str(domain):12} {n:3}")
+    print("source_name x domain:")
+    for (source_name, domain), n in sorted(grid.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        print(f"  {source_name:6} {str(domain):12} {n:3}")
 
     # 갈라진 컬럼이 실제로 몇 행에 값을 남겼나
     print("\nresponse_parse_json -> 네 컬럼:")

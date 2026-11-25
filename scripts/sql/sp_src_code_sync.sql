@@ -46,7 +46,7 @@ BEGIN
              WHEN c.table_name LIKE 'KIS%' OR c.table_name LIKE 'FO!_%' ESCAPE '!'
                                            THEN 'KIS'
              ELSE 'AMC'
-           END AS source
+           END AS source_name
       FROM user_tab_columns c
       JOIN user_tab_columns j
         ON j.table_name = c.table_name AND j.column_name = 'JOB_ID'
@@ -91,9 +91,9 @@ BEGIN
       ' WHEN MATCHED THEN UPDATE SET t.row_cnt = s.row_cnt,'                || CHR(10) ||
       '      t.distinct_cnt = ' || c.num_distinct || ', t.last_seen = SYSDATE' || CHR(10) ||
       ' WHEN NOT MATCHED THEN INSERT (table_name, column_name, code_value,' || CHR(10) ||
-      '      source, row_cnt, distinct_cnt, first_seen, last_seen)'         || CHR(10) ||
+      '      source_name, row_cnt, distinct_cnt, first_seen, last_seen)'         || CHR(10) ||
       ' VALUES (s.table_name, s.column_name, s.code_value, '''
-             || c.source || ''', s.row_cnt, ' || c.num_distinct
+             || c.source_name || ''', s.row_cnt, ' || c.num_distinct
              || ', SYSDATE, SYSDATE)';
 
     BEGIN
