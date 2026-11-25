@@ -41,13 +41,26 @@ CREATE OR REPLACE PROCEDURE sp_src_code_sync (
 --
 -- sp_run_daily_batch2 의 늦은 단계에 둔다. 그날 수집이 끝난 뒤여야 새 값이
 -- 보인다.
+--
+-- 뷰 쪽 비용은 api_rst 가 커지면 같이 커진다. 표는 통계로 후보를 좁혀서
+-- 저카디널리티 컬럼만 훑지만, 뷰는 통계가 없어 **후보를 가리기 위해 일단
+-- 훑는다** -- 고카디널리티 컬럼(v_isin_bond_info.isin 같은 것)은 전수 GROUP BY
+-- 를 하고 나서 임계값 초과로 버려진다. 파티션 프루닝이 걸려 한 소스 몫만
+-- 읽는 것이 완충이지만(실측: 뷰 질의가 그 api_id 파티션만 읽는다), ISIN 채권
+-- 상세가 38만 행쯤 쌓이면 재 봐야 한다. 그때 손잡이는 p_table 로 범위를
+-- 좁히는 것이다.
+--
+-- v_isin_bond_info.label 처럼 코드가 아닌 어휘도 들어온다(화면 섹션 이름
+-- 16종). 매핑할 대상이 없으니 v_code_unmapped 에 남는데, 16행이라 지금은
+-- 그냥 둔다 -- 조용히 버리는 것보다 보이는 쪽이 낫다.
   v_n    PLS_INTEGER;
-  v_sql  VARCHAR2(4000);
+  v_sql  VARCHAR2(8000);
 BEGIN
   p_rows := 0;
 
   FOR c IN (
-    SELECT c.table_name, c.column_name, c.num_distinct,
+    -- 표: 통계로 후보를 좁힌다 (아래 "후보는 통계로 고른다" 참고).
+    SELECT c.table_name, c.column_name, 'N' AS is_view,
            CASE
              WHEN c.table_name LIKE 'KRX%' THEN 'KRX'
              WHEN c.table_name LIKE 'KSD%' THEN 'KSD'
@@ -79,29 +92,87 @@ BEGIN
        AND SUBSTR(c.column_name, -3) NOT IN ('_DD', '_DT', '_AT')
        AND SUBSTR(c.column_name, -4) NOT IN ('DATE', '_YMD', 'YYMM')
        AND (p_table IS NULL OR c.table_name = UPPER(p_table))
-     ORDER BY c.table_name, c.column_name
+
+    UNION ALL
+
+    -- api_rst 위의 뷰. 두 층으로 내린 소스가 거기 있고, 그 값은 result_json
+    -- (JSON 타입) 안이라 표를 훑는 위 분기가 **보지 못한다** -- data_type LIKE
+    -- 'VARCHAR%' 에 안 걸린다. 그래서 두 층 이전이 수확을 깎았다: 운용사 ETF
+    -- 표의 코드 컬럼 11개(FUNDTYPENM·TYPENM·THEME_TAG·PENSION_TAG …)가
+    -- 조용히 빠져 있었다.
+    --
+    -- 뷰 컬럼은 타입과 이름이 사전에 그대로 올라온다(RETURNING 타입이
+    -- data_type/data_length 가 된다) 므로 위와 같은 필터가 다 먹는다. 단
+    -- **통계가 없다** -- 10개 뷰의 모든 컬럼이 num_distinct IS NULL 이다.
+    -- 그래서 여기서는 그 조건을 걸지 않고, 카디널리티 판정을 아래 MERGE 의
+    -- GROUP BY 안에서 한다 (COUNT(*) OVER ()).
+    --
+    -- api_rst 위의 뷰로 한정하는 이유: user_tab_columns 는 모든 뷰를
+    -- 포함하므로, 타입 표 위의 뷰까지 들어오면 같은 어휘가 table_name 두
+    -- 개로 쌓인다(src_code PK 가 (table_name, column_name, code_value)다).
+    -- 그러면 "이 둘은 같은 뜻" 을 사람이 다시 판단해야 한다.
+    SELECT c.table_name, c.column_name, 'Y' AS is_view,
+           -- 이름에서 소스를 끌어낼 때 'V_' 를 떼야 한다. 떼지 않으면
+           -- V_KRX_* 가 KRX 로 안 잡히고 전부 AMC 로 떨어진다.
+           CASE
+             WHEN SUBSTR(c.table_name, 3) LIKE 'KRX%' THEN 'KRX'
+             WHEN SUBSTR(c.table_name, 3) LIKE 'KSD%' THEN 'KSD'
+             WHEN SUBSTR(c.table_name, 3) LIKE 'KIS%'
+               OR SUBSTR(c.table_name, 3) LIKE 'FO!_%' ESCAPE '!' THEN 'KIS'
+             WHEN SUBSTR(c.table_name, 3) LIKE 'ISIN%' THEN 'KRX'
+             ELSE 'AMC'
+           END AS source_name
+      FROM user_tab_columns c
+      JOIN user_tab_columns j
+        ON j.table_name = c.table_name AND j.column_name = 'JOB_ID'
+     WHERE c.data_type LIKE 'VARCHAR%'
+       AND c.table_name IN (SELECT d.name FROM user_dependencies d
+                             WHERE d.type = 'VIEW' AND d.referenced_name = 'API_RST')
+       AND c.column_name NOT IN ('API_ID', 'JOB_ID', 'DESCRIPTION', 'NOTE')
+       AND SUBSTR(c.column_name, -3) NOT IN ('_DD', '_DT', '_AT')
+       AND SUBSTR(c.column_name, -4) NOT IN ('DATE', '_YMD', 'YYMM')
+       AND (p_table IS NULL OR c.table_name = UPPER(p_table))
+     ORDER BY 1, 2
   ) LOOP
-    -- 값이 긴 것은 키에 못 들어간다. 400자를 넘기면 그 컬럼은 건너뛴다 --
+    -- 값이 긴 것은 키에 못 들어간다. 400자를 넘기면 그 값은 건너뛴다 --
     -- 코드성 값이 그만큼 길 일은 없고, 넘긴다면 코드 컬럼이 아니다.
+    --
+    -- 카디널리티 판정이 **이 질의 안에** 있다. COUNT(*) OVER () 가 그룹 수를
+    -- 주므로, 값 목록을 뽑는 그 한 번의 GROUP BY 로 "후보인가" 까지 끝난다.
+    -- 뷰에는 통계가 없어서 이 방법이 필요했고, 표에도 같이 쓴다:
+    --
+    --   * distinct_cnt 가 추정이 아니라 **실제 값**이 된다. 통계가 낡으면
+    --     전에는 틀린 수가 들어갔다.
+    --   * 통계가 틀렸을 때의 안전장치가 된다. 전에는 통계가 10이라고 하면
+    --     실제로 5,000종이어도 그 5,000행을 다 넣었다. 이제 grp_cnt 가
+    --     임계값을 넘으면 아무것도 넣지 않는다.
+    --   * 세는 대상이 저장하는 대상과 같아진다 -- 400자 넘는 값은 양쪽에서
+    --     똑같이 빠진다(num_distinct 는 그것까지 세고 있었다).
+    --
+    -- 표의 후보 선정은 그대로 통계를 쓴다. 그게 418개 컬럼을 다 훑지 않는
+    -- 이유이고, 여기 판정은 이미 좁혀진 후보에만 걸린다.
     v_sql :=
       'MERGE /*+ NO_PARALLEL */ INTO src_code t'                            || CHR(10) ||
       'USING (SELECT ''' || c.table_name  || ''' table_name,'               || CHR(10) ||
       '              ''' || c.column_name || ''' column_name,'              || CHR(10) ||
-      '              ' || c.column_name || ' code_value,'                   || CHR(10) ||
-      '              COUNT(*) row_cnt'                                      || CHR(10) ||
-      '         FROM ' || c.table_name                                      || CHR(10) ||
-      '        WHERE ' || c.column_name || ' IS NOT NULL'                   || CHR(10) ||
-      '          AND LENGTH(' || c.column_name || ') <= 400'                || CHR(10) ||
-      '        GROUP BY ' || c.column_name || ') s'                         || CHR(10) ||
+      '              code_value, row_cnt, grp_cnt'                          || CHR(10) ||
+      '         FROM (SELECT ' || c.column_name || ' code_value,'           || CHR(10) ||
+      '                      COUNT(*) row_cnt,'                             || CHR(10) ||
+      '                      COUNT(*) OVER () grp_cnt'                      || CHR(10) ||
+      '                 FROM ' || c.table_name                              || CHR(10) ||
+      '                WHERE ' || c.column_name || ' IS NOT NULL'           || CHR(10) ||
+      '                  AND LENGTH(' || c.column_name || ') <= 400'        || CHR(10) ||
+      '                GROUP BY ' || c.column_name || ')'                   || CHR(10) ||
+      '        WHERE grp_cnt BETWEEN 2 AND ' || p_max_distinct || ') s'     || CHR(10) ||
       '   ON (t.table_name  = s.table_name'                                 || CHR(10) ||
       '   AND t.column_name = s.column_name'                                || CHR(10) ||
       '   AND t.code_value  = s.code_value)'                                || CHR(10) ||
       ' WHEN MATCHED THEN UPDATE SET t.row_cnt = s.row_cnt,'                || CHR(10) ||
-      '      t.distinct_cnt = ' || c.num_distinct || ', t.last_seen = SYSDATE' || CHR(10) ||
+      '      t.distinct_cnt = s.grp_cnt, t.last_seen = SYSDATE'             || CHR(10) ||
       ' WHEN NOT MATCHED THEN INSERT (table_name, column_name, code_value,' || CHR(10) ||
-      '      source_name, row_cnt, distinct_cnt, first_seen, last_seen)'         || CHR(10) ||
+      '      source_name, row_cnt, distinct_cnt, first_seen, last_seen)'    || CHR(10) ||
       ' VALUES (s.table_name, s.column_name, s.code_value, '''
-             || c.source_name || ''', s.row_cnt, ' || c.num_distinct
+             || c.source_name || ''', s.row_cnt, s.grp_cnt'
              || ', SYSDATE, SYSDATE)';
 
     BEGIN
@@ -110,7 +181,8 @@ BEGIN
       p_rows := p_rows + v_n;
       IF v_n > 0 THEN
         DBMS_OUTPUT.PUT_LINE(RPAD(LOWER(c.table_name) || '.'
-                             || LOWER(c.column_name), 44) || v_n || ' value(s)');
+                             || LOWER(c.column_name), 44) || v_n || ' value(s)'
+                             || CASE WHEN c.is_view = 'Y' THEN '  (view)' END);
       END IF;
     EXCEPTION
       -- 한 컬럼이 깨져도 나머지를 멈추지 않는다. 수확은 보조적인 일이고,
