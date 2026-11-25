@@ -50,9 +50,9 @@ CREATE OR REPLACE PROCEDURE sp_src_code_sync (
 -- 상세가 38만 행쯤 쌓이면 재 봐야 한다. 그때 손잡이는 p_table 로 범위를
 -- 좁히는 것이다.
 --
--- v_isin_bond_info.label 처럼 코드가 아닌 어휘도 들어온다(화면 섹션 이름
--- 16종). 매핑할 대상이 없으니 v_code_unmapped 에 남는데, 16행이라 지금은
--- 그냥 둔다 -- 조용히 버리는 것보다 보이는 쪽이 낫다.
+-- html_block 이 만드는 block_index · label · html 은 뺀다(위 부기 목록).
+-- 원천이 보낸 값이 아니라 그 모드가 붙인 것이고, label 은 화면 섹션
+-- 이름이라 매핑할 대상이 없다.
   v_n    PLS_INTEGER;
   v_sql  VARCHAR2(8000);
 BEGIN
@@ -86,8 +86,17 @@ BEGIN
        AND c.table_name NOT IN ('API_MST', 'API_JOB_BUILDER', 'API_JOB',
                                 'API_JOB_LOG', 'SRC_CODE')
        AND c.num_distinct BETWEEN 2 AND p_max_distinct
-       -- 엔진 부기와 자유 서술 컬럼
-       AND c.column_name NOT IN ('API_ID', 'JOB_ID', 'DESCRIPTION', 'NOTE')
+       -- 엔진 부기와 자유 서술 컬럼. 뒤의 셋은 response_type='html_block' 이
+       -- 만드는 것이지 원천이 보낸 값이 아니다 -- api_id/job_id 와 같은
+       -- 근거로 뺀다 (확인: 이 셋은 v1 에도, 어느 모델에도 없고 그 모드가
+       -- 쓰는 뷰에만 나타난다).
+       --
+       -- block_index(NUMBER)와 html(CLOB)은 VARCHAR 필터에 이미 안 걸리지만
+       -- 셋을 같이 적는다. 이유를 한 자리에 두면 나중에 타입이 바뀌어도
+       -- 판단이 남는다. label 은 화면 섹션 이름('발행기관코드' · 'CFI' ·
+       -- 'Call 주체' 16종)이라 매핑할 대상이 없다.
+       AND c.column_name NOT IN ('API_ID', 'JOB_ID', 'DESCRIPTION', 'NOTE',
+                                 'BLOCK_INDEX', 'LABEL', 'HTML')
        -- 날짜처럼 생긴 이름 (위 주석 참고)
        AND SUBSTR(c.column_name, -3) NOT IN ('_DD', '_DT', '_AT')
        AND SUBSTR(c.column_name, -4) NOT IN ('DATE', '_YMD', 'YYMM')
@@ -128,7 +137,10 @@ BEGIN
      WHERE c.data_type LIKE 'VARCHAR%'
        AND c.table_name IN (SELECT d.name FROM user_dependencies d
                              WHERE d.type = 'VIEW' AND d.referenced_name = 'API_RST')
-       AND c.column_name NOT IN ('API_ID', 'JOB_ID', 'DESCRIPTION', 'NOTE')
+       -- 표 분기와 같은 목록 (위 주석 참고). html_block 이 만드는 셋이
+       -- 여기로 들어오는 자리라, 빠지는 것은 사실상 이 분기에서다.
+       AND c.column_name NOT IN ('API_ID', 'JOB_ID', 'DESCRIPTION', 'NOTE',
+                                 'BLOCK_INDEX', 'LABEL', 'HTML')
        AND SUBSTR(c.column_name, -3) NOT IN ('_DD', '_DT', '_AT')
        AND SUBSTR(c.column_name, -4) NOT IN ('DATE', '_YMD', 'YYMM')
        AND (p_table IS NULL OR c.table_name = UPPER(p_table))
