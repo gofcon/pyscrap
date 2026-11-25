@@ -1052,6 +1052,37 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.8 KIS 계열 (3분 제외) (2026-11-26)
+
+토큰 갱신 둘을 먼저 돌렸다 -- `persist_env_json` 이 `.env` 에 새 토큰을 적고
+뒤의 잡이 그것을 쓴다. 3분 잡(`KIS_FUTOPT_PRICE` 496개 ·
+`KIS_FUTOPT_PRICE_A2` 334개)은 제외했다.
+
+```
+KIS_TOKEN_REFRESH / _A2                     SUCCESS
+KIS_INDEX_DAILY_2001_20261125_20261125        1 = 1
+KIS_FUTOPT_DAILY_A01612_20261125_20261125     1 = 1
+KIS_FUTOPT_CHART_A01612_20261125_60         411 = 411   (5회 페이징)
+```
+
+`KIS_FUTOPT_CHART` 가 **곁다리 api_rst 를 함께 쓴다** -- 타입 표에 411행,
+`api_rst` 에 3행. 8.4 의 `pending_empty` 판정이 그 경우를 위해 `record_map_json`
+으로 곁다리를 가리는 것이고, 실제로 그렇게 동작했다.
+
+#### append 행은 한 스냅샷끼리 맞춰야 한다
+
+`FO_IDX_CODE_MST` 와 `KIS_ETF_PDF` 가 총계로는 안 맞았다(518,220 vs 13,241 ·
+260 vs 10). 둘 다 `is_repeated` + `append` + 고정 job_id 라 **v1 이 누적**이다.
+스냅샷 하나끼리 맞추면 같다:
+
+```
+fo_idx_code_mst  v1 스냅샷 61개 · 최신 8,241행   v2 새 스냅샷 8,241행
+kis_etf_pdf      v1 스냅샷 55개 · 최신     5행   v2 새 스냅샷     5행
+```
+
+총계 비교가 틀린 비교였다. 처음 `KRX_ETF` 를 두 배로 보고 버그로 여긴 것과 같은
+실수이고(8.5), `append` 행에서는 **무엇끼리 비교할지**가 먼저다.
+
 ### 8.7 `empty_keeps_previous` (2026-11-26)
 
 8.6 이 찾은 "0행 성공이 지운다" 를 막는다. 전역 가드가 아니라 **행 단위
