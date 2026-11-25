@@ -926,6 +926,9 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 ### 8.2 6단계 완료 (2026-11-25)
 
+v1 의 `api_mst` 58행 · `api_job_builder` 95행에서 **57행 · 94행**이 v2 로
+갔다(`TEST` 와 그 빌더는 빼기로 결정 -- 아래).
+
 `scripts/migrate_v1_to_v2.py`. 한 번 쓰고 버리는 스크립트가 아니라 **매핑의
 기록**이다 -- v1 의 한 컬럼이 v2 의 여러 컬럼으로 갈린 자리마다 어느 값이
 어디로 갔는지 거기 적혀 있다. 기본이 dry-run 이고 `--apply` 로 적재한다.
@@ -946,7 +949,10 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 | KRX | AUTH 1 · DERIV 7 · ETF 3 · ETN 1 · INDEX 1 · STOCK 4 | 17 |
 | KSD | BOND | 16 |
 | DART | DISCLOSURE | 2 |
-| TEST | (없음) | 1 |
+| | | **57** |
+
+`TEST` 는 옮기지 않았다(아래 "돈 적 없던 행 둘"). 그래서 `source` 축은 다섯 종이고
+분류체계 혼입이 없다.
 
 오픈API(`KRX_API`)와 데이터포털(`KRX_DATA`)을 source 로 가르지 않았다. 같은
 기관이고, 포털이 막힐 때 오픈API 는 멀쩡하다는 구분은 **호스트 단위 차단기가
@@ -985,11 +991,11 @@ KRX_ISIN_SRCH, KSD_BOND_CREDIT_HIS_web)는 v1 때부터 거기 쓰던 행이다.
 
 1. **CHECK 제약 사전검사.** 네 제약(`ck_api_mst_body`·`payload`·`snapshot`·
    `protocol`)과 길이 제한을 파이썬에서 먼저 확인했다. 한 행이라도 걸리면
-   커밋이 통째로 돌아가므로 미리 어느 행인지 알고 싶었다. 58+95 전부 통과.
-2. **설정 검증.** `validate_api_config` 를 쓰기 **전에** 58행 전부에 돌린다.
+   커밋이 통째로 돌아가므로 미리 어느 행인지 알고 싶었다. 전부 통과.
+2. **설정 검증.** `validate_api_config` 를 쓰기 **전에** 옮기는 행 전부에 돌린다.
    실패가 있으면 적재하지 않는다 -- 통째로 실패하는 쪽이 절반 적재된 상태로
    멈춰 "어디까지 들어갔지" 를 세는 쪽보다 낫다.
-3. **왕복 비교.** 적재한 153행을 엔진의 모델로 다시 읽어 변환 결과와 필드별로
+3. **왕복 비교.** 적재한 151행(57+94)을 엔진의 모델로 다시 읽어 변환 결과와 필드별로
    맞췄다. 전부 일치. (v1 의 `{}` 는 NULL 로 적재했다 -- 엔진이 `or {}` 로
    읽으므로 같고, v2 의 그 컬럼들은 nullable 이다.)
 
@@ -1079,19 +1085,40 @@ daily_early    29      daily_start        7      합계 15,070
 > 않지만, v2 의 `api_job` 을 비운 상태에서 시작하고 싶으면 지워도 된다.
 > v2 에는 아직 타이머가 없어서 저절로 실행되지는 않는다.
 
+#### 돈 적 없던 행 둘 (결정됨 2026-11-25)
+
+v1 의 58행 중 둘은 `api_job` 이 하나도 없었다. 둘의 결론이 갈렸다.
+
+**`ISIN_INFO` 는 살린다.** ISIN 하나의 표준코드 상세 팝업이고
+(`isin.krx.co.kr/srch/srch.do?method=srchPopup3&std_cd=:ISIN`) 요청을 추가할
+행으로 정해졌다. `KRX_ISIN_SRCH` 와 겹쳐 보이지만 성질이 다르다 -- 그쪽은
+브라우저로 코드 앞자리를 넣어 **목록**을 긁고, 이쪽은 ISIN 하나의 **상세**를
+HTTP GET 으로 받는다.
+
+아직 저장할 준비는 안 돼 있다. 지금 가진 것은 url · `job_key_params ["ISIN"]`
+· `row_stamp_json {"ISIN": "isin"}` 뿐이고, 비어 있는 것이 넷이다.
+
+```
+response_type     NULL   팝업 HTML 을 무엇으로 읽나 (html_table? browser?)
+parse_json        NULL   어느 행·어느 필드
+record_map_json   NULL   어느 표에 넣나  <- 이것이 없으면 아무것도 저장되지 않는다
+빌더              없음    ISIN 축을 어디서 받나 (mst_bond? ksd_bond_isin?)
+```
+
+`validate_api_config` 는 통과한다 -- `record_map_json` 이 비면 검사할 대상이
+없다. 그 빈 상태가 "설정이 아직 없다" 를 뜻하는 것이고, 검증기가 잡을 일은
+아니다(잡게 만들면 작성 중인 행을 못 둔다).
+
+**`TEST` 는 v2 로 옮기지 않았다.** `api_url` 이 `'https://'` 뿐인 스텁이고
+`api_job` 이 없었다. 겨누던 빌더 `TEST_BUILDER`(비활성)도 함께 빠졌다.
+7.4 가 "`test` 는 `is_active` 또는 별도 플래그로 옮긴다" 고 한 자리인데
+`api_mst` 에는 `is_active` 가 없어서, 빼는 것이 그 뜻에 맞다 -- 남기면
+`source` 축에 `TEST` 가 하나 생겨 7.4 가 없애려던 분류체계 혼입이 된다.
+
+**v1 에는 그대로 있다.** 이 스크립트는 v1 을 읽기만 하고, 그쪽은 돌고 있는
+시스템이다. v1 에서도 지울지는 별도 결정이다.
+
 #### 사람이 정할 것
-
-**돈 적 없는 행 둘.** 옮기기는 했고 `note` 에 메모를 남겼다. 지울지는 결정
-사항이다.
-
-| api_id | 왜 |
-|---|---|
-| `ISIN_INFO` | `KRX_ISIN_SRCH`(브라우저 행)로 대체. `api_job` 이 하나도 없다 |
-| `TEST` | `api_url` 이 `'https://'` 뿐인 스텁. `api_job` 이 하나도 없다 |
-
-`TEST` 때문에 `source` 축에 `TEST` 가 하나 남아 있다. 7.4 가 "`test` 는
-`is_active` 또는 별도 플래그로 옮긴다" 고 한 자리인데, `api_mst` 에는
-`is_active` 가 없어서 지우는 것이 가장 깔끔하다.
 
 **관측 시각을 찍는데 버킷이 없는 빌더 셋.** v1 에서도 절삭이 no-op 이었고,
 동작을 바꾸지 않으려고 NULL 로 뒀다. 단위를 줄지는 결정 사항이다.
@@ -1598,7 +1625,7 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 | `sp_create_external_tables` | MART 몫. 외부 테이블 5개가 아직 SCRAP 에 있다 |
 | ~~`api_mst` 58행 · 빌더 95행 이행~~ | **완료 2026-11-25 (8.2)** |
 | v2 접속 정보를 `db_config` 로 | 지금은 이행 스크립트와 테스트가 `ORACLE_*` 환경변수를 바꿔 끼운다 |
-| `ISIN_INFO` · `TEST` 두 행 | 돈 적 없다. 지울지 결정 (8.2) |
+| `ISIN_INFO` 설정 | 살리기로 결정. `response_type` · `parse_json` · `record_map_json` · 빌더가 비어 있다 (8.2) |
 | 반복 빌더 셋의 `snapshot_unit` | v1 동작 보존으로 NULL. 단위를 줄지 결정 (8.2) |
 | `v_fuopt_price` · `v_fut_cont` | v1 에 있고 v2 에 없는 뷰 둘. 내보내기 대상이고 빌더는 안 읽는다 |
 | `sp_run_daily_batch2` · `sp_run_daily_early` | 타이머가 부르는 오케스트레이션. v2 에 아직 없다 |

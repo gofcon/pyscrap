@@ -74,18 +74,23 @@ _SOURCE_DOMAIN: dict[str, tuple[str, str | None]] = {
     "KRX_INDEX_":        ("KRX", "INDEX"),
     "KRX_STOCK_":        ("KRX", "STOCK"),
     "KRX_ISIN_":         ("KRX", "STOCK"),
+    # ISIN 하나의 표준코드 상세 팝업. KRX_ISIN_SRCH(브라우저)와 겹쳐 보이지만
+    # 그쪽은 코드 앞자리로 **목록**을 긁고 이쪽은 ISIN 하나의 상세를 받는다.
+    # 아직 돈 적은 없고 쓰기로 결정된 행이다 (2026-11-25).
     "ISIN_INFO":         ("KRX", "STOCK"),
     # 예탁결제원(세이브로). api/web 은 전송 방식이라 source 가 아니다.
     "KSD_":   ("KSD", "BOND"),
     "DART_":  ("DART", "DISCLOSURE"),
-    "TEST":   ("TEST", None),
 }
 
-# 돈 적이 없고 대체된 행. 옮기기는 하지만 지우는 게 맞아 보이는 것을 적어
-# 둔다 -- 출력 끝에 함께 보고한다. 지우는 것은 사람이 결정한다.
-_STALE = {
-    "ISIN_INFO": "KRX_ISIN_SRCH(브라우저 행)로 대체. api_job 이 하나도 없다",
-    "TEST":      "api_url 이 'https://' 뿐인 스텁. api_job 이 하나도 없다",
+# 옮기지 않는 행. v1 에는 남겨 둔다(그쪽은 돌고 있는 시스템이고 이 스크립트는
+# 읽기만 한다) -- v2 에만 넣지 않는다.
+#
+# TEST 는 api_url 이 'https://' 뿐인 스텁이고 api_job 이 하나도 없었다.
+# 옮기면 source 축에 'TEST' 가 하나 남는데, 7.4 가 없애자고 한 바로 그
+# 분류체계 혼입이다. 그 행을 겨누는 빌더(TEST_BUILDER)도 함께 빠진다.
+_DROP = {
+    "TEST": "api_url 이 'https://' 뿐인 스텁. api_job 이 하나도 없다",
 }
 
 # ---------------------------------------------------------------------------
@@ -379,11 +384,6 @@ def transform_api(row: dict, demoted: list[str] | None = None) -> dict:
     else:
         protocol, method = "HTTP", raw
 
-    note = row["description"] or None
-    if row["api_id"] in _STALE:
-        extra = f"[이행 메모] {_STALE[row['api_id']]}"
-        note = f"{note} / {extra}" if note else extra
-
     return dict(
         api_id=row["api_id"], api_name=row["api_name"],
         source=source, domain=domain,
@@ -400,7 +400,7 @@ def transform_api(row: dict, demoted: list[str] | None = None) -> dict:
         job_key_params=job_keys or None, row_stamp_json=row_stamp or None,
         is_repeated=is_repeated, snapshot_column=snapshot_column,
         pagination_json=row["pagination_json"],
-        note=note,
+        note=row["description"] or None,
     )
 
 
@@ -486,7 +486,13 @@ def main() -> int:
     args = parser.parse_args()
 
     v1_apis, v1_builders = read_v1()
-    print(f"v1: api_mst {len(v1_apis)}행 · api_job_builder {len(v1_builders)}행\n")
+    print(f"v1: api_mst {len(v1_apis)}행 · api_job_builder {len(v1_builders)}행")
+
+    # 옮기지 않는 행과 그 행을 겨누는 빌더를 먼저 걸러낸다. _source_domain 이
+    # 그 api_id 를 모르는 상태라 변환보다 앞이어야 한다.
+    v1_apis = [r for r in v1_apis if r["api_id"] not in _DROP]
+    v1_builders = [r for r in v1_builders if r["api_id"] not in _DROP]
+    print(f"옮김: api_mst {len(v1_apis)}행 · api_job_builder {len(v1_builders)}행\n")
 
     demoted: list[str] = []
     apis = [transform_api(r, demoted) for r in v1_apis]
@@ -532,9 +538,9 @@ def main() -> int:
              if r["record_map_json"] and "api_rst" in r["record_map_json"].values()]
     print(f"\nrecord_map_json 이 api_rst 를 가리키는 행 {len(moved)}: {', '.join(moved)}")
 
-    if _STALE:
-        print("\n[확인 필요] 돈 적 없는 행 -- 옮기기는 했다. 지울지는 사람이 정한다:")
-        for api_id, why in _STALE.items():
+    if _DROP:
+        print("\n옮기지 않은 행 (v1 에는 남는다 -- 이 스크립트는 그쪽을 읽기만 한다):")
+        for api_id, why in _DROP.items():
             print(f"  {api_id:12} {why}")
 
     if demoted:
