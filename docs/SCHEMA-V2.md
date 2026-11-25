@@ -1052,6 +1052,80 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **6단계가 실제 작업량의 절반이다.** `api_mst` 58행 + `api_job_builder` 95행의 JSON을 새 형태로 옮기는 스크립트이고, 변환이 맞는지는 8단계의 비교로만 확인된다.
 
+### 8.6 SEIBRO · 운용사 계열도 돌렸다 (2026-11-26)
+
+설정 모양이 서로 다른 10개를 골라 v1 과 맞췄다.
+
+```
+SEIBRO    KSD_BOND_INFO_web  payload=content(XML) · map {".//result": …}   1 = 1
+          KSD_BOND_INT_web   payload=content(XML) · map {".": …}           1 = 1
+운용사목록  ACE   payload 없음 · map {"data": api_rst}                     112 = 112
+          SOL   payload=data · map {"items": api_rst}                     88 = 88
+          KODEX payload 없음 · map {".": api_rst} · 14회 페이징            244 = 244
+          PLUS  payload=json · map {"content": api_rst} · pagination       87 ≠ 0   (아래)
+운용사PDF  ACE    api_rst                                                   3 = 3
+          NH     xlsx  -> amc_etf_pdf                                      20 = 20
+          KIWOOM xls   -> amc_etf_pdf (중간 인증서 없는 서버)                8 = 8
+          TIME   xlsx  -> amc_etf_pdf                                      50 ≠ 0   (아래)
+```
+
+XML payload + XPath 셀렉터, 네 가지 payload 모양, 페이징, xlsx·xls 파싱,
+SSL 예외 서버가 다 통과했다. 아래층(api_rst)으로 가는 넷은 v1 의 타입 표와
+v2 의 `v_*` 뷰를 맞춘 것이다 -- 두 층 설계의 전제가 그 비교다.
+
+#### 0행 둘은 사이트 쪽이었다
+
+`PLUS_ETF_LIST` 와 `TIME_ETF_PDF` 가 0행이었다. 설정이 아니다 -- 엔드포인트를
+직접 때려 확인했다:
+
+```
+PLUS  HTTP 200 · content: [] · totalElements: 0
+TIME  HTTP 200 · 유효한 xlsx · 머리글 행만 있고 데이터 행이 없다
+```
+
+v1 도 지금 돌리면 같은 0 을 받는다(설정이 동일하고 raw 응답이 그렇다). v1 은
+오늘 09:12 에 성공해 87행을 들고 있을 뿐이다. 시각(00:10)이 공시 사이라서로
+보인다 -- TIME 의 url 은 `pdf_excel.php?idx=:AMC_ETF_CD` 로 **날짜를 받지
+않는다**. 항상 "현재" 구성종목이고, 지금은 비어 있다.
+
+#### 그러나 그 0행이 드러낸 것: 0행 성공이 데이터를 지운다
+
+`TIME` 의 0행 실행이 v2 에 있던 그 job_id 의 50행을 **지웠다**. 복원했다.
+
+왜: `_clear_previous_results` 가 `save_mode='overwrite'` 에서 먼저 지우고,
+성공 경로가 커밋한다. 받은 것이 0행이어도 성공이다.
+
+그 함수의 주석은 이미 원칙을 적고 있다 -- *"a failure leaves yesterday's rows
+in place, which is what 'overwrite' should mean: replaced, or not touched"*.
+2026-10-02 에 KRX 포털이 공지 페이지를 돌려줘 27개 잡이 전부 실패하고
+`krx_deriv_info` 23,000행이 비었던 그 사건 뒤에 넣은 것이다. **실패는 막혔지만
+0행 성공은 안 막혔다.**
+
+#### 노출 범위 (정확히)
+
+지우려면 `is_repeated`(job_id 고정) **이고** `save_mode='overwrite'` 여야 한다.
+처음엔 `is_repeated` 만 보고 10행이라 했는데, 스냅샷 행은 전부 `append` 라
+안전하다(설계 의도대로다 -- 반복 잡이 overwrite 면 매 실행이 자기 역사를
+지운다). 실제로는 **5행**이다.
+
+| api_id | 활성 잡 | 지워지는 것 |
+|---|---|---|
+| `ACE_ETF_LIST` | 1 | 운용사 ETF 목록 |
+| `KODEX_ETF_LIST` | 1 | 〃 |
+| `PLUS_ETF_LIST` | 1 | 〃 |
+| `SOL_ETF_LIST` | 1 | 〃 |
+| **`KRX_DERIV_INFO`** | 27 | **파생 전종목 기본정보 -- 만기 달력과 선물옵션 마스터가 이것으로 만들어진다** |
+
+마지막 행이 2026-10-02 에 비었던 그 표다.
+
+**`empty_is_pending` 으로는 못 막는다.** 그 판정이 `not is_repeated` 를
+요구하는데 이 다섯은 전부 `is_repeated=True` 다. 날짜가 job_id 에 있는 행
+(`TIME_ETF_PDF`, `NH_ETF_PDF`, `KRX_INDEX_KOSPI` …)은 새 날짜에 지울 것이 없어
+애초에 노출되지 않는다 -- 내가 TIME 의 50행을 지운 것은 **과거 job_id 를 다시
+돌린** 탓이고 운영에서 일어나는 모양이 아니다.
+
+v1 도 설정이 같아 같이 노출돼 있다. 이행이 만든 것이 아니다.
+
 ### 8.5 잡을 실제로 돌려 설정 변환을 검증했다 (2026-11-26)
 
 샘플 복사가 못 보던 절반(`parse_json` · `record_map_json` · `row_stamp_json`)을
