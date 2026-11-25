@@ -80,6 +80,8 @@ from sqlalchemy import text
 from sqlmodel import Session
 
 from app.db.models import ApiJob, ApiJobBuilder, ApiMst
+from app.errors import ConfigError, MappingError, ParamError, SchemaError
+from app.services.export import TABLE_REGISTRY
 
 
 def _run_query_rows(session: Session, query: str) -> list[tuple]:
@@ -212,7 +214,7 @@ def _resolve_date(keyword: str, fmt: str | None = None) -> str:
     try:
         resolver, default_fmt = _DATE_KEYWORDS[keyword]
     except KeyError:
-        raise ValueError(
+        raise ConfigError(
             f"Unknown date keyword '{keyword}', expected one of {sorted(_DATE_KEYWORDS)}"
         ) from None
     return resolver(_now_kst().date()).strftime(fmt or default_fmt)
@@ -243,11 +245,11 @@ def _build_axes(session: Session, params_spec: dict[str, Any]) -> list[list[dict
         if isinstance(spec, dict) and "db" in spec:
             rows = _run_query_rows(session, spec["db"])
             if not rows:
-                raise ValueError(f"query for '{raw_key}' returned no rows")
+                raise ConfigError(f"query for '{raw_key}' returned no rows")
             axis = []
             for row in rows:
                 if len(row) < len(keys):
-                    raise ValueError(
+                    raise ConfigError(
                         f"query for '{raw_key}' returned {len(row)} column(s), expected {len(keys)}"
                     )
                 axis.append(dict(zip(keys, row)))
@@ -255,13 +257,13 @@ def _build_axes(session: Session, params_spec: dict[str, Any]) -> list[list[dict
 
         elif isinstance(spec, dict) and "date" in spec:
             if len(keys) != 1:
-                raise ValueError(f"'date' spec must map to a single key, got '{raw_key}'")
+                raise ConfigError(f"'date' spec must map to a single key, got '{raw_key}'")
             value = _resolve_date(spec["date"], spec.get("format"))
             axes.append([{keys[0]: value}])
 
         else:
             if len(keys) != 1:
-                raise ValueError(f"literal value can't be assigned to multiple keys '{raw_key}'")
+                raise ConfigError(f"literal value can't be assigned to multiple keys '{raw_key}'")
             axes.append([{keys[0]: spec}])
 
     return axes
@@ -304,7 +306,7 @@ def _build_job_id(builder: ApiJobBuilder, api: ApiMst, params: dict[str, Any]) -
 
     missing = [k for k in param_keys if k not in params]
     if missing:
-        raise ValueError(
+        raise ParamError(
             f"{builder.build_id}: job_key_params references {missing}, "
             f"not present in generated params {list(params)}"
         )
@@ -319,14 +321,73 @@ def _build_job_id(builder: ApiJobBuilder, api: ApiMst, params: dict[str, Any]) -
     return job_id, True
 
 
+def validate_api_config(api: ApiMst) -> None:
+    """이 행의 설정이 **실행 전에** 말이 되는지 본다 (docs/SCHEMA-V2.md 6.4).
+
+    생성은 하루 한 번이고 실행은 수천 번이다. 같은 검사를 생성 쪽으로 옮기는
+    것만으로 발견이 빨라진다 -- v1 은 이 전부가 실행 시점에 드러나거나(한
+    잡이 실패하고 나서야) 조용히 버려졌다. 예: ``row_stamp_json`` 이 없는
+    컬럼을 가리키면 그 값은 저장할 때 그냥 떨어졌고 아무 로그도 남지 않았다.
+
+    셋을 본다:
+
+    1. ``record_map_json`` 의 표가 결과 테이블인가 (MappingError)
+    2. ``row_stamp_json`` 의 값이 그 모델의 컬럼인가 (SchemaError)
+    3. ``snapshot_column`` 이 그 모델의 컬럼인가 (SchemaError)
+
+    네 번째로 "``job_key_params`` 가 cartesian_param_json 으로 실제로
+    만들어지는가" 가 문서에 있는데, 그것은 **이미** 생성 시점에 걸린다 --
+    _build_job_id 가 빠진 키를 ParamError 로 올린다. 그 검사는 축을 다 펼친
+    뒤에야 할 수 있어서(쿼리 축은 DB 를 봐야 한다) 여기 앞당길 것이 없다.
+
+    범용 저장 경로(``api_rst``)는 컬럼 검사를 건너뛴다. 거기서는 모든 이름이
+    result_json 의 키라 틀린 컬럼이라는 것이 없고, 그 행의 **모양을 선언하는
+    곳은 뷰**다 (scripts/sql/v2/gen_ddl.py 의 TO_GENERIC). 그 지식은 생성
+    스크립트에만 있고 엔진은 모른다 -- 아래층이 "새 표가 생겨도 models.py 를
+    안 고친다" 를 사는 대가다. 뷰를 다시 생성하면 거기서 드러난다."""
+    targets: dict[str, Any] = {}
+    for selector, table_name in (api.record_map_json or {}).items():
+        model_cls = TABLE_REGISTRY.get(table_name)
+        if model_cls is None:
+            raise MappingError(
+                f"{api.api_id}: record_map_json[{selector!r}] names {table_name!r}, "
+                f"which is not a result table"
+            )
+        targets[table_name] = model_cls
+
+    # 어느 표에든 있으면 통과다. 한 api 가 여러 표에 쓰는 경우 스탬프가 전부에
+    # 들어가지는 않는다 -- 셀렉터마다 레코드 모양이 다를 수 있다.
+    generic = {name for name, m in targets.items() if "result_json" in m.model_fields}
+    typed = {name: m for name, m in targets.items() if name not in generic}
+    if not typed:
+        return
+    known = {field for model in typed.values() for field in model.model_fields}
+
+    for param_key, column_name in (api.row_stamp_json or {}).items():
+        if column_name not in known:
+            raise SchemaError(
+                f"{api.api_id}: row_stamp_json[{param_key!r}] stamps onto column "
+                f"{column_name!r}, which none of {sorted(typed)} has"
+            )
+    if api.snapshot_column and api.snapshot_column not in known:
+        raise SchemaError(
+            f"{api.api_id}: snapshot_column is {api.snapshot_column!r}, "
+            f"which none of {sorted(typed)} has"
+        )
+
+
 def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
     builder:ApiJobBuilder | None = session.get(ApiJobBuilder, build_id)
     if builder is None:
-        raise ValueError(f"No ApiJobBuilder row for build_id={build_id!r}")
+        raise ConfigError(f"No ApiJobBuilder row for build_id={build_id!r}")
 
     api :ApiMst | None = session.get(ApiMst, builder.api_id)
     if api is None:
-        raise ValueError(f"No ApiMst row for api_id={builder.api_id!r}")
+        raise ConfigError(f"No ApiMst row for api_id={builder.api_id!r}")
+
+    # 축을 펼치기 전에 본다. 쿼리 축은 DB 를 때리므로, 어차피 틀린 설정이면
+    # 그 쿼리를 돌릴 이유가 없다.
+    validate_api_config(api)
 
     axes = _build_axes(session, builder.cartesian_param_json or {})
 
@@ -353,7 +414,7 @@ def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
             prior = seen_in_batch.get(job_id)
             if prior is not None:
                 if prior != params:
-                    raise ValueError(
+                    raise ParamError(
                         f"{build_id}: ApiMst.job_key_params {api.job_key_params} is not "
                         f"specific enough -- both {prior} and {params} produce job_id={job_id!r}. "
                         f"Add the differing param(s) to job_key_params."
@@ -364,7 +425,7 @@ def build_jobs_from_builder(session: Session, build_id: str) -> list[ApiJob]:
             existing = session.get(ApiJob, job_id)
             if existing is not None:
                 if existing.params_json != params:
-                    raise ValueError(
+                    raise ParamError(
                         f"{build_id}: job_id={job_id!r} already exists with different params "
                         f"{existing.params_json} vs new {params} -- ApiMst.job_key_params "
                         f"{api.job_key_params} may be insufficient."

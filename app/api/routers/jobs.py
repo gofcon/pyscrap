@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.deps import SessionDep
 from app.db.models import ApiJob
-from app.scrapers.base import SiteBlocked
+from app.errors import SourceRefused
 from app.services.execution import generate_all_jobs, generate_jobs, generate_jobs_for_builder, run_job
 
 router = APIRouter(prefix="/jobs", tags=["api_job"])
@@ -68,8 +68,8 @@ def run(job_id: str, session: SessionDep) -> dict[str, str | None]:
         raise HTTPException(404, f"ApiJob '{job_id}' not found")
     try:
         run_job(session, job)
-    except SiteBlocked as exc:
-        # Logged as FAILED already; the site is refusing, which is its
-        # state rather than ours.
+    except SourceRefused as exc:
+        # 이미 로그에 남아 있다 -- status=BLOCKED, error_code=SourceRefused.
+        # 거절은 사이트의 상태이고 우리 쪽 오류가 아니라서 503 이다.
         raise HTTPException(503, str(exc)) from exc
-    return {"job_id": job.job_id, "description": job.description}
+    return {"job_id": job.job_id, "engine_note": job.engine_note}

@@ -48,8 +48,8 @@ from sqlmodel import Session
 
 from app.auth_config import resolve_env_placeholders
 from app.db.models import ApiMst
-from app.scrapers.base import (BaseScraper, SessionExpired, merge_records,
-                               rows_to_records)
+from app.errors import SessionExpired
+from app.scrapers.base import BaseScraper, merge_records, rows_to_records
 from app.scrapers.dynamic import (_PAGE_DELAY_SEC, _PAGE_PARAM, _extract_json_records,
                                   _pace_host)
 

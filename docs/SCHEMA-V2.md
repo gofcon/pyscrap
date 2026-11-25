@@ -388,7 +388,11 @@ class ReferenceTable(SQLModel):
 
 ## 6. 예외 처리
 
-### 6.1 지금
+> **구현 완료 2026-11-25.** `app/errors.py` 가 계층이고, `api_job_log` 의 새
+> 다섯 컬럼이 채워지고, 설정 검증이 생성 시점으로 옮겨졌다. 6.1 은 v1 의
+> 기록으로 남겨 둔다. 구현에서 드러난 것은 6.4 뒤에 적었다.
+
+### 6.1 v1 의 상태 (고치기 전)
 
 예외 클래스가 둘뿐이다 (`SessionExpired`, `SiteBlocked`). `run_job`은 나머지 전부를 한 곳에서 받아 문자열로 적는다.
 
@@ -434,17 +438,24 @@ ScrapeError
 
 이 구분이 값을 하는 지점:
 
-| 등급 | 재시도 | 차단기 | 은퇴 판단 | 알림 |
-|---|---|---|---|---|
-| `SourceUnavailable` | ○ | - | 누적 | - |
-| `SourceRefused` | ✕ | ○ | - | - |
-| `SessionExpired` | 1회 | - | - | - |
-| `SourceEmpty` | ✕ | - | - | - |
-| `SourceChanged` | ✕ | - | - | ○ |
-| `ConfigError` | ✕ | - | - | ○ |
-| `StoreError` | 조건부 | - | - | ○ |
+| 등급 | 재시도 | 차단기 | 은퇴 판단 | 알림 | log status |
+|---|---|---|---|---|---|
+| `SourceUnavailable` | ○ | - | 누적 | - | FAILED |
+| `SourceRefused` | ✕ | ○ | - | - | **BLOCKED** |
+| `SessionExpired` | 1회 | - | - | - | FAILED |
+| `SourceEmpty` | ✕ | - | - | - | **EMPTY** |
+| `SourceChanged` | ✕ | - | **누적** | ○ | FAILED |
+| `ConfigError` | ✕ | - | - | ○ | FAILED |
+| `StoreError` | 조건부 | - | - | ○ | FAILED |
+| (그 외 = `ScrapeError`) | ✕ | - | 누적 | - | FAILED |
 
 지금은 이 표가 `isinstance` 분기로 코드에 흩어져 있다. 등급이 생기면 **데이터가 결정**한다.
+
+구현하면서 고친 칸 둘. `SourceChanged` 는 은퇴 판단에 **센다** -- 구조가
+바뀌면 그 api 의 모든 잡이 똑같이 실패하므로, 밤을 그것으로 보내지 않는 쪽이
+맞다. 그리고 등급을 모르는 실패(`classify` 가 어디에도 못 꽂은 것)도 센다:
+차단기는 밤을 지키는 장치이고 "왜 실패하는지 모르겠다" 는 밤을 내줄 이유가
+못 된다.
 
 ### 6.3 `api_job_log` 확장
 
@@ -466,6 +477,35 @@ executed_at   DATE            그대로
 
 `error_detail`을 CLOB으로 두는 이유: 지금 `error_message`가 4000자라 응답 본문을 넣을 수 없어, 무엇이 왔는지 모른 채 "HTTPStatusError"만 남는 경우가 있다.
 
+**채우는 쪽 (2026-11-25).** 컬럼은 v2 스키마와 함께 생겼지만 `_log` 가
+`status`/`error_message` 둘만 넣고 있어서 나머지는 전부 NULL 이었다 -- 컬럼만
+있고 채우는 쪽이 없으면 여전히 문자열로 추측해야 한다. 같은 잡을 고치기 전과
+후에 돌려 보면:
+
+```
+id  status   error_code         record_count duration_ms attempt_no target_day
+ 7  SUCCESS  (null)             (null)       (null)      1          (null)     <- 고치기 전
+21  SUCCESS  (null)             10           536         1          20261124
+22  FAILED   SourceUnavailable  (null)       3590        1          20261124   <- 404
+23  FAILED   SourceUnavailable  (null)       9249        1          20261124   <- ConnectTimeout
+24  FAILED   MappingError       (null)       220         1          20261124   <- 없는 표
+29  EMPTY    (null)             0            90          1          20260101   <- 휴일
+```
+
+`target_day` 는 **값으로** 판정한다 -- 숫자만 남겨 8자리이고 연·월·일이 말이
+되면 날짜로 본다. key_params 에서 찾으므로 조회일을 받는 API 는 그 파라미터가,
+스냅샷 API 는 관측 시각이 잡힌다. 파라미터 **이름**으로 거르지 않는 이유:
+원천마다 다르다(BAS_DD, trdDd, std_dt, inqDt…).
+
+status 다섯 중 `SKIPPED` 는 차단기가 건너뛴 잡이다. 그 행은 사이클 끝에 한 번에
+적는다 -- 건너뛴 잡마다 커밋하면 나쁜 밤에 수백 번의 왕복이고, 다른 잡의
+트랜잭션에 얹으면 그 잡이 실패할 때 rollback 에 쓸려 사라진다.
+
+적재 오류는 Oracle **번호**로 가른다(`StoreConstraint` / `StoreUnavailable`).
+드라이버 예외 클래스로 가르지 않는 이유: SQLAlchemy 가 같은 오류를 버전마다
+다르게 싸는데 번호는 안 바뀐다. 실측으로 ORA-12899 · 02290 · 01400 이
+`StoreConstraint`, 집합에 없는 ORA-00942 는 `StoreError` + 알림으로 떨어진다.
+
 ### 6.4 설정 검증을 실행 전으로
 
 v2에서 `row_stamp_json`의 값이 전부 실존 컬럼이어야 한다면, **그 검사를 작업 생성 시점에** 할 수 있다.
@@ -479,6 +519,64 @@ generate-jobs 시점:
 ```
 
 지금은 이 전부가 **실행 시점에** 드러나거나 조용히 버려진다. 생성은 하루 한 번이고 실행은 수천 번이라, 같은 검사를 생성 쪽으로 옮기는 것만으로 발견이 빨라진다.
+
+**구현 (`job_builder.validate_api_config`).** 위 넷 중 셋을 본다. 네 번째는
+이미 생성 시점에 걸려 있었다 -- `_build_job_id` 가 빠진 키를 올리고, 축을 다
+펼친 뒤에야 할 수 있는 검사라(쿼리 축은 DB 를 봐야 한다) 앞당길 것이 없다.
+`build_jobs_from_builder` 가 축을 펼치기 **전에** 부른다: 어차피 틀린 설정이면
+그 쿼리를 돌릴 이유가 없다.
+
+범용 저장 경로(`api_rst`)는 컬럼 검사를 건너뛴다. 거기서는 모든 이름이
+`result_json` 의 키라 "없는 컬럼" 이라는 것이 없고, 그 행의 모양을 선언하는
+곳은 **뷰**다(`gen_ddl.py` 의 `TO_GENERIC`). 그 지식은 생성 스크립트에만 있고
+엔진은 모른다 -- 아래층이 "새 표가 생겨도 models.py 를 안 고친다" 를 사는
+대가다. 뷰를 다시 생성하면 거기서 드러난다.
+
+검증 (모델만, DB 없이):
+
+| 설정 | 결과 |
+|---|---|
+| generic 표 + 아무 스탬프 이름 | 통과 |
+| typed 표 + 맞는 컬럼 | 통과 |
+| typed 표 + 없는 컬럼 | `SchemaError` |
+| 없는 표 | `MappingError` |
+| `snapshot_column` 오타 | `SchemaError` |
+
+그리고 v2 DB 에서 생성 경로로: `record_map_json` 을 없는 표로 바꾸면
+`generate_jobs_for_builder` 가 **잡을 만들기 전에** MappingError 로 막힌다.
+
+### 구현에서 드러난 것
+
+**`empty_is_pending` 이 두 층 때문에 깨져 있었다.** v1 에서 `api_rst` 는
+곁다리였다 -- 타입 테이블에 넣으면서 원본 응답도 같이 보관하는 자리였고, 그
+셀렉터는 응답 전체를 한 레코드로 주므로 데이터가 없어도 1을 센다. 그래서
+2026-09-19 에 "0건인가" 판정에서 `api_rst` 를 뺐다.
+
+v2 에서는 같은 표가 여덟 소스의 **본 저장소**다. 그래서 그 제외가 그대로
+남아 있으면 10건이 들어와도 합이 0으로 읽혀 "아직 아니다" 가 되고, one-shot
+잡이 영원히 닫히지 않는다. 실측으로 재현했다.
+
+가르는 기준을 `record_map_json` 으로 바꿨다: `api_rst` 가 다른 표와 **함께**
+나오면 곁다리, 혼자면 본 저장소다. 고친 뒤:
+
+```
+데이터 있는 날   api_rst: 10              -> SUCCESS, is_active=False (닫힌다)
+공시 없는 날     no data yet (api_rst: 0) -> EMPTY,   is_active=True  (다음 사이클이 다시 묻는다)
+```
+
+**설정 오류가 재시도되고 있었다.** `fetch` 의 tenacity 조건이 "SessionExpired
+와 SiteBlocked 만 빼고 전부" 였다. 그래서 `build_request` 가 올리는 설정 오류도
+세 번 재시도하고 백오프 10초를 썼다 -- 같은 설정으로 다시 만들면 같은 예외다.
+이제 등급이 정한다(`retryable`). 실측 소요: 404 는 3.6초(3회 재시도),
+`MappingError` 는 0.22초(재시도 없음).
+
+**알림 채널은 없다.** `alert` 는 "logger.error 로 올리고 `error_code` 로 질의
+가능하게 둔다" 까지다. 채널이 생기면 이 플래그가 그 입력이 된다.
+
+**재시도 횟수는 사이클 안에서만 센다.** `attempt_no` 는 거절된 호스트의 잡이
+창을 기다린 뒤 다시 도는 경우에만 1보다 크다. 사이클을 넘는 재시도는
+`COUNT(*) ... WHERE job_id = ?` 가 이미 답이고, 잡마다 그 COUNT 를 하면
+사이클당 수백 번의 왕복이 된다.
 
 ---
 
@@ -1317,6 +1415,8 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 | | 무엇 |
 |---|---|
 | `sp_create_external_tables` | MART 몫. 외부 테이블 5개가 아직 SCRAP 에 있다 |
+| `api_mst` 58행 · 빌더 95행 이행 | v1 모양에서 v2 모양으로. `validate_api_config` 가 그 관문이다 |
+| v2 접속 정보를 `db_config` 로 | 지금은 테스트가 `ORACLE_*` 환경변수를 바꿔 끼운다 |
 
 ---
 

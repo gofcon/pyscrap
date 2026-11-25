@@ -31,12 +31,12 @@ from typing import Any
 import certifi
 import httpx
 from loguru import logger
-from tenacity import (retry, retry_if_not_exception_type, stop_after_attempt,
+from tenacity import (retry, retry_if_exception, stop_after_attempt,
                       wait_exponential)
 
 from app.auth_config import persist_env_var, resolve_env_placeholders
-from app.scrapers.base import (BaseScraper, SessionExpired, SiteBlocked, merge_records,
-                               rows_to_records)
+from app.errors import ParamError, SessionExpired, SourceRefused, classify
+from app.scrapers.base import BaseScraper, merge_records, rows_to_records
 
 # payload_type is stored verbatim as the httpx request kwarg name, so each
 # ApiMst row picks its own transport mechanism purely via data -- no code
@@ -428,19 +428,27 @@ class DynamicApiScraper(BaseScraper):
             }
         else:
             valid = sorted({None, *_TEXT_PAYLOAD_KWARGS, *_DICT_PAYLOAD_KWARGS}, key=str)
-            raise ValueError(f"{api.api_id}: payload_type must be one of {valid}, got '{api.payload_type}'")
+            raise ParamError(f"{api.api_id}: payload_type must be one of {valid}, "
+                             f"got '{api.payload_type}'")
 
         return kwargs
 
     # ---- execution ------------------------------------------------------
 
-    # SessionExpired is excluded from the retry: being logged out is not a
-    # transient failure, and retrying it would spend three attempts and ~10s
-    # of backoff before the caller ever gets to log in again. SiteBlocked
-    # likewise, for the opposite reason -- the site wants fewer requests, not
-    # three more.
+    # 재시도할지는 **예외의 등급**이 정한다 (app.errors.ScrapeError.retryable).
+    # 전에는 여기에 "SessionExpired 와 SourceRefused 만 빼고 전부 재시도" 라고
+    # 적혀 있었다. 두 제외의 이유는 그대로다: 로그아웃은 같은 요청을 세 번 더
+    # 보내서 풀리지 않고 백오프 10초만 쓴다(재로그인은 collect 가 한다), 거절은
+    # 반대 이유로 -- 사이트가 원하는 건 요청을 덜 받는 것이다.
+    #
+    # 바뀐 것은 **설정 오류**다. build_request 가 올리는 ParamError 는 전에
+    # 세 번 재시도하고 10초를 썼는데, 다시 만들어도 같은 설정이라 같은 예외다.
+    # 이제 ConfigError 등급이 retryable=False 라 바로 실패한다. fetch 의
+    # 범위 안에서 날 수 있는 것은 요청 생성 · httpx · 마커 · 상태코드뿐이고
+    # (파싱은 collect 쪽이라 이 retry 밖이다) 나머지는 전부 SourceUnavailable
+    # 로 분류돼 전과 같이 재시도된다.
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10),
-           retry=retry_if_not_exception_type((SessionExpired, SiteBlocked)))
+           retry=retry_if_exception(lambda exc: classify(exc).retryable))
     def fetch(self) -> httpx.Response:
         request_kwargs = self.build_request()
         # Paced *inside* the retry, so a retried attempt (e.g. after a rate-
@@ -465,7 +473,7 @@ class DynamicApiScraper(BaseScraper):
 
     def _check_reply_markers(self, response: httpx.Response) -> None:
         """Raise if this reply is the site saying "you are not logged in"
-        (SessionExpired) or "go away" (SiteBlocked), by the markers the row
+        (SessionExpired) or "go away" (SourceRefused), by the markers the row
         configured. The two are told apart by what the caller must do next;
         see the exception classes.
 
@@ -498,8 +506,8 @@ class DynamicApiScraper(BaseScraper):
         # it reached the JSON parser and failed every job as "mismatched
         # tag", ten thousand times a night, with nothing slowing down.
         if blocked and blocked in body:
-            raise SiteBlocked(f"{self.api.api_id}: reply is the site's refusal page ({blocked!r})",
-                              host=httpx.URL(str(response.url)).host or "")
+            raise SourceRefused(f"{self.api.api_id}: reply is the site's refusal page ({blocked!r})",
+                                host=httpx.URL(str(response.url)).host or "")
 
     # ---- continuation ----------------------------------------------------
 

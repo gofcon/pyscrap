@@ -25,6 +25,7 @@ from loguru import logger
 from sqlmodel import Session
 
 from app.db.models import ApiMst
+from app.errors import ConfigError, MappingError, SessionExpired
 from app.services.export import TABLE_REGISTRY, append_csv_rows, stage_file
 
 
@@ -89,7 +90,9 @@ def rows_to_records(rows: list[list[str]], spec: dict[str, Any]) -> list[dict[st
         fields = fields or [h.strip() for h in header]
 
     if not fields:
-        raise ValueError("response_parse_json needs 'fields' (or 'has_header': true)")
+        # 설정이 모자란 것이고 다시 물어도 같다 -- ConfigError 등급이라
+        # 재시도에서 빠지고 알림이 붙는다 (app.errors).
+        raise MappingError("parse_json needs 'fields' (or 'has_header': true)")
 
     records = []
     for row in rows:
@@ -107,34 +110,6 @@ def _fold_keys(record: dict[str, Any]) -> dict[str, Any]:
     같은 이름이 대소문자만 달라 겹치면 나중 것이 이긴다. dict 순서가 그
     판단이고, 호출부가 key_params 를 먼저 놓으므로 소스의 값이 남는다."""
     return {str(k).lower(): v for k, v in record.items()}
-
-
-class SessionExpired(RuntimeError):
-    """The site answered as if nobody were logged in.
-
-    Raised by whichever transport noticed -- a browser row seeing its
-    ``logged_out`` marker on the page, an HTTP row seeing that marker in a
-    reply body -- so :meth:`BaseScraper.collect` can log in again and retry
-    once instead of failing the job."""
-
-
-class SiteBlocked(RuntimeError):
-    """The site answered with its refusal page instead of data.
-
-    Different from :class:`SessionExpired` in what it asks of the caller.
-    Being logged out is fixed by logging in again, right now, once. Being
-    refused is not: KRX's data portal serves an error page when requests
-    come too fast, and the page persists for some minutes -- every further
-    request during that window is refused too, and likely lengthens it. So
-    this is not retried here at all. It is caught by the cycle runner, which
-    stops sending to that host, waits the window out, logs in once and
-    carries on -- or, when the login itself is refused, gives that host up
-    for the run and leaves its jobs pending for the next one. ``host`` says
-    which site, since a cycle interleaves several."""
-
-    def __init__(self, message: str, host: str):
-        super().__init__(message)
-        self.host = host
 
 
 class BaseScraper:
@@ -269,8 +244,8 @@ class BaseScraper:
 
         login_api: ApiMst | None = session.get(ApiMst, self._login_api_id)
         if login_api is None:
-            raise ValueError(f"{self.api.api_id}: no ApiMst row for "
-                             f"login api_id={self._login_api_id!r}")
+            raise ConfigError(f"{self.api.api_id}: no ApiMst row for "
+                              f"login api_id={self._login_api_id!r}")
         self._invalidate_session()
         make_scraper(login_api, params=self.params).collect(session)
 
@@ -370,7 +345,8 @@ class BaseScraper:
         for selector, table_name in mapping.items():
             model_cls = TABLE_REGISTRY.get(table_name)
             if model_cls is None:
-                raise ValueError(f"{self.api.api_id}: unknown target table '{table_name}'")
+                raise MappingError(f"{self.api.api_id}: record_map_json names "
+                                   f"'{table_name}', which is not a result table")
 
             records = per_selector.get(selector, [])
             is_generic = "result_json" in model_cls.model_fields
