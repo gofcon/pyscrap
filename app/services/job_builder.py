@@ -18,10 +18,11 @@ Do NOT put a capture-timestamp value here to key snapshot/repeated jobs (e.g.
 a quote endpoint polled every few minutes to build a time series) -- a value
 here becomes part of *job generation*, so a fresh timestamp on every call
 would mint a brand new ApiJob row every time (job_id is meant to stay stable
-and reusable -- see ``job_key_params`` below). Use the reserved
-``"NOW"`` entry in ``job_key_params`` instead: it's resolved once per
-*execution*, not per job-generation, so the job_id/row count stays flat while
-each run still stamps its own capture time onto the saved rows.
+and reusable -- see ``job_key_params`` below). Set ``ApiMst.is_repeated`` and
+``ApiMst.snapshot_column`` instead: the timestamp is resolved once per
+*execution* (:func:`resolve_now`), not per job-generation, so the job_id/row
+count stays flat while each run still stamps its own capture time onto the
+saved rows.
 
 Each top-level entry is one independent "axis"; the final job set is the
 cartesian product across all axes (literal/date axes are single-valued, so
@@ -39,30 +40,58 @@ Example::
 Only *generates* ApiJob rows; no log entry is written until the job actually
 runs (see :func:`app.services.execution.run_job`, which logs SUCCESS/FAILED).
 
-``ApiMst.job_key_params`` (a list of param names, e.g. ``["BASDD"]``, or
-``row_stamp_json`` 이 {파라미터: 컬럼} 을 담는다) makes
-job_id deterministic from those params' values instead of a random uuid, so
-regenerating with the same values reuses the same job_id -- and a job whose
-id already exists is skipped as a duplicate rather than re-created. Without
-it, job_id is always random and every call creates fresh jobs. It lives on
-``ApiMst`` rather than ``ApiJobBuilder`` because it's a property of the API's
-own response/output-table shape (which fields it naturally keys records by),
-not of any particular builder's parameter choices -- every builder targeting
-the same api_id needs the exact same value anyway.
+네 컬럼이 파라미터를 다룬다. **역할이 서로 독립이고, 한 파라미터가 셋에
+동시에 들어갈 수도 있고 하나에만 들어갈 수도 있다.** v1 은 뒤의 셋이 한
+컬럼(``key_params_list``)이었고 그래서 예약어가 필요했다 (docs/SCHEMA-V2.md 4.1).
 
-The reserved entry ``"NOW"`` (or ``{"NOW": "<column_name>"}``) is special: it
-must never appear in ``cartesian_param_json``, and it's excluded from job_id
-construction entirely (a job's identity has to stay stable across repeated
-executions, or every run would mint a fresh job forever -- exactly the
-explosion this reservation avoids for something like a 1-minute snapshot
-poll). Instead it's resolved fresh at *execution* time, in
-:func:`app.services.execution.run_job`, via :func:`resolve_now` --
-floored to the job's ``ApiJobBuilder.schedule_tag`` bucket (see
-:func:`_floor_datetime`) so repeated runs of the same scheduled job get
-timestamps that line up with each other -- and stamped onto the saved result
-row the same way any other key param is (``key_params_json`` for generic
-tables, a real column for typed tables). One static job executes over and
-over; each execution just produces a new timestamped row.
+=========================== ======== ===================================
+컬럼                         사는 곳   하는 일
+=========================== ======== ===================================
+``cartesian_param_json``    빌더      **어떤 값 조합으로 잡을 펼치나.**
+                                      그 조합이 ``api_job.params_json`` 이
+                                      되고, 그것이 곧 요청의 ``:KEY``
+                                      치환 재료다 -- 요청에 나가는 것은
+                                      여기 있는 전부다
+``job_key_params``          api_mst   params_json 중 **무엇이 잡의
+                                      정체성인가.** job_id 를 만든다
+``row_stamp_json``          api_mst   params_json 중 **무엇을 결과 행의
+                                      컬럼에 찍나** ({파라미터: 컬럼})
+``snapshot_column``         api_mst   params 에 없는 값 하나를 행에 찍는다
+                                      -- 실행 시각 (:func:`resolve_now`)
+=========================== ======== ===================================
+
+읽는 곳이 각각 하나다: 요청은 ``_substitute_placeholders``, job_id 는
+:func:`_build_job_id`, 스탬프는 ``execution._execute_job``. 그래서 한 컬럼을
+고쳐도 다른 둘은 움직이지 않는다.
+
+``KIS_FUTOPT_CHART`` 가 네 조합을 한 번에 보여 준다::
+
+    파라미터      요청   job_id   행에 찍힘
+    SHORT_CODE    O      O        short_code
+    DATE          O      O        trade_date
+    BAR_SEC       O      O        -            봉 간격. 응답이 안 돌려준다
+    MRKT          O      -        -            시장 구분. 요청에만
+    HHMM          O      -        -            조회 기준시각. 요청에만
+
+``BAR_SEC`` 이 요점이다 -- 요청에 필요하고 job_id 를 가르지만(30초봉을 같이
+받으면 다른 잡이어야 한다) 저장할 값은 아니다. v1 에서 그것을 적으려면
+``{"BAR_SEC": "none_mapped"}`` 라는 예약어가 필요했고, v2 는 두 컬럼이 갈려
+있으니 ``job_key_params`` 에 넣고 ``row_stamp_json`` 에서 빼면 그 뜻이 된다.
+
+``job_key_params`` 가 비어 있으면 job_id 는 무작위(uuid)라 매 호출이 새 잡을
+만든다 -- 중복 검사가 불가능해진다. 있으면 그 파라미터들의 **값**으로 만들어서
+같은 값이면 같은 job_id 가 나오고, 이미 있는 잡은 중복으로 건너뛴다(주말
+실행이 ``last_bday`` 를 전날과 같은 금요일로 푸는 경우).
+
+``ApiJobBuilder`` 가 아니라 ``ApiMst`` 에 사는 이유: 그 API 의 응답이 무엇으로
+한 건을 가리는가의 성질이고, 어느 빌더의 파라미터 선택과는 무관하다 -- 같은
+api_id 를 겨누는 빌더는 어차피 같은 값이어야 한다.
+
+``snapshot_column`` 만 params 밖에서 온다. 실행마다 새로 풀리므로
+job_id/params_json 에 굽지 않고(그러면 틱마다 잡이 하나씩 생긴다) 빌더의
+``snapshot_unit`` 버킷으로 내려 자른다(:func:`_floor_datetime`) -- 같은 스케줄
+잡의 반복 실행이 스케줄러 흔들림만큼 어긋나지 않고 줄을 맞춘다. 정적 잡 하나가
+계속 돌면서 실행마다 새 시각의 행을 남긴다.
 """
 
 from __future__ import annotations
@@ -100,7 +129,7 @@ def _run_query_rows(session: Session, query: str) -> list[tuple]:
 
 
 # Every source scraped here is Korean-market data, so both kinds of
-# generated timestamp (RESERVED_NOW_KEY capture stamps and the _DATE_KEYWORDS
+# generated timestamp (snapshot_column capture stamps and the _DATE_KEYWORDS
 # below) have to be anchored to KST rather than to whatever the host happens
 # to be set to -- an Oracle Cloud instance defaults to UTC, which would put a
 # "5m" snapshot's trade_at 9 hours off the tick that produced it, and would
