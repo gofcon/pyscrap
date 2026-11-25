@@ -45,7 +45,7 @@ def _log(session: Session, job_id: str, status: str, error_message: str | None =
          commit: bool = True, *, error_code: str | None = None,
          error_detail: str | None = None, record_count: int | None = None,
          duration_ms: int | None = None, attempt_no: int = 1,
-         target_day: str | None = None, executed_at: datetime | None = None) -> ApiJobLog:
+         target_date: str | None = None, executed_at: datetime | None = None) -> ApiJobLog:
     """Append one execution-history row for a job. Never updates existing rows.
 
     ``commit=False`` just stages the row, leaving the commit to the caller --
@@ -54,7 +54,7 @@ def _log(session: Session, job_id: str, status: str, error_message: str | None =
     ~32ms round-trip instead of three).
 
     v1 은 status 와 error_message 둘만 채웠다. 나머지 다섯(error_code ·
-    error_detail · record_count · duration_ms · target_day)은 v2 에서 컬럼이
+    error_detail · record_count · duration_ms · target_date)은 v2 에서 컬럼이
     생겼고 전부 NULL 이었다 -- 컬럼만 있고 채우는 쪽이 없으면 "어제 상대 쪽
     문제는 몇 건인가" 를 여전히 문자열로 추측해야 한다 (docs/SCHEMA-V2.md
     6.3). 호출부는 execution 안의 셋뿐이다: 성공/실패 경로와 차단기가 건너뛴
@@ -68,7 +68,7 @@ def _log(session: Session, job_id: str, status: str, error_message: str | None =
         record_count=record_count,
         duration_ms=duration_ms,
         attempt_no=attempt_no,
-        target_day=target_day,
+        target_date=target_date,
         # .utcnow() is deprecated (returns a naive datetime that's *implicitly*
         # UTC -- easy to mix up with local time by accident). .now(timezone.utc)
         # is the replacement; the column itself is a plain DateTime (no tz), so
@@ -129,7 +129,7 @@ def _clear_previous_results(session: Session, api: ApiMst, job_id: str) -> None:
 _DAY_RE = re.compile(r"\D")
 
 
-def _target_day(key_params: dict[str, Any]) -> str | None:
+def _target_date(key_params: dict[str, Any]) -> str | None:
     """이 실행이 **어느 날짜분**을 받은 것인가 (YYYYMMDD), 모르면 None.
 
     결과 행에 찍히는 값들(key_params)에서 찾는다. 그 자리에 이미 둘 다 모여
@@ -220,7 +220,7 @@ def _execute_job(session: Session, job: ApiJob, attempt_no: int = 1) -> ScrapeEr
 
     # 로그에 적을 둘. 날짜는 key_params 가 다 모인 **뒤에** 뽑는다 -- 스냅샷
     # API 는 바로 위에서 들어간 관측 시각이 유일한 날짜다.
-    target_day = _target_day(key_params)
+    target_date = _target_date(key_params)
     started = time.monotonic()
 
     try:
@@ -286,7 +286,7 @@ def _execute_job(session: Session, job: ApiJob, attempt_no: int = 1) -> ScrapeEr
         _log(session, job.job_id, "EMPTY" if pending_empty else "SUCCESS", commit=False,
              record_count=sum(counts.values()),
              duration_ms=int((time.monotonic() - started) * 1000),
-             attempt_no=attempt_no, target_day=target_day)
+             attempt_no=attempt_no, target_date=target_date)
         session.commit()
         return None
     except Exception as exc:  # noqa: BLE001 - persisted for later inspection
@@ -325,7 +325,7 @@ def _execute_job(session: Session, job: ApiJob, attempt_no: int = 1) -> ScrapeEr
              # 담을 수 없어서 'HTTPStatusError' 만 남는 경우가 있었다.
              error_detail=detail_of(exc),
              duration_ms=int((time.monotonic() - started) * 1000),
-             attempt_no=attempt_no, target_day=target_day)
+             attempt_no=attempt_no, target_date=target_date)
         # A refusal is logged like any failure -- once, on the job that met
         # it -- and then handed up: run_cycle has to stop sending to that
         # host, which no single job can decide. Every other failure stays

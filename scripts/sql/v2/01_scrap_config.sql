@@ -15,7 +15,7 @@
 --   *.execution_cycle         -> schedule_tag + snapshot_unit
 --   *.description             -> note (사람) + engine_note (엔진)
 --   api_job_log               -> error_code/error_detail/record_count/
---                                duration_ms/attempt_no/target_day 추가
+--                                duration_ms/attempt_no/target_date 추가
 --
 -- 예약어 NOW 와 none_mapped 는 없다. 반복 여부는 is_repeated 가, 시각을
 -- 어느 컬럼에 남기는가는 snapshot_column 이 말한다.
@@ -223,7 +223,7 @@ CREATE INDEX ix_api_job_builder_sch ON api_job_builder (schedule_tag);
 -- api_job : 실행 단위
 -- ---------------------------------------------------------------------------
 -- v1 은 job_id 에 날짜를 넣어 종목 하나가 날마다 한 행씩 늘었다 (633,996행).
--- v2 는 작업을 "무엇을 받을지" 로만 두고 날짜는 api_job_log.target_day 로
+-- v2 는 작업을 "무엇을 받을지" 로만 두고 날짜는 api_job_log.target_date 로
 -- 옮길 수 있게 해 둔다 -- 이 DDL 은 두 방식 다 담는다. 어느 쪽으로 갈지는
 -- 별도 결정이다 (docs/SCHEMA-V2.md 7.1, 10절 질문 2).
 CREATE TABLE api_job (
@@ -283,7 +283,7 @@ CREATE TABLE api_job_log (
   attempt_no         NUMBER DEFAULT 1,    -- 재시도 몇 번째였나
   -- 어느 날짜분을 받았나. job_id 에서 날짜를 빼는 경우(7.1) 멱등성과
   -- "그날 이미 받았나" 판단이 이 컬럼으로 옮겨온다.
-  target_day         VARCHAR2(8 CHAR),
+  target_date         VARCHAR2(8 CHAR),
 
   executed_at        DATE DEFAULT CURRENT_TIMESTAMP NOT NULL,
 
@@ -294,7 +294,7 @@ CREATE TABLE api_job_log (
 
 -- "이 작업이 그날 성공했나" 가 가장 잦은 질의가 된다 (7.1 로 가면 멱등성
 -- 판단 자체가 이 인덱스를 탄다).
-CREATE INDEX ix_api_job_log_job_day ON api_job_log (job_id, target_day);
+CREATE INDEX ix_api_job_log_job_date ON api_job_log (job_id, target_date);
 -- 보존 정리(purge-job-logs)와 일자별 집계가 쓴다.
 CREATE INDEX ix_api_job_log_exec ON api_job_log (executed_at);
 -- "어제 실패를 사유별로" 를 받는다. 성공 행은 error_code 가 NULL 이라
@@ -303,4 +303,4 @@ CREATE INDEX ix_api_job_log_code ON api_job_log (error_code, executed_at);
 
 COMMENT ON COLUMN api_job_log.error_code   IS '예외 클래스 이름. 성공이면 NULL';
 COMMENT ON COLUMN api_job_log.record_count IS '적재 행 수. v1 은 api_job.description 문자열에 있었다';
-COMMENT ON COLUMN api_job_log.target_day   IS 'YYYYMMDD. 어느 날짜분을 받았나';
+COMMENT ON COLUMN api_job_log.target_date   IS 'YYYYMMDD. 어느 날짜분을 받았나';

@@ -52,9 +52,9 @@ CREATE TABLE api_rst (
   -- 같은 접기를 한다.
   result_json        JSON                NOT NULL,
 
-  -- 어느 날짜분인가. api_job_log.target_day 와 같은 뜻이고, 보존 정리와
+  -- 어느 날짜분인가. api_job_log.target_date 와 같은 뜻이고, 보존 정리와
   -- 재적재(그날 것만 지우고 다시 넣기)가 이 컬럼을 쓴다.
-  target_day         VARCHAR2(8 CHAR),
+  target_date         VARCHAR2(8 CHAR),
 
   updated_at         DATE DEFAULT CURRENT_TIMESTAMP,
 
@@ -73,7 +73,7 @@ CREATE INDEX ix_api_rst_job ON api_rst (job_id) GLOBAL;
 
 -- 날짜 정리/재적재용. api_id 와 함께 쓰이므로 LOCAL 이면 프루닝과 겹쳐
 -- 동작한다.
-CREATE INDEX ix_api_rst_day ON api_rst (target_day) LOCAL;
+CREATE INDEX ix_api_rst_date ON api_rst (target_date) LOCAL;
 
 -- JSON 경로 인덱스는 소스마다 다르므로 여기 두지 않는다. 조회에 실제로
 -- 쓰는 경로가 생길 때 04_scrap_views.sql 말미의 형태로 더한다 -- 미리
@@ -81,4 +81,4 @@ CREATE INDEX ix_api_rst_day ON api_rst (target_day) LOCAL;
 
 COMMENT ON TABLE  api_rst IS '타입 테이블이 없는 소스의 결과. 조회는 v_* 뷰로';
 COMMENT ON COLUMN api_rst.result_json IS '레코드 한 건 + 스탬프된 키. 키는 소문자로 접어 넣는다';
-COMMENT ON COLUMN api_rst.target_day  IS 'YYYYMMDD. 재적재와 보존 정리가 쓴다';
+COMMENT ON COLUMN api_rst.target_date  IS 'YYYYMMDD. 재적재와 보존 정리가 쓴다';

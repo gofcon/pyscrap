@@ -469,7 +469,7 @@ error_detail  CLOB            스택/응답 앞부분. NULL 허용
 record_count  NUMBER          받아서 적재한 행 수          ← 새로
 duration_ms   NUMBER          요청+적재 소요              ← 새로
 attempt_no    NUMBER          재시도 몇 번째였나           ← 새로
-target_day    VARCHAR2(8)     어느 날짜분을 받았나          ← 새로 (7절)
+target_date    VARCHAR2(8)     어느 날짜분을 받았나          ← 새로 (7절)
 executed_at   DATE            그대로
 ```
 
@@ -483,7 +483,7 @@ executed_at   DATE            그대로
 후에 돌려 보면:
 
 ```
-id  status   error_code         record_count duration_ms attempt_no target_day
+id  status   error_code         record_count duration_ms attempt_no target_date
  7  SUCCESS  (null)             (null)       (null)      1          (null)     <- 고치기 전
 21  SUCCESS  (null)             10           536         1          20261124
 22  FAILED   SourceUnavailable  (null)       3590        1          20261124   <- 404
@@ -492,7 +492,7 @@ id  status   error_code         record_count duration_ms attempt_no target_day
 29  EMPTY    (null)             0            90          1          20260101   <- 휴일
 ```
 
-`target_day` 는 **값으로** 판정한다 -- 숫자만 남겨 8자리이고 연·월·일이 말이
+`target_date` 는 **값으로** 판정한다 -- 숫자만 남겨 8자리이고 연·월·일이 말이
 되면 날짜로 본다. key_params 에서 찾으므로 조회일을 받는 API 는 그 파라미터가,
 스냅샷 API 는 관측 시각이 잡힌다. 파라미터 **이름**으로 거르지 않는 이유:
 원천마다 다르다(BAS_DD, trdDd, std_dt, inqDt…).
@@ -814,10 +814,10 @@ KIS_ETF_PDF_069500_20261122   ← 종목은 하나인데 행이 날마다 늘어
 
 ```
 api_job        종목 단위로 고정           KIS_ETF_PDF_069500     1,163 행
-api_job_log    실행마다, target_day 포함   ... 20261124 ...       날마다 쌓임
+api_job_log    실행마다, target_date 포함   ... 20261124 ...       날마다 쌓임
 ```
 
-"그날 이미 받았나"는 `api_job_log`에서 본다 (`target_day` + `status='SUCCESS'`). 멱등성은 결과 테이블의 날짜 컬럼으로 지운 뒤 넣는 방식으로 유지한다 — 지금 `save_mode='overwrite'`가 job_id로 지우는 것을 `(job_id, target_day)`로 바꾸면 된다.
+"그날 이미 받았나"는 `api_job_log`에서 본다 (`target_date` + `status='SUCCESS'`). 멱등성은 결과 테이블의 날짜 컬럼으로 지운 뒤 넣는 방식으로 유지한다 — 지금 `save_mode='overwrite'`가 job_id로 지우는 것을 `(job_id, target_date)`로 바꾸면 된다.
 
 얻는 것: `api_job`이 종목 수만큼 고정되고, `purge-jobs`가 작업이 아니라 로그만 보면 된다. 설정 테이블과 이력 테이블의 역할이 갈린다.
 
@@ -1244,7 +1244,7 @@ KSD_ISIN_ALL      schedule_tag=daily_batch1
 | | 무엇 | 완화 |
 |---|---|---|
 | 高 | 설정 변환 스크립트의 조용한 오류 | 8.1 이중 운행 비교. 건너뛰면 안 된다 |
-| 高 | 7.1 (날짜 분리) 이 멱등성을 깨뜨림 | 별도 결정으로 분리. 결과 테이블 삭제 조건을 `(job_id, target_day)`로 바꾸는 것이 전제 |
+| 高 | 7.1 (날짜 분리) 이 멱등성을 깨뜨림 | 별도 결정으로 분리. 결과 테이블 삭제 조건을 `(job_id, target_date)`로 바꾸는 것이 전제 |
 | 中 | synonym 권한 누락 → `ORA-01031` | GRANT를 synonym보다 먼저. 4단계 끝에 전 테이블 SELECT 점검 |
 | 中 | 두 DB 동시 운행 중 사전 데이터 불일치 | REF는 v2 한쪽만 정본으로 두고 v1은 읽기만 |
 | 低 | `user_tables` 가정이 깨짐 | `check-sql` 등 점검 코드를 `all_tables`로 |
@@ -1315,7 +1315,7 @@ PARTITION BY LIST (api_id) AUTOMATIC (PARTITION p_seed VALUES ('__SEED__'))
 프루닝으로 한 파티션만 읽는 것을 플랜으로 확인했다(`part 2..2`). 이것이 없으면
 43개 소스가 한 표에 섞여 한 소스를 읽을 때마다 다른 소스 행을 골라내야 한다.
 
-인덱스는 `job_id` 를 GLOBAL, `target_day` 와 JSON 경로를 LOCAL 로 둔다 --
+인덱스는 `job_id` 를 GLOBAL, `target_date` 와 JSON 경로를 LOCAL 로 둔다 --
 `overwrite` 의 선행 삭제가 `job_id` 로만 지우기 때문이다.
 
 ### api_rst 는 한 행을 한 컬럼에 담는다
@@ -1335,7 +1335,7 @@ result_json     = {"wg": ..., "rank": ..., "sec_nm": ...}
 v2 는 합쳐서 한 컬럼에 넣는다.
 
 ```
-api_rst : id · api_id · job_id · result_json · target_day · updated_at
+api_rst : id · api_id · job_id · result_json · target_date · updated_at
 ```
 
 `result_json` 이 타입 테이블에 저장될 행과 같은 모양이 된다. 뷰는

@@ -324,7 +324,7 @@ class ApiJobLog(SQLModel, table=True):
     """받아서 적재한 행 수."""
     duration_ms: Optional[int] = Field(default=None)
     attempt_no: Optional[int] = Field(default=1)
-    target_day: Optional[str] = Field(default=None, max_length=8)
+    target_date: Optional[str] = Field(default=None, max_length=8)
     """YYYYMMDD. 어느 날짜분을 받았나 -- job_id 에서 날짜를 빼는 경우
     멱등성과 "그날 이미 받았나" 판단이 이 컬럼으로 옮겨온다."""
 
@@ -359,7 +359,7 @@ class ApiRst(ResultTable, table=True):
     # KRX 는 전부 대문자).
     result_json: dict = Field(default_factory=dict, sa_type=JSONText)
 
-    target_day: Optional[str] = Field(default=None, index=True, max_length=8)
+    target_date: Optional[str] = Field(default=None, index=True, max_length=8)
     """어느 날짜분인가. 보존 정리와 재적재(그날 것만 지우고 다시 넣기)가 쓴다."""
 
     updated_at: Optional[datetime] = Field(default=None,
