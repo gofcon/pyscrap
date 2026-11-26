@@ -1,4 +1,4 @@
-CREATE OR REPLACE PROCEDURE sp_compact_exported (
+CREATE OR REPLACE PROCEDURE sp_compact_parquet (
   p_name     IN  VARCHAR2,                -- 대상 (버킷 프리픽스 이름)
   p_to       IN  VARCHAR2,                -- 마지막 영업일 (YYYYMMDD, 포함)
   p_from     IN  VARCHAR2,                -- 시작 영업일 (포함)
@@ -50,6 +50,21 @@ CREATE OR REPLACE PROCEDURE sp_compact_exported (
 -- p_order_by 는 정렬 대상이다. 기본은 fn_export_day_col 이고, 매핑이 없는
 -- 프리픽스(kis_futopt_price1 처럼 이름이 뷰 이름과 다른 것)에는 직접 준다.
 -- 정렬을 거를 수는 없다 -- 정렬이 이 작업의 조회 이득 절반이다.
+--
+-- **[p_from, p_to] 는 고르는 데만 쓴다.** 출력 파일 이름은 고른 것들이 실제로
+-- 담은 범위에서 나온다. 한동안 반대로 -- 이름을 인자에서 뽑고 -- 만들었더니
+-- 요청보다 넓은 기간 파일을 집었을 때 이름이 실제보다 좁게 말하게 돼서,
+-- 그 경우를 ORA-20005 로 거절해야 했다. 이름을 실제에서 뽑으면 거절할 일이
+-- 없다 -- 걸친 파일을 같이 접고 이름이 그만큼 넓어진다. 가드 하나가 없어지는
+-- 쪽이 가드 하나를 더 두는 쪽보다 낫다.
+--
+-- 그 대신 작업량이 요청보다 커질 수 있다(걸친 기간 파일을 다시 쓴다).
+-- 조용히 넘기지 않고 출력 줄에 적는다.
+--
+-- 인자를 경로로 받지 않는 이유: EXPORT_DATA 가 파일 이름에 워커 id 와
+-- 타임스탬프를 붙이므로(_part_680976_20261126T051456296013Z.parquet) 사람이
+-- 손으로 적을 수 없고, 부르는 쪽은 결국 LIST_OBJECTS 로 같은 선택을 다시
+-- 해야 한다. 고르는 일은 여기 있는 것이 맞다.
   c_cred    CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
   c_base    CONSTANT VARCHAR2(400) := fn_export_base;
   v_root    VARCHAR2(400) := c_base || LOWER(p_name) || '/';
@@ -67,6 +82,11 @@ CREATE OR REPLACE PROCEDURE sp_compact_exported (
   v_before  t_seen;
   v_days    NUMBER := 0;
   v_ranges  NUMBER := 0;
+  -- **실제로** 합친 구간. 출력 파일 이름이 이것에서 나온다 -- 인자가 아니라.
+  -- 인자는 무엇을 고를지만 말하고, 이름은 고른 것이 담은 범위를 말한다.
+  -- 그래서 이름이 실제보다 좁거나 넓게 말할 수 없다.
+  v_lo      VARCHAR2(8);
+  v_hi      VARCHAR2(8);
 
   PROCEDURE drop_window IS
   BEGIN
@@ -98,17 +118,13 @@ BEGIN
       DECLARE
         v_rel VARCHAR2(512) := SUBSTR(o.object_name, 7);   -- '_arch/' 뗀 것
       BEGIN
-        IF SUBSTR(v_rel, 1, 8) < p_from OR SUBSTR(v_rel, 10, 8) > p_to THEN
-          raise_application_error(-20005,
-            LOWER(p_name) || ': 기간 파일 ' || SUBSTR(v_rel, 1, 17)
-            || ' 이 요청 범위 ' || p_from || '..' || p_to || ' 밖으로 나간다. '
-            || '그 파일을 덮는 범위로 다시 부른다 -- 예: p_from => '''
-            || LEAST(SUBSTR(v_rel, 1, 8), p_from) || ''', p_to => '''
-            || GREATEST(SUBSTR(v_rel, 10, 8), p_to) || '''.');
-        END IF;
+        v_lo := LEAST(NVL(v_lo, SUBSTR(v_rel, 1, 8)), SUBSTR(v_rel, 1, 8));
+        v_hi := GREATEST(NVL(v_hi, SUBSTR(v_rel, 10, 8)), SUBSTR(v_rel, 10, 8));
       END;
       v_ranges := v_ranges + 1;
     ELSE
+      v_lo := LEAST(NVL(v_lo, SUBSTR(o.object_name, 1, 8)), SUBSTR(o.object_name, 1, 8));
+      v_hi := GREATEST(NVL(v_hi, SUBSTR(o.object_name, 1, 8)), SUBSTR(o.object_name, 1, 8));
       v_days := v_days + 1;
     END IF;
 
@@ -124,10 +140,14 @@ BEGIN
     RETURN;
   END IF;
 
-  IF v_objs.COUNT = 1 AND v_ranges = 1 THEN
-    -- 이미 기간 파일 하나다. 다시 쓰면 바이트만 바뀌고 얻는 것이 없다.
+  IF v_objs.COUNT = 1 THEN
+    -- 합칠 것이 하나뿐이다. 다시 쓰면 바이트만 바뀌고 얻는 것이 없다.
+    -- 날짜 파일 하나여도 같다 -- 하루치를 '기간' 으로 다시 쓰는 것은 이름만
+    -- 바꾸는 일이고, 그 하루는 날짜 폴더에 있는 것이 지울 단위로 낫다.
     DBMS_OUTPUT.PUT_LINE(RPAD(LOWER(p_name), 20) || p_from || '..' || p_to
-                         || '  이미 기간 파일 하나, 그대로 둠');
+                         || '  합칠 것이 ' || CASE WHEN v_ranges = 1 THEN '기간 파일'
+                                                   ELSE '날짜 파일' END
+                         || ' 하나뿐, 그대로 둠');
     RETURN;
   END IF;
 
@@ -162,7 +182,7 @@ BEGIN
     'BEGIN DBMS_CLOUD.EXPORT_DATA(credential_name => :1, file_uri_list => :2,'
     || ' format => :3, query => :4); END;'
     USING c_cred,
-          v_prefix || p_from || '_' || p_to || '_part',
+          v_prefix || v_lo || '_' || v_hi || '_part',
           JSON_OBJECT('type' VALUE 'parquet'),
           'SELECT * FROM ' || v_window || ' ORDER BY ' || v_col;
 
@@ -212,10 +232,15 @@ BEGIN
 
   p_rows := v_src;
 
-  DBMS_OUTPUT.PUT_LINE(RPAD(LOWER(p_name), 20) || p_from || '..' || p_to || '  '
+  DBMS_OUTPUT.PUT_LINE(RPAD(LOWER(p_name), 20) || v_lo || '..' || v_hi || '  '
     || TO_CHAR(v_src, 'FM999,999,999') || ' rows -> _arch ('
     || v_fresh.COUNT || ' file(s)), 접어 넣은 것: 날짜별 ' || v_days
-    || ' + 기간 ' || v_ranges);
+    || ' + 기간 ' || v_ranges
+    -- 고른 것이 요청보다 넓으면 말한다. 더 넓은 기간 파일을 재료로 집은
+    -- 경우이고, 그러면 그 파일까지 다시 쓰므로 작업량이 요청보다 크다.
+    || CASE WHEN v_lo < p_from OR v_hi > p_to
+            THEN ' (요청 ' || p_from || '..' || p_to || ' 보다 넓다 -- 걸친 기간 파일을 같이 접었다)'
+       END);
 
   EXECUTE IMMEDIATE 'ALTER SESSION ENABLE PARALLEL QUERY';
 EXCEPTION

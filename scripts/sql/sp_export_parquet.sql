@@ -120,7 +120,7 @@ BEGIN
     raise_application_error(-20002,
       v_from || '..' || v_to || ' overlaps the range export '
       || SUBSTR(o.object_name, 1, 17) || ' of ' || LOWER(p_name)
-      || '; re-run sp_compact_exported instead, or drop it first');
+      || '; re-run sp_compact_parquet instead, or drop it first');
   END LOOP;
 
   EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL QUERY';

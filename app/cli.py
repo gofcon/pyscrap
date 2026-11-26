@@ -408,7 +408,7 @@ def archive_exported_cmd(
     tables. Keeping both copies is what fills the database; this drops the one
     that costs.
 
-    Two steps, one procedure each (split 2026-11-26). sp_compact_exported
+    Two steps, one procedure each (split 2026-11-26). sp_compact_parquet
     reads the month's objects out of the bucket and writes them back as one
     <target>/_arch/<from>_<to>_part file, touching nothing in the database;
     sp_purge_exported checks that the month reads back from the bucket and

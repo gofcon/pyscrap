@@ -13,7 +13,7 @@ CREATE OR REPLACE PROCEDURE sp_purge_exported (
 -- 단계여야 했다 -- 먼저 "외부가 원본 이상을 읽나"(중복 허용), 접은 뒤 다시
 -- "정확히 같나". 쓰는 일을 떼어내면 그 중간 상태가 없어지고 검증이 한 번이다.
 --
--- 그래서 이쪽은 DELETE 를 하고 버킷에 손대지 않고, sp_compact_exported 는
+-- 그래서 이쪽은 DELETE 를 하고 버킷에 손대지 않고, sp_compact_parquet 는
 -- 버킷에 쓰고 DB 에 손대지 않는다. 실패 모드가 각각 하나다.
 --
 -- 둘은 서로를 요구하지 않는다. 여기서 세는 것은 "그 날짜들이 버킷에서 읽히나"
@@ -116,7 +116,7 @@ BEGIN
       || ' 행을 읽는데 원본은 ' || TO_CHAR(v_src, 'FM999,999,999') || ' 행이다 ('
       || p_from || '..' || p_to || '). '
       || CASE WHEN v_xt < v_src THEN '내보내지 않은 날이 있다 -- sp_export_parquet 를 먼저 돌린다.'
-              ELSE '버킷에 두 벌이 있다 -- sp_compact_exported 로 접는다.' END
+              ELSE '버킷에 두 벌이 있다 -- sp_compact_parquet 로 접는다.' END
       || ' 삭제하지 않았다.');
   END IF;
 

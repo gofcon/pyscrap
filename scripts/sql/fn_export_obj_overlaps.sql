@@ -13,7 +13,7 @@ CREATE OR REPLACE FUNCTION fn_export_obj_overlaps (
 --   sp_archive_exported  "이 달의 _arch 인가"           -> 지운다(다시 쓰기 전)
 --   sp_export_parquet    "기간 파일이 내 날과 겹치나"   -> -20002 로 거절
 -- 네 개가 한 함수가 된다. 지금 부르는 쪽은 sp_export_parquet 과
--- sp_compact_exported 다. 꼴(DAY/RANGE)은 fn_export_obj_kind 가 판정한다.
+-- sp_compact_parquet 다. 꼴(DAY/RANGE)은 fn_export_obj_kind 가 판정한다.
 --
 -- 구간은 파일 이름이 들고 있다 -- 어디까지 기간으로 나갔는지를 별도 표에
 -- 적어 두면 누가 버킷에서 파일을 지웠을 때 그 기록만 남아 어긋난다. 버킷을

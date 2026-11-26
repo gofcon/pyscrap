@@ -170,12 +170,12 @@ sqlplus ... @scripts/sql/fn_export_obj_overlaps.sql
 
 # 4) 내보내기 프로시저. sp_run_monthly_archive 가 앞의 둘을 부르므로 순서가 있다
 sqlplus ... @scripts/sql/sp_export_parquet.sql
-sqlplus ... @scripts/sql/sp_compact_exported.sql
+sqlplus ... @scripts/sql/sp_compact_parquet.sql
 sqlplus ... @scripts/sql/sp_purge_exported.sql
 sqlplus ... @scripts/sql/sp_run_monthly_archive.sql
 ```
 
-`sp_export_bulk` 은 없다. `sp_compact_exported` 가 그 일을 하고, 기간 파일을
+`sp_export_bulk` 은 없다. `sp_compact_parquet` 가 그 일을 하고, 기간 파일을
 `_bulk/` 가 아니라 `_arch/` 에 쓴다 (TECHNICAL 6.2). 이미 깔려 있다면
 `DROP PROCEDURE sp_export_bulk` 로 내린다 -- 안 내리면 `check-sql` 이
 "저장소에 없는 객체" 로 잡는다.

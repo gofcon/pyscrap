@@ -6,8 +6,9 @@ CREATE OR REPLACE PROCEDURE sp_run_monthly_archive (
 --
 -- 이 프로시저는 이제 **순서만 정한다.** 대상마다 두 가지를 차례로 부른다:
 --
---   sp_compact_exported   그 달을 <대상>/_arch/<시작>_<끝>_part 하나로 만들고
---                         날짜별 파일을 접어 넣는다. DB 에 손대지 않는다.
+--   sp_compact_parquet   그 달의 버킷 객체를 <대상>/_arch/<첫날>_<끝날>_part
+--                         하나로 합친다. DB 를 읽지도 쓰지도 않는다.
+--                         이름은 인자가 아니라 실제 담은 날에서 나온다.
 --   sp_purge_exported     그 달이 버킷에서 읽히는 것을 확인하고 DB 에서 지운다.
 --                         버킷에 손대지 않는다.
 --
@@ -17,7 +18,7 @@ CREATE OR REPLACE PROCEDURE sp_run_monthly_archive (
 -- 멈췄을 때 무엇이 끝났고 무엇이 안 끝났는지가 이름으로 읽힌다.
 --
 -- 순서가 중요하다: 접기가 먼저다. 접은 결과를 보고 지운다. 거꾸로 하면
--- 지운 뒤에 접을 것이 DB 에 없다 -- sp_compact_exported 는 DB 에서 내보낸다.
+-- 지운 뒤에 접을 것이 DB 에 없다 -- sp_compact_parquet 는 DB 에서 내보낸다.
 --
 -- 왜 필요한가: kis_futopt_price 는 하루 87,000 행, kis_futopt_chart 는 33,000
 -- 행씩 쌓인다. 한 달이면 각각 1GB, 0.5GB 다. 값은 Parquet 으로 나가 외부
@@ -29,7 +30,7 @@ CREATE OR REPLACE PROCEDURE sp_run_monthly_archive (
 -- 돌리든 -- 다시 돌리든 -- 같은 구간을 본다. 일수로 자르면 실행 시각에 따라
 -- 경계가 흔들려 한 달이 두 파일에 걸친다.
 --
--- 다시 불러도 결과가 같다: sp_compact_exported 가 겹치는 기간 파일을 교체하고,
+-- 다시 불러도 결과가 같다: sp_compact_parquet 가 겹치는 기간 파일을 교체하고,
 -- sp_purge_exported 는 남은 것만 다시 확인하고 지운다.
 --
 -- 그 대신 못 돌고 지나간 달은 저절로 따라잡히지 않는다. 두 달을 건너뛰었다면
@@ -74,7 +75,7 @@ BEGIN
                        || ' (' || v_from || '..' || v_to || ')');
 
   FOR i IN 1 .. v_targets.COUNT LOOP
-    sp_compact_exported(p_name => v_targets(i), p_to => v_to, p_from => v_from,
+    sp_compact_parquet(p_name => v_targets(i), p_to => v_to, p_from => v_from,
                         p_rows => v_rows);
 
     -- compact 의 행수로 purge 를 가르지 않는다. 0 이 두 가지를 뜻하기
