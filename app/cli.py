@@ -408,11 +408,15 @@ def archive_exported_cmd(
     tables. Keeping both copies is what fills the database; this drops the one
     that costs.
 
-    Needs those external tables in the calling account: the procedure counts
-    xt_<target> before it deletes anything, so an account without them stops
-    at ORA-00942 rather than deleting. The v2 collection account has had none
-    since 2026-11-26, which is why its archive timer stays off -- archiving
-    belongs with the analysis account that holds the external tables.
+    Two steps, one procedure each (split 2026-11-26). sp_compact_exported
+    folds the month into one <target>/_arch/<from>_<to>_part file and touches
+    nothing in the database; sp_purge_exported checks that the month reads
+    back from the bucket and deletes it, touching nothing in the bucket. The
+    check builds its own external table over the month and drops it, so it
+    needs the credential but no pre-existing xt_* in the calling account.
+
+    The v2 collection account keeps this timer off anyway -- archiving belongs
+    with the analysis account, which is where the external tables now live.
 
     A calendar month rather than an age, so one archive file is one month and
     a rerun looks at the same range. The default is last month, which is what

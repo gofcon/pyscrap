@@ -1029,9 +1029,33 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 뒤의 둘은 애초에 읽히지도 않았다(`ORA-29913` — 버킷에 그 접두사가 없었다). v1 에서 복사돼 온 정의가 v2 버킷에서 가리킬 데가 없었던 것이다.
 
-**딸려 온 것:** `sp_archive_exported` 가 지우기 전 검증에 `xt_<대상>` 을 쓴다. `EXECUTE IMMEDIATE` 라서 `user_dependencies` 조회로는 안 보이고, 그래서 내리기 전 의존성 확인에서 한 번 놓쳤다. 대상 목록은 손으로 적은 네 개(`kis_futopt_chart`, `kis_futopt_price`, `kis_futopt_daily`, `krx_opt_daily`)이고 존재 여부로 걸러지지 않으므로, 외부 테이블이 없으면 그 자리에서 `ORA-00942` 로 멈춘다. 멈추는 자리가 삭제 **전**이라 데이터는 안전하지만 `_arch` Parquet 을 한 번 쓴 뒤다. 뒤의 둘(`kis_futopt_daily`·`krx_opt_daily`)은 v2 에 외부 테이블이 아예 없었으니 이 경로는 내리기 전에도 이미 막혀 있었다.
+**딸려 온 것:** `sp_archive_exported` 가 지우기 전 검증에 `xt_<대상>` 을 쓰고 있었다. `EXECUTE IMMEDIATE` 라서 `user_dependencies` 조회로는 안 보이고, 그래서 내리기 전 의존성 확인에서 한 번 놓쳤다. 대상 목록은 손으로 적은 네 개(`kis_futopt_chart`, `kis_futopt_price`, `kis_futopt_daily`, `krx_opt_daily`)이고 존재 여부로 걸러지지 않으므로, 외부 테이블이 없으면 그 자리에서 `ORA-00942` 로 멈췄다. 멈추는 자리가 삭제 **전**이라 데이터는 안전했지만 `_arch` Parquet 을 한 번 쓴 뒤였다. 뒤의 둘(`kis_futopt_daily`·`krx_opt_daily`)은 v2 에 외부 테이블이 아예 없었으니 이 경로는 내리기 전에도 이미 막혀 있었다.
 
-그래서 v2 에서 `archive` 타이머는 켜지 않는다. 되살리려면 MART 계정에 외부 테이블을 걸고 그쪽에서 돌린다 — 그것이 7.6이 원래 가리키던 자리다.
+**그 의존은 2026-11-26 에 없앴다.** 내보내기 파이프라인을 다시 가르면서(아래 7.8) 검증을 `sp_purge_exported` 가 자기 창을 만들어 하도록 바꿨다 — 자격만 있으면 어느 계정에서든 돈다. 그래도 v2 에서 `archive` 타이머는 켜지 않는다: 계정 의존이 아니라 **역할**의 문제다. 수집 계정은 모으고 내보내는 데까지 하고, 아카이브는 외부 테이블을 가진 분석 계정 몫이다.
+
+### 7.8 내보내기 파이프라인 정리 — 2026-11-26
+
+7.6 을 닫으면서 같이 본 것이다. 아카이브가 "매일 내보낸 Parquet 을 읽어 월별로 합치는 것" 인지 물어보신 데서 시작했는데, 읽어 보니 **DB 에서 다시 내보내고 있었고** 그 사실이 코드 어디에도 한 줄로 적혀 있지 않았다. 꼬인 지점이 네 개였다.
+
+**(1) `_bulk` 과 `_arch` 가 같은 물건이었다.** 둘 다 "기간 하나를 날짜순으로 정렬해 내보낸 Parquet". 이름이 둘, 보관 규칙이 둘(`_bulk` 은 대상당 하나만 남기고 전부 지움, `_arch` 는 달마다 하나씩 쌓임), 날짜 폴더를 접는 코드는 양쪽에 복사. → `_arch` 하나로 합치고 보관 규칙을 "겹치면 교체" 로 통일했다. `sp_export_bulk` 은 `sp_compact_exported` 가 됐다.
+
+**(2) 상태를 파일 이름에서 자릿수로 읽었다.** `INSTR(object_name,'/') = 9` 가 두 벌, `SUBSTR(object_name,10,8)` 이 또 한 벌. → `fn_export_obj_kind` + `fn_export_obj_overlaps` 두 함수로 모았다. 실제 객체 404개에서 옛 산수와 판정이 전부 일치하는 것을 범위 네 가지로 확인했다.
+
+**(3) 한 프로시저가 두 일을 했다.** `DB 자리 비우기` 와 `버킷 파일 합치기`. 그 용접 때문에 내보낸 직후 날짜별과 기간 파일이 둘 다 있는 중간 상태가 생기고, 검증이 두 단계여야 했다(먼저 "원본 이상", 접은 뒤 "정확히 같음"). → `sp_compact_exported`(버킷만) 와 `sp_purge_exported`(DB 만) 로 갈랐다. 각자 검증이 한 번이고, `sp_archive_exported` 는 순서만 정한다.
+
+**(4) 검증이 호출 계정에 외부 테이블이 미리 있다고 가정했다.** 7.6 에서 깨진 그것이다. → `sp_purge_exported` 가 자기 창을 만들고 지운다.
+
+```
+전                                        후
+sp_export_parquet    <날짜>/             sp_export_parquet    <날짜>/
+sp_export_bulk       _bulk/              sp_compact_exported  _arch/   (버킷만)
+sp_archive_exported  _arch/ + DELETE     sp_purge_exported    DELETE   (DB 만)
+                                         sp_archive_exported  순서만
+```
+
+**하지 않은 것 하나.** 접기를 버킷→버킷으로(날짜별 Parquet 을 읽어 합치기) 하면 DB 와 완전히 무관해져서 행을 지운 뒤에도 접을 수 있다. 하지 않았다: Parquet 을 다시 읽으면 타입이 한 번 더 옮겨가고(`NUMBER` → `BINARY_DOUBLE`, `DATE` → `TIMESTAMP(3)`), 날짜별과 기간 파일을 외부 테이블 하나로 읽는 구조에서 그 둘의 스키마가 갈리면 읽는 쪽에서 알아채기 어렵다. 재어 보지 않은 것을 운영 경로에 넣지 않는다.
+
+**경로 이름은 안 바꿨다.** `d=20261126/` 같은 자기설명적 접두사를 검토했는데, 외부 테이블 글롭이 `<대상>/*/*.parquet` 이라 폴더 이름과 무관하게 읽히므로 정의를 고칠 필요는 없었고 — 이사도 v2 는 객체 4개뿐이라 쌌다 — 이름 자체가 주는 이득이 0 이었다. 값은 (1)(2) 에 있었고 그건 이름을 안 바꾸고도 됐다.
 
 ### 7.7 작은 것들
 
@@ -2323,9 +2347,13 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 
 ### 고치지 않아도 됐던 것
 
-`sp_archive_exported` · `sp_export_bulk` · `sp_export_parquet` 는 손대지 않는다.
-세 곳이 `ALTER SESSION` 을 쓰지만 **`PARALLEL QUERY` 이고 `PARALLEL DML` 이
-아니다.** 재보니 ORA-12841 은 DML 에만 걸린다.
+`sp_archive_exported` · `sp_export_bulk` · `sp_export_parquet` 는 (이행 때는)
+손대지 않는다. 세 곳이 `ALTER SESSION` 을 쓰지만 **`PARALLEL QUERY` 이고
+`PARALLEL DML` 이 아니다.** 재보니 ORA-12841 은 DML 에만 걸린다.
+
+(그 뒤 2026-11-26 에 다른 이유로 셋을 손봤다 -- `_bulk`/`_arch` 통합과
+내보내기·삭제 분리. 7.8 과 TECHNICAL 6.2 참고. `ALTER SESSION` 쪽 판단은
+그대로 유효하다.)
 
 ```
 트랜잭션 중  ALTER SESSION DISABLE PARALLEL QUERY  ->  ok
@@ -2340,7 +2368,7 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 | | 무엇 |
 |---|---|
 | ~~`sp_create_external_tables`~~ | ~~MART 몫. 외부 테이블 5개가 아직 SCRAP 에 있다~~ **내렸다 2026-11-26 (7.6)** |
-| `archive` 타이머 | `xt_*` 가 없어 검증에서 멈춘다. v2 에서는 끈다 (7.6) |
+| `archive` 타이머 | v2 에서는 끈다 -- 아카이브는 분석 계정 몫 (7.6) |
 | ~~`api_mst` 58행 · 빌더 95행 이행~~ | **완료 2026-11-25 (8.2)** |
 | ~~v2 접속 정보를 `db_config` 로~~ | **완료 2026-11-25. 아래 2.4** |
 | ~~`ISIN_BOND_INFO` 운영 축~~ | **완료. `mst_bond` 축, 하루 2,000건, 16일 (8.2)** |

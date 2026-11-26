@@ -164,11 +164,21 @@ sqlplus ... @scripts/sql/fn_export_base.sql
 # 2) v2 전용 설정 표 -- 같은 버킷의 'v2/' 아래로 가른다
 sqlplus ... @scripts/sql/v2/10_export_target.sql
 
-# 3) 함수를 쓰는 프로시저 셋
+# 3) 경로 판정 함수 둘. 아래 프로시저들이 이것을 부른다
+sqlplus ... @scripts/sql/fn_export_obj_kind.sql
+sqlplus ... @scripts/sql/fn_export_obj_overlaps.sql
+
+# 4) 내보내기 프로시저. sp_archive_exported 가 앞의 둘을 부르므로 순서가 있다
 sqlplus ... @scripts/sql/sp_export_parquet.sql
-sqlplus ... @scripts/sql/sp_export_bulk.sql
+sqlplus ... @scripts/sql/sp_compact_exported.sql
+sqlplus ... @scripts/sql/sp_purge_exported.sql
 sqlplus ... @scripts/sql/sp_archive_exported.sql
 ```
+
+`sp_export_bulk` 은 없다. `sp_compact_exported` 가 그 일을 하고, 기간 파일을
+`_bulk/` 가 아니라 `_arch/` 에 쓴다 (TECHNICAL 6.2). 이미 깔려 있다면
+`DROP PROCEDURE sp_export_bulk` 로 내린다 -- 안 내리면 `check-sql` 이
+"저장소에 없는 객체" 로 잡는다.
 
 확인:
 

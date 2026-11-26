@@ -99,27 +99,28 @@ BEGIN
     v_col := fn_export_day_col(p_name);
   END IF;
 
-  -- 통짜 내보내기와 겹치면 멈춘다. 겹친 채로 두면 그 기간이 _bulk 파일과 날짜
+  -- 기간 내보내기와 겹치면 멈춘다. 겹친 채로 두면 그 기간이 _arch 파일과 날짜
   -- 폴더 양쪽에 있게 되고, 외부 테이블은 <대상>/*/*.parquet 하나로 둘 다 읽어
   -- 그 며칠만 두 번 세어진다 -- 읽는 쪽에서는 알아채기 어려운 종류의 오류다.
   -- 중복이 생길 수 있는 유일한 경로가 이 프로시저라, 여기서 거절하면 구조로
   -- 보장된다.
   --
-  -- 범위는 파일 이름이 들고 있다(20250814_20260820_part_...). 어디까지
-  -- 통짜로 나갔는지를 별도 테이블에 적어두면 누가 버킷에서 파일을 지웠을 때
-  -- 그 기록만 남아 어긋나므로, 버킷을 유일한 사실로 둔다.
+  -- 범위는 파일 이름이 들고 있고(20261101_20261130_part_...), 겹침 판정은
+  -- fn_export_obj_overlaps 가 한다 -- 같은 자릿수 산수가 세 프로시저에
+  -- 복사돼 있던 것을 한 곳으로 모았다. 어디까지 기간으로 나갔는지를 별도
+  -- 테이블에 적어두면 누가 버킷에서 파일을 지웠을 때 그 기록만 남아
+  -- 어긋나므로, 버킷을 유일한 사실로 둔다.
   --
-  -- '_bulk/' 로 조회하는 것이 싼 이유: LIST_OBJECTS 는 폴더 경계에서만
-  -- 매칭하므로 이 호출은 통짜 파일 하나만 돌려준다. 대상 폴더 전체(몇 년치면
+  -- '_arch/' 로 조회하는 것이 싼 이유: LIST_OBJECTS 는 폴더 경계에서만
+  -- 매칭하므로 이 호출은 기간 파일만 돌려준다. 대상 폴더 전체(몇 년치면
   -- 수천 건)를 훑지 않는다. 날짜 루프 밖이라 호출당 한 번이다.
   FOR o IN (SELECT object_name FROM DBMS_CLOUD.LIST_OBJECTS(c_cred,
-                   c_base || LOWER(p_name) || '/_bulk/')) LOOP
-    IF v_from <= SUBSTR(o.object_name, 10, 8) AND v_to >= SUBSTR(o.object_name, 1, 8) THEN
-      raise_application_error(-20002,
-        v_from || '..' || v_to || ' overlaps the bulk export '
-        || SUBSTR(o.object_name, 1, 17) || ' of ' || LOWER(p_name)
-        || '; re-run sp_export_bulk instead, or drop it first');
-    END IF;
+                   c_base || LOWER(p_name) || '/_arch/')
+             WHERE fn_export_obj_overlaps(object_name, v_from, v_to) = 'Y') LOOP
+    raise_application_error(-20002,
+      v_from || '..' || v_to || ' overlaps the range export '
+      || SUBSTR(o.object_name, 1, 17) || ' of ' || LOWER(p_name)
+      || '; re-run sp_compact_exported instead, or drop it first');
   END LOOP;
 
   EXECUTE IMMEDIATE 'ALTER SESSION DISABLE PARALLEL QUERY';

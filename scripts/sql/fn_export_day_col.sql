@@ -1,7 +1,7 @@
 CREATE OR REPLACE FUNCTION fn_export_day_col (p_name IN VARCHAR2) RETURN VARCHAR2 AS
 -- 결과 테이블에서 '거래일' 이 어느 컬럼인가. 이름이 테이블마다 달라 적어 둔다.
 --
--- 내보내기 프로시저가 둘(날짜별 sp_export_parquet, 통짜 sp_export_bulk)이고
+-- 내보내기 프로시저가 둘(날짜별 sp_export_parquet, 기간 sp_compact_exported)이고
 -- 둘 다 기본 쿼리를 조립할 때 이 값이 필요하다. 양쪽에 같은 CASE 를 두면
 -- 새 테이블을 추가할 때 한쪽만 고치게 되고, 그러면 같은 대상이 한 방식으로는
 -- 되고 다른 방식으로는 -20001 로 죽는다.
