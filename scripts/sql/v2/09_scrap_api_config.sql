@@ -145,3 +145,74 @@ COMMIT;
 --    WHERE m.isin IS NOT NULL
 --      AND NOT EXISTS (SELECT 1 FROM api_job j
 --                       WHERE j.job_id = 'ISIN_BOND_INFO_' || m.isin);
+
+-- ===========================================================================
+-- KRX_ISIN_SRCH -- 코드부여일 창을 설정으로 (2026-11-26)
+-- ===========================================================================
+-- 표준코드 조회 화면은 조회 기간을 **요구한다.** 그 창을 인자로 끌어낸다.
+-- 실측으로 확인한 것들:
+--
+--   * 필드는 std_cd_grnt_start_dd / std_cd_grnt_end_dd 이고 그 뜻은
+--     **코드부여일**이다 (std_cd_grnt = 표준코드 부여). 화면의 라디오
+--     searchDateRadio(1 발행일 · 2 만기일 · 3 상장일 · 4 코드부여일)는 결과에
+--     영향이 없다 -- 2010년 한 해로 세 경우 모두 229건이었다. 그 라디오는
+--     다운로드 버튼을 보일지만 정한다(fn_search 끝의 fn_viewDownloadBtn).
+--     그래서 건드리지 않는다.
+--
+--   * 날짜를 **비우면 0건**이다. 기간 없이 조회할 수 없는 화면이다.
+--     그런데 지금까지 0건이 아니었다 -- 페이지가 열릴 때 dateSetting() 이
+--     최근 1년을 기본값으로 넣고 폼이 그것을 같이 보내기 때문이다. 즉 이
+--     설정은 **그동안 조용히 '최근 1년' 만 긁고 있었다**(KR2 로 271건).
+--     창을 인자로 빼는 것이 그 사실을 드러내는 일이기도 하다.
+--
+--   * **3년을 넘으면 결과가 아니라 알림 페이지가 온다.** HTTP 200 인데 본문이
+--     var msg = '3년 이내의 기간을 입력하셔야 합니다.' 이고 #tbody 가 없다.
+--     rows 선택자가 아무것도 못 맞추니 엔진에는 **0건(EMPTY)으로 보인다** --
+--     실패가 아니라 조용한 누락이다. 914일은 670건으로 되고 1096일은 안 된다.
+--     빌더가 창을 좁게 만드는 것이 유일한 방어다.
+--
+--   * 형식은 YYYYMMDD 와 YYYY-MM-DD 둘 다 된다. 엔진 관례대로 YYYYMMDD 를
+--     쓴다 -- 화면의 onblur Chk_Date2 가 YYYY-MM-DD 로 정규화하고(실측),
+--     정규화 전에 보내도 서버가 받는다(실측으로 두 형식 모두 271건).
+--
+--   * 한 페이지 5행이다. pagination max_pages 60 이면 300행이 상한이라,
+--     창을 넓히면 페이지 수가 먼저 막힌다 -- KR2 는 1년에 271건(55페이지)으로
+--     간신히 들어가고 2년이면 537건으로 넘친다. 창과 max_pages 는 같이 본다.
+
+UPDATE api_mst
+   SET behavior_json = JSON('[
+         {"action": "fill", "selector": "#isur_nm1",             "value": ":CODE"},
+         {"action": "fill", "selector": "#std_cd_grnt_start_dd", "value": ":GRNT_FROM"},
+         {"action": "fill", "selector": "#std_cd_grnt_end_dd",   "value": ":GRNT_TO"},
+         {"action": "eval", "script": "$(''form[name=JLDINF20000]'').append(\"<input type=''hidden'' name=''pageIndex'' value='':PAGE''>\"); fn_search(2);"},
+         {"action": "wait_load", "state": "networkidle"}
+       ]'),
+       -- 창이 job 신원에 들어간다. 안 넣으면 다른 기간을 돌릴 때 같은 job_id 로
+       -- overwrite 되어 앞 창의 결과가 사라진다. 넣으면 창마다 one-shot 잡
+       -- 하나이고, 과거를 조각내 받는 것이 그대로 된다.
+       job_key_params = JSON('["CODE", "GRNT_FROM", "GRNT_TO"]'),
+       -- row_stamp 는 CODE 만 그대로. 행마다의 날짜는 parse_json 의 grant_dd 가
+       -- 이미 담으므로 창을 또 찍으면 같은 값이 두 컬럼에 들어간다.
+       note = '표준코드 목록. 코드부여일 창(:GRNT_FROM~:GRNT_TO, YYYYMMDD)이 필수다 -- '
+              || '비우면 0건, 3년 넘으면 알림 페이지가 와서 엔진에는 0건으로 보인다. '
+              || 'searchDateRadio 는 결과에 영향 없음(다운로드 버튼 전용). 한 페이지 5행'
+ WHERE api_id = 'KRX_ISIN_SRCH';
+
+-- 시험 빌더: 창을 굴린다. is_active=False · schedule_tag='test' 그대로 둔다 --
+-- 운영에 올리는 것은 별개 결정이다.
+--
+-- 날짜는 KST 로 만든다. SYSDATE 는 이 DB 에서 UTC 라 자정 근처에 하루가
+-- 어긋난다 (sp_run_monthly_archive 가 같은 이유로 AT TIME ZONE 을 쓴다).
+--
+-- 과거를 조각내려면 이 자리를 날짜 목록 쿼리로 바꾼다 -- 분기마다 한 창이면
+-- CONNECT BY 로 시작일을 뽑고 끝을 그 분기 말일로 만든다. 3년만 안 넘으면 된다.
+UPDATE api_job_builder
+   SET cartesian_param_json = JSON(q'[{
+         "CODE": "KR2",
+         "GRNT_FROM": {"db": "SELECT TO_CHAR(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE) - 7, 'YYYYMMDD') FROM dual"},
+         "GRNT_TO":   {"db": "SELECT TO_CHAR(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE), 'YYYYMMDD') FROM dual"}
+       }]'),
+       note = 'KR2 로 시작하는 표준코드, 코드부여일 최근 7일. 창이 job_id 에 들어가므로 날마다 새 잡 하나'
+ WHERE build_id = 'KRX_ISIN_SRCH_KR2';
+
+COMMIT;
