@@ -83,8 +83,10 @@ CREATE OR REPLACE PROCEDURE sp_export_parquet (
 -- 알려주는 바가 없고, 세자면 LIST_OBJECTS 를 한 번 더 불러야 한다. 행 수는
 -- 빈 날을 건너뛰려고 어차피 구해 두는 값이라 공짜다.
   c_cred     CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
-  c_base     CONSTANT VARCHAR2(200) :=
-    'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/';
+  -- 경로의 뿌리는 fn_export_base 가 준다 -- 환경마다 다르고 export_target
+  -- 한 행으로 정한다. 그 표가 없는 계정(v1)에서는 함수가 기존 상수로
+  -- 떨어지므로 동작이 바뀌지 않는다. 배포 순서: fn_export_base 를 먼저.
+  c_base     CONSTANT VARCHAR2(400) := fn_export_base;
   v_col      VARCHAR2(60);
   v_to       VARCHAR2(8) := NVL(p_to, TO_CHAR(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul', 'YYYYMMDD'));
   v_from     VARCHAR2(8) := NVL(p_from, v_to);

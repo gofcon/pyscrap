@@ -54,8 +54,10 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
 -- 대상은 외부 테이블(xt_<대상>)이 있는 것으로 한정한다. 그것이 곧 "Parquet 으로
 -- 읽을 수 있다"의 정의이고, 없는 표를 지우면 데이터가 사라진다.
   c_cred  CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
-  c_base  CONSTANT VARCHAR2(200) :=
-    'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/';
+  -- 경로의 뿌리는 fn_export_base 가 준다 -- 환경마다 다르고 export_target
+  -- 한 행으로 정한다. 그 표가 없는 계정(v1)에서는 함수가 기존 상수로
+  -- 떨어지므로 동작이 바뀌지 않는다. 배포 순서: fn_export_base 를 먼저.
+  c_base  CONSTANT VARCHAR2(400) := fn_export_base;
   TYPE t_names IS TABLE OF VARCHAR2(30);
   -- 손으로 적는다. 자동 발견(외부 테이블이 있는 표 전부)으로 하면 언젠가
   -- 의도치 않은 표가 목록에 들어오고, 그 사고의 결과가 '데이터 삭제' 다.

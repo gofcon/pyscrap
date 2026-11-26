@@ -31,8 +31,10 @@ CREATE OR REPLACE PROCEDURE sp_export_bulk (
 -- 잡힌다. 아래에서 겹치는 날짜 폴더를 비우므로 둘의 기간은 겹치지 않고,
 -- 한 테이블로 읽어도 정확히 한 벌이다.
   c_cred     CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
-  c_base     CONSTANT VARCHAR2(200) :=
-    'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/';
+  -- 경로의 뿌리는 fn_export_base 가 준다 -- 환경마다 다르고 export_target
+  -- 한 행으로 정한다. 그 표가 없는 계정(v1)에서는 함수가 기존 상수로
+  -- 떨어지므로 동작이 바뀌지 않는다. 배포 순서: fn_export_base 를 먼저.
+  c_base     CONSTANT VARCHAR2(400) := fn_export_base;
   v_root     VARCHAR2(400) := c_base || LOWER(p_name) || '/';
   v_prefix   VARCHAR2(400) := c_base || LOWER(p_name) || '/_bulk/';
   v_query    CLOB;

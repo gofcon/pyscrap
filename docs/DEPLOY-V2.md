@@ -142,6 +142,48 @@ OCI_REGION · OCI_NAMESPACE · OCI_BUCKET_NAME · OCI_ACCESS_KEY · OCI_SECRET_K
 
 ---
 
+## 4.5 내보내기 경로를 가른다 (v1 과 버킷을 공유하는 동안)
+
+**v1 을 함께 돌리면 이 절을 건너뛰면 안 된다.**
+
+`sp_export_parquet` 는 쓰기 전에 그 날짜 폴더의 객체를 **전부 지운다**. v1 과
+v2 가 같은 경로를 쓰면 같은 날을 두 쪽이 지우고 써서 나중 것만 남고, 겹치면
+섞인 파일 집합이 남는다 -- 분석 DB 의 외부 테이블은 `<대상>/*/*.parquet` 하나로
+읽어 그 상태를 구별하지 못한다. 둘 다 22:00 에 돈다.
+
+경로의 뿌리는 `fn_export_base` 가 준다. 그 함수는 `export_target` 한 행을
+읽고, **표가 없으면 기존 상수로 떨어진다** -- 그래서 v1 에는 표를 만들지
+않으면 동작이 지금과 똑같다(v1 은 운영이라 건드리지 않는다).
+
+v2(SCRAP)에서, **순서대로**:
+
+```bash
+# 1) 함수 먼저. 아래 셋이 이것을 부르므로 없으면 컴파일되지 않는다
+sqlplus ... @scripts/sql/fn_export_base.sql
+
+# 2) v2 전용 설정 표 -- 같은 버킷의 'v2/' 아래로 가른다
+sqlplus ... @scripts/sql/v2/10_export_target.sql
+
+# 3) 함수를 쓰는 프로시저 셋
+sqlplus ... @scripts/sql/sp_export_parquet.sql
+sqlplus ... @scripts/sql/sp_export_bulk.sql
+sqlplus ... @scripts/sql/sp_archive_exported.sql
+```
+
+확인:
+
+```sql
+SELECT SUBSTR(fn_export_base, INSTR(fn_export_base, '/o/')) FROM dual;
+-- /o/v2/  가 나와야 한다. /o/ 만 나오면 export_target 이 없거나 행이 없다
+```
+
+`sp_create_external_tables` 는 **그대로 둔다.** 분석 DB 에서 돌고 그 계정엔
+함수가 없다. 병행 운행 중엔 분석 쪽이 v1 경로를 계속 읽는 것이 맞고, 전환할
+때 그 프로시저의 경로 한 줄을 v2 쪽으로 옮긴다.
+
+전환이 끝나면 `export_target` 행을 지우거나 `base_uri` 를 기본 경로로 바꾼다 --
+그러면 v2 가 원래 자리에 쓴다.
+
 ## 5. 경로와 사용자 -- 다른 인스턴스면 여기를 고친다
 
 기존 인스턴스 기준으로 **하드코딩**돼 있다.
@@ -264,7 +306,7 @@ journalctl -u pyscrap-daily-start -n 50 --no-pager
 
 **`export` 는 버킷에 쓴다.** `OCI_*` 다섯 키가 맞아야 하고, 처음 돌릴 때는
 타이머를 기다리지 말고 손으로 한 번 확인하는 것이 좋다 --
-`./scripts/run_command.sh run-export`.
+`./scripts/run_command.sh run-export`. v1 과 버킷을 공유하면 4.5 를 먼저 한다.
 
 **검증되지 않은 것.** 3분 잡(`KIS_FUTOPT_PRICE` 496 · `_A2` 334)은 v2 에서
 아직 돌린 적이 없다. 나머지 설정 계열은 v1 과 값까지 맞췄다
