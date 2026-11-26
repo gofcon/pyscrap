@@ -1,4 +1,4 @@
-CREATE OR REPLACE PROCEDURE sp_archive_exported (
+CREATE OR REPLACE PROCEDURE sp_run_monthly_archive (
   p_month     IN  VARCHAR2 DEFAULT NULL,  -- 대상 월 YYYYMM (NULL 이면 직전월)
   p_deleted   OUT NUMBER                  -- 지운 행 수 합계
 ) AS
@@ -70,7 +70,7 @@ BEGIN
   v_from  := v_month || '01';
   v_to    := TO_CHAR(LAST_DAY(TO_DATE(v_from, 'YYYYMMDD')), 'YYYYMMDD');
 
-  DBMS_OUTPUT.PUT_LINE('sp_archive_exported ' || v_month
+  DBMS_OUTPUT.PUT_LINE('sp_run_monthly_archive ' || v_month
                        || ' (' || v_from || '..' || v_to || ')');
 
   FOR i IN 1 .. v_targets.COUNT LOOP

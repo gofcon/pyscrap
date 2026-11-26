@@ -1,4 +1,4 @@
-CREATE OR REPLACE PROCEDURE sp_run_export (
+CREATE OR REPLACE PROCEDURE sp_run_daily_export (
   p_to    IN  VARCHAR2 DEFAULT NULL,   -- 마지막 영업일 (YYYYMMDD, 기본: KST 오늘)
   p_from  IN  VARCHAR2 DEFAULT NULL    -- 시작 영업일 (포함, 기본: p_to 와 같은 날)
 ) AS

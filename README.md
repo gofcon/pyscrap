@@ -40,7 +40,7 @@ python -m app.cli check-sql            # scripts/sql vs the compiled procedures
 ```
 
 Rows reach object storage from the database itself (`scripts/sql/`), not
-through this process: `run-export` calls `sp_run_export`, which exports each
+through this process: `run-export` calls `sp_run_daily_export`, which exports each
 target for a given day. `finalize-exports` is left with what the database
 cannot hold -- a scrape whose result is a file. `archive-exported` runs the
 other way on the 1st of each month: the minute-bar tables are already readable as Parquet

@@ -8,7 +8,7 @@ review it by, and a way to build the objects somewhere that has none. All
 three assume the file still matches the database, and nothing enforces that,
 so the assumption needs checking rather than trusting.
 
-It has already failed once: a target added straight into sp_run_export was
+It has already failed once: a target added straight into sp_run_daily_export was
 absent from the file, so redeploying the file would have silently dropped it,
 and the type error in that target reached the batch without ever being read.
 

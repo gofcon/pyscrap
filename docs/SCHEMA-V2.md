@@ -1029,7 +1029,7 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 뒤의 둘은 애초에 읽히지도 않았다(`ORA-29913` — 버킷에 그 접두사가 없었다). v1 에서 복사돼 온 정의가 v2 버킷에서 가리킬 데가 없었던 것이다.
 
-**딸려 온 것:** `sp_archive_exported` 가 지우기 전 검증에 `xt_<대상>` 을 쓰고 있었다. `EXECUTE IMMEDIATE` 라서 `user_dependencies` 조회로는 안 보이고, 그래서 내리기 전 의존성 확인에서 한 번 놓쳤다. 대상 목록은 손으로 적은 네 개(`kis_futopt_chart`, `kis_futopt_price`, `kis_futopt_daily`, `krx_opt_daily`)이고 존재 여부로 걸러지지 않으므로, 외부 테이블이 없으면 그 자리에서 `ORA-00942` 로 멈췄다. 멈추는 자리가 삭제 **전**이라 데이터는 안전했지만 `_arch` Parquet 을 한 번 쓴 뒤였다. 뒤의 둘(`kis_futopt_daily`·`krx_opt_daily`)은 v2 에 외부 테이블이 아예 없었으니 이 경로는 내리기 전에도 이미 막혀 있었다.
+**딸려 온 것:** `sp_run_monthly_archive` 가 지우기 전 검증에 `xt_<대상>` 을 쓰고 있었다. `EXECUTE IMMEDIATE` 라서 `user_dependencies` 조회로는 안 보이고, 그래서 내리기 전 의존성 확인에서 한 번 놓쳤다. 대상 목록은 손으로 적은 네 개(`kis_futopt_chart`, `kis_futopt_price`, `kis_futopt_daily`, `krx_opt_daily`)이고 존재 여부로 걸러지지 않으므로, 외부 테이블이 없으면 그 자리에서 `ORA-00942` 로 멈췄다. 멈추는 자리가 삭제 **전**이라 데이터는 안전했지만 `_arch` Parquet 을 한 번 쓴 뒤였다. 뒤의 둘(`kis_futopt_daily`·`krx_opt_daily`)은 v2 에 외부 테이블이 아예 없었으니 이 경로는 내리기 전에도 이미 막혀 있었다.
 
 **그 의존은 2026-11-26 에 없앴다.** 내보내기 파이프라인을 다시 가르면서(아래 7.8) 검증을 `sp_purge_exported` 가 자기 창을 만들어 하도록 바꿨다 — 자격만 있으면 어느 계정에서든 돈다. 그래도 v2 에서 `archive` 타이머는 켜지 않는다: 계정 의존이 아니라 **역할**의 문제다. 수집 계정은 모으고 내보내는 데까지 하고, 아카이브는 외부 테이블을 가진 분석 계정 몫이다.
 
@@ -1041,16 +1041,16 @@ kis_etf_pdf     (job_id, snap_at, stck_shrn_iscd)
 
 **(2) 상태를 파일 이름에서 자릿수로 읽었다.** `INSTR(object_name,'/') = 9` 가 두 벌, `SUBSTR(object_name,10,8)` 이 또 한 벌. → `fn_export_obj_kind` + `fn_export_obj_overlaps` 두 함수로 모았다. 실제 객체 404개에서 옛 산수와 판정이 전부 일치하는 것을 범위 네 가지로 확인했다.
 
-**(3) 한 프로시저가 두 일을 했다.** `DB 자리 비우기` 와 `버킷 파일 합치기`. 그 용접 때문에 내보낸 직후 날짜별과 기간 파일이 둘 다 있는 중간 상태가 생기고, 검증이 두 단계여야 했다(먼저 "원본 이상", 접은 뒤 "정확히 같음"). → `sp_compact_exported`(버킷만) 와 `sp_purge_exported`(DB 만) 로 갈랐다. 각자 검증이 한 번이고, `sp_archive_exported` 는 순서만 정한다.
+**(3) 한 프로시저가 두 일을 했다.** `DB 자리 비우기` 와 `버킷 파일 합치기`. 그 용접 때문에 내보낸 직후 날짜별과 기간 파일이 둘 다 있는 중간 상태가 생기고, 검증이 두 단계여야 했다(먼저 "원본 이상", 접은 뒤 "정확히 같음"). → `sp_compact_exported`(버킷만) 와 `sp_purge_exported`(DB 만) 로 갈랐다. 각자 검증이 한 번이고, `sp_run_monthly_archive` 는 순서만 정한다.
 
 **(4) 검증이 호출 계정에 외부 테이블이 미리 있다고 가정했다.** 7.6 에서 깨진 그것이다. → `sp_purge_exported` 가 자기 창을 만들고 지운다.
 
 ```
-전                                        후
-sp_export_parquet    <날짜>/             sp_export_parquet    <날짜>/
-sp_export_bulk       _bulk/              sp_compact_exported  _arch/   (버킷만)
-sp_archive_exported  _arch/ + DELETE     sp_purge_exported    DELETE   (DB 만)
-                                         sp_archive_exported  순서만
+전                                     후
+sp_export_parquet     <날짜>/          sp_export_parquet       <날짜>/
+sp_export_bulk        _bulk/           sp_compact_exported     _arch/    (버킷만)
+sp_archive_exported   _arch/ + DELETE  sp_purge_exported       DELETE    (DB 만)
+                                       sp_run_monthly_archive  순서만
 ```
 
 **하지 않은 것 하나.** 접기를 버킷→버킷으로(날짜별 Parquet 을 읽어 합치기) 하면 DB 와 완전히 무관해져서 행을 지운 뒤에도 접을 수 있다. 하지 않았다: Parquet 을 다시 읽으면 타입이 한 번 더 옮겨가고(`NUMBER` → `BINARY_DOUBLE`, `DATE` → `TIMESTAMP(3)`), 날짜별과 기간 파일을 외부 테이블 하나로 읽는 구조에서 그 둘의 스키마가 갈리면 읽는 쪽에서 알아채기 어렵다. 재어 보지 않은 것을 운영 경로에 넣지 않는다.
@@ -1448,7 +1448,7 @@ sp_run_daily_batch2  2.7s   retire 0 · mst_bond 0 · mst_etf 0 · no_detail_mar
 읽으므로 키가 한 건이어야 한다 -- 아니면 ORA-30926 이다. v1 에서는 그 DELETE 가
 sync 안에 있었는데 v2 는 계정이 갈려 그럴 수 없다(sync 는 REF 소유,
 `kis_index_daily` 는 SCRAP 소유이고, REF 에 DELETE 를 주면 계정을 나눈 이유가
-없어진다). `sp_run_export` 의 sync 바로 앞에 넣었다.
+없어진다). `sp_run_daily_export` 의 sync 바로 앞에 넣었다.
 
 `sp_src_code_sync` 도 호출부가 없었다. `sp_run_daily_batch2` 끝에 넣었는데,
 그 프로시저는 사이클 **앞**에 도므로 수확되는 것은 직전 사이클까지의 값이다 --
@@ -1463,7 +1463,7 @@ sync 안에 있었는데 v2 는 계정이 갈려 그럴 수 없다(sync 는 REF 
 
 #### 남은 구멍: `v_fuopt_price`
 
-`sp_run_export` 가 그 뷰를 `p_query` 로 부르는데 **v2 에 없다.** 동적 SQL 이라
+`sp_run_daily_export` 가 그 뷰를 `p_query` 로 부르는데 **v2 에 없다.** 동적 SQL 이라
 프로시저는 VALID 이고 실행 시점에 ORA-00942 로 죽는다. 그리고 **그 뷰의 DDL 이
 저장소에 없다** -- `v_fut_cont`·`v_k2i_atm` 은 `scripts/sql/` 에 있지만 그것은
 없고, v1 에만 있었고 v1 은 이제 닿지 않는다(2.4).
@@ -2339,7 +2339,7 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 
 `api_mst` 는 저장 26컬럼 + 가상 1이다.
 
-**`fn_export_day_col` · `sp_run_export`** -- 운용사별 넷이 뷰가 됐다. `p_name` 은
+**`fn_export_day_col` · `sp_run_daily_export`** -- 운용사별 넷이 뷰가 됐다. `p_name` 은
 **옛 이름 그대로** 두고 소스만 `p_query` 로 뷰를 가리킨다 -- `p_name` 이 버킷
 프리픽스이고 외부 테이블 이름(`xt_ace_etf_pdf`)이기도 해서, 바꾸면 분석 쪽 경로가
 끊긴다. `sp_export_parquet` 이 `p_query` 를 받으면 `p_name` 을 프리픽스로만 쓰는
@@ -2347,7 +2347,7 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 
 ### 고치지 않아도 됐던 것
 
-`sp_archive_exported` · `sp_export_bulk` · `sp_export_parquet` 는 (이행 때는)
+`sp_run_monthly_archive` · `sp_export_bulk` · `sp_export_parquet` 는 (이행 때는)
 손대지 않는다. 세 곳이 `ALTER SESSION` 을 쓰지만 **`PARALLEL QUERY` 이고
 `PARALLEL DML` 이 아니다.** 재보니 ORA-12841 은 DML 에만 걸린다.
 
@@ -2378,7 +2378,7 @@ SQL 이 거르는 스위치만 가상 컬럼으로 노출한다. `empty_is_pendi
 | 반복 빌더 셋의 `snapshot_unit` | v1 동작 보존으로 NULL. 단위를 줄지 결정 (8.2) |
 
 | ~~`sp_run_daily_batch2` · `sp_run_daily_early`~~ | **완료 2026-11-25 (8.3)** |
-| `v_fuopt_price` | **DDL 이 저장소에 없다.** v1 에만 있고 v1 은 이제 닿지 않는다 -- `sp_run_export` 가 그 뷰를 부른다 |
+| `v_fuopt_price` | **DDL 이 저장소에 없다.** v1 에만 있고 v1 은 이제 닿지 않는다 -- `sp_run_daily_export` 가 그 뷰를 부른다 |
 
 ---
 

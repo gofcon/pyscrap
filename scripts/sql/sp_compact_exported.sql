@@ -9,7 +9,7 @@ CREATE OR REPLACE PROCEDURE sp_compact_exported (
 -- 접어 넣는다. 버킷만 다룬다 -- DB 에서 행을 지우지 않는다.
 --
 -- 이름이 compact 인 이유. 이 프로시저(옛 sp_export_bulk)와
--- sp_archive_exported 의 내보내기 절반은 **같은 물건을 만들고 있었다** --
+-- sp_run_monthly_archive 의 내보내기 절반은 **같은 물건을 만들고 있었다** --
 -- 기간 하나를 날짜순으로 정렬해 내보낸 Parquet. 그런데 이름이 _bulk 와 _arch
 -- 로 둘이었고, 보관 규칙이 달랐고(전자는 대상당 하나만 남기고 전부 지움,
 -- 후자는 달마다 하나씩 쌓임), 날짜 폴더를 접는 코드가 양쪽에 복사돼 있었다.
@@ -17,7 +17,7 @@ CREATE OR REPLACE PROCEDURE sp_compact_exported (
 --
 -- 그래서 두 가지 쓰임이 한 프로시저다:
 --   * 과거 전체를 한 번 뽑기 (옛 sp_export_bulk 의 일)
---   * 매월 1일 직전월 접기 (sp_archive_exported 가 이것을 부른다)
+--   * 매월 1일 직전월 접기 (sp_run_monthly_archive 가 이것을 부른다)
 -- 둘의 차이는 기간을 누가 정하느냐뿐이다.
 --
 -- sp_export_parquet 과 나눈 이유는 그대로다. 날짜별로 쪼개는 것은 일 배치의

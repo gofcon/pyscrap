@@ -130,7 +130,7 @@ def _log_procedure_output(cursor, name: str) -> None:
     """Log whatever the procedure wrote to DBMS_OUTPUT.
 
     Read in batches until a short one comes back, since the buffer holds more
-    than one batch: sp_run_export over a month of days writes a line per
+    than one batch: sp_run_daily_export over a month of days writes a line per
     target per day, and stopping at the first batch would drop the tail
     without any sign that it had."""
     while True:
@@ -158,7 +158,7 @@ def _call_procedure(name: str, *args: object, out_count: bool = True) -> int | N
     ``args`` are the IN parameters and the OUT count is appended after them,
     which is why the procedures that report one take it last (see
     scripts/sql/sp_export_parquet.sql). ``out_count=False`` for a procedure
-    that reports through DBMS_OUTPUT instead -- sp_run_export leaves the
+    that reports through DBMS_OUTPUT instead -- sp_run_daily_export leaves the
     per-target counts to the procedure it calls rather than summing them,
     which is also what keeps this file out of the way when a target is added
     to it."""
@@ -182,7 +182,7 @@ def call_proc_cmd(
     """Run one parameterless DB-side procedure and log what it reports.
 
     This is how the batch calls its orchestrators (sp_run_daily_early, sp_run_daily_batch2): each is a list of the steps
-    that follow or precede one cycle, in order, the way sp_run_export lists
+    that follow or precede one cycle, in order, the way sp_run_daily_export lists
     the export targets. The order of the DB-side steps then lives in one
     SQL file per cycle rather than across service files and cli commands,
     and adding or moving a step is a change to that file alone -- compiled
@@ -330,9 +330,9 @@ def run_export_cmd(
     since: str = typer.Option(None, "--from", help="Reach back to this day too, inclusive"),
 ):
     """Export a day's collected rows to object storage as Parquet, by calling
-    sp_run_export (see scripts/sql/).
+    sp_run_daily_export (see scripts/sql/).
 
-    What gets exported is not decided here. sp_run_export is a list of
+    What gets exported is not decided here. sp_run_daily_export is a list of
     sp_export_parquet calls, one per target; this command passes a date and
     logs what the database reports back. Adding a table or a view to the
     export is a change to that procedure alone -- nothing here names a target
@@ -355,7 +355,7 @@ def run_export_cmd(
 
     span = day or "today (KST)"
     typer.echo(f"exporting {f'{since} .. ' if since else ''}{span}")
-    _call_procedure("sp_run_export", day, since, out_count=False)
+    _call_procedure("sp_run_daily_export", day, since, out_count=False)
     typer.echo("export complete")
 
 
@@ -400,7 +400,7 @@ def archive_exported_cmd(
     month: str = typer.Argument(None, help="Month to archive, YYYYMM (default: last month in KST)"),
 ):
     """Move one month of rows out of the big result tables into Parquet, and
-    delete them from the database (sp_archive_exported).
+    delete them from the database (sp_run_monthly_archive).
 
     The tables that carry a minute bar or a three-minute snapshot grow by tens
     of thousands of rows a day -- kis_futopt_price alone by ~87,000 -- and the
@@ -430,7 +430,7 @@ def archive_exported_cmd(
     setup_logging()
 
     typer.echo(f"archiving {month or 'last month (KST)'}")
-    deleted = _call_procedure("sp_archive_exported", month)
+    deleted = _call_procedure("sp_run_monthly_archive", month)
     typer.echo(f"archive complete: {deleted or 0} row(s) deleted")
 
 

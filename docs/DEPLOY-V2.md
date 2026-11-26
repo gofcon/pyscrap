@@ -168,11 +168,11 @@ sqlplus ... @scripts/sql/v2/10_export_target.sql
 sqlplus ... @scripts/sql/fn_export_obj_kind.sql
 sqlplus ... @scripts/sql/fn_export_obj_overlaps.sql
 
-# 4) 내보내기 프로시저. sp_archive_exported 가 앞의 둘을 부르므로 순서가 있다
+# 4) 내보내기 프로시저. sp_run_monthly_archive 가 앞의 둘을 부르므로 순서가 있다
 sqlplus ... @scripts/sql/sp_export_parquet.sql
 sqlplus ... @scripts/sql/sp_compact_exported.sql
 sqlplus ... @scripts/sql/sp_purge_exported.sql
-sqlplus ... @scripts/sql/sp_archive_exported.sql
+sqlplus ... @scripts/sql/sp_run_monthly_archive.sql
 ```
 
 `sp_export_bulk` 은 없다. `sp_compact_exported` 가 그 일을 하고, 기간 파일을
@@ -196,7 +196,7 @@ SELECT SUBSTR(fn_export_base, INSTR(fn_export_base, '/o/')) FROM dual;
 `base_uri` 를 기본 경로로 바꾸면 v2 가 원래 자리에 쓴다. 프로시저의 경로 한
 줄을 옮기는 일은 더 없다.
 
-**딸려 온 것 하나.** `sp_archive_exported` 가 지우기 전 검증에 `xt_<대상>` 을
+**딸려 온 것 하나.** `sp_run_monthly_archive` 가 지우기 전 검증에 `xt_<대상>` 을
 쓴다 -- `EXECUTE IMMEDIATE` 라서 `user_dependencies` 에는 보이지 않는다. 이
 계정에 외부 테이블이 없으니 매월 1일 `archive` 는 `ORA-00942` 로 멈춘다.
 멈추는 자리가 **검증**이라 행을 지우지는 않지만(설계대로 닫히는 방향으로

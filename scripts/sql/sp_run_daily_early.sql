@@ -1,5 +1,5 @@
 CREATE OR REPLACE PROCEDURE sp_run_daily_early AS
--- daily_early(07:00) 의 DB 쪽 단계, 순서대로. sp_run_export 와 같은 모양이다:
+-- daily_early(07:00) 의 DB 쪽 단계, 순서대로. sp_run_daily_export 와 같은 모양이다:
 -- 배치는 "언제" 만 알고, "무엇을 어떤 순서로" 는 이 파일이 위에서 아래로 말한다.
 -- 단계를 끼우거나 옮기는 것은 여기 한 줄이고, 인스턴스는 그걸 모른다.
 --
@@ -23,7 +23,7 @@ CREATE OR REPLACE PROCEDURE sp_run_daily_early AS
 --      아니라서 같은 유닛 안으로 옮겼다.
 --
 -- 각 단계는 자기 건수를 DBMS_OUTPUT 으로 남긴다. 합계를 돌려주지 않는 이유는
--- sp_run_export 와 같다 -- 하나가 0건인 것을 합계는 감춘다. 실패하면 그 자리에서
+-- sp_run_daily_export 와 같다 -- 하나가 0건인 것을 합계는 감춘다. 실패하면 그 자리에서
 -- 멈추고, 전부 멱등이라 고친 뒤 다시 부르면 된 단계는 0건으로 지나간다.
   n NUMBER;
 BEGIN

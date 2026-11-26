@@ -4,7 +4,7 @@ CREATE OR REPLACE FUNCTION fn_export_obj_kind (
 -- 버킷 객체 이름 하나가 어느 꼴인지 판정한다. 'DAY' | 'RANGE' | 'OTHER'.
 --
 -- 왜 함수로 뺐나. 이 판정이 세 프로시저에 자릿수 산수로 복사돼 있었다 --
--- INSTR(object_name, '/') = 9 가 두 벌(sp_export_bulk, sp_archive_exported),
+-- INSTR(object_name, '/') = 9 가 두 벌(옛 sp_export_bulk, sp_archive_exported),
 -- SUBSTR(object_name, 10, 8) 이 또 한 벌(sp_export_parquet). 고칠 자리가 세
 -- 곳이면 레이아웃을 손볼 때 언젠가 한 곳이 빠지고, 그 한 곳이 '지울 것'
 -- 판정이면 데이터가 사라진다. 한 곳으로 모은다.

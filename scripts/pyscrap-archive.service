@@ -7,9 +7,11 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
-# 직전월 한 달치를 Parquet 으로 옮기고 DB 에서 지운다
-# (scripts/sql/sp_archive_exported.sql). 지우기 전에 외부 테이블이 그 구간을
-# 읽어내는지 확인하고, 못 읽으면 아무것도 지우지 않고 0 이 아닌 코드로 끝난다
+# 직전월 한 달치를 Parquet 으로 접고 DB 에서 지운다
+# (scripts/sql/sp_run_monthly_archive.sql). 대상마다 두 단계다:
+# sp_compact_exported 가 그 달을 _arch 파일 하나로 만들고(버킷만 건드린다),
+# sp_purge_exported 가 그 달이 버킷에서 읽히는 것을 확인하고 지운다(DB 만
+# 건드린다). 확인이 어긋나면 아무것도 지우지 않고 0 이 아닌 코드로 끝난다
 # -- systemctl --failed 에 남는 것이 조용히 넘어가는 것보다 낫다.
 #
 # 대상 목록은 프로시저 안에 있다. 표를 하나 더 넣거나 빼는 것은 그 파일만

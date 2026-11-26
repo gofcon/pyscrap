@@ -8,7 +8,7 @@ Description=Timer for pyscrap Monthly Archive
 #
 # 요일 제한이 없다: 하는 일이 DB 안에서 끝나므로 장이 서는 날일 필요가 없다.
 #
-# 대상은 직전월이다(sp_archive_exported 의 기본값). 1일에 돌면 그 달은 이미
+# 대상은 직전월이다(sp_run_monthly_archive 의 기본값). 1일에 돌면 그 달은 이미
 # 닫혀 있어 뒤늦게 행이 더 들어올 일이 없다.
 OnCalendar=*-*-01 04:00:00
 Persistent=true

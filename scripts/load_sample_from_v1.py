@@ -6,7 +6,7 @@
   확인되지 않는다 -- 단계가 지나간다는 것만 안다)
 * ``v_*`` 뷰 8개가 타입과 정규화를 맞게 돌려주나
 * ``sp_src_code_sync`` 가 아래층으로 내려 빠졌던 코드 컬럼 11개를 되찾나
-* 내보내기 경로(``sp_run_export``)가 도나
+* 내보내기 경로(``sp_run_daily_export``)가 도나
 
 무엇을 **검증하지 못하나**: ``parse_json`` · ``record_map_json`` ·
 ``row_stamp_json`` · ``session_json`` · ``staging_json``. v1 데이터를 복사하면

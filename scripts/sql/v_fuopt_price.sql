@@ -1,7 +1,7 @@
--- 선물옵션 시세에서 거래가 있던 행만. 내보내기 대상이다 (sp_run_export).
+-- 선물옵션 시세에서 거래가 있던 행만. 내보내기 대상이다 (sp_run_daily_export).
 --
 -- 저장소에 없던 파일이다. v1 에만 만들어져 있었고 DDL 이 git 에 들어온 적이
--- 없어서, v2 를 세울 때 아무도 만들지 않았다 -- sp_run_export 가 p_query 로
+-- 없어서, v2 를 세울 때 아무도 만들지 않았다 -- sp_run_daily_export 가 p_query 로
 -- 이 이름을 부르는데 동적 SQL 이라 프로시저는 VALID 이고 실행 시점에
 -- ORA-00942 로 죽는다. 그 상태로 v2 의 내보내기가 멈춰 있었다.
 --
@@ -23,4 +23,4 @@ SELECT *
  WHERE futs_prpr <> 0;
 
 COMMENT ON TABLE v_fuopt_price IS
-  '선물옵션 시세 중 체결이 있던 행 (futs_prpr <> 0). sp_run_export 가 내보낸다';
+  '선물옵션 시세 중 체결이 있던 행 (futs_prpr <> 0). sp_run_daily_export 가 내보낸다';

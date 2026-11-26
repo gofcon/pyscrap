@@ -715,7 +715,7 @@ python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 이미 읽히므로 DB 에 둔 쪽이 용량만 먹는다. 지우기 전에 외부 테이블이 그
 구간을 읽어내는지 확인하고, 못 읽으면 그 표는 손대지 않고 실패한다.
 
-이 작업은 2026-11-26 에 **둘로 갈라졌다.** `sp_archive_exported` 는 순서만
+이 작업은 2026-11-26 에 **둘로 갈라졌다.** `sp_run_monthly_archive` 는 순서만
 정하고, 실제 일은 `sp_compact_exported`(버킷에 쓰기)와
 `sp_purge_exported`(DB 에서 지우기)가 나눠 한다. 한 몸이던 동안은 내보낸
 직후에 날짜별과 기간 파일이 둘 다 있는 중간 상태가 생겨 검증이 두 단계여야
@@ -762,7 +762,7 @@ SELECT l.executed_at, l.job_id, l.error_message
 Parquet은 파이썬이 만들지 않는다. `DBMS_CLOUD.EXPORT_DATA`가 결과 테이블을 읽어 오브젝트 스토리지에 직접 쓴다.
 
 ```
-run-export ─▶ sp_run_export ─▶ sp_export_parquet (대상마다)
+run-export ─▶ sp_run_daily_export ─▶ sp_export_parquet (대상마다)
                                  └─ DBMS_CLOUD.EXPORT_DATA ─▶ 버킷
 ```
 
@@ -796,7 +796,7 @@ sp_compact_exported   기간.    <대상>/_arch/<시작>_<끝>_part_….parquet
 
 ### 6.3 대상 추가
 
-`sp_run_export`의 호출 목록에 한 줄:
+`sp_run_daily_export`의 호출 목록에 한 줄:
 
 ```sql
 export(p_name => '<테이블>');
@@ -830,7 +830,7 @@ export(p_name => '<프리픽스>', p_query => 'SELECT ... WHERE d = :DAY');
 파이썬은 이 파일들을 읽지 않는다. **DB에 이미 컴파일된 객체를 이름으로 부른다.**
 
 ```python
-_call_procedure('sp_run_export', day, since, out_count=False)
+_call_procedure('sp_run_daily_export', day, since, out_count=False)
 ```
 
 파일은 **검토된 기록**이다. DB가 못 갖는 세 가지 때문에 둔다: 변경의 이유(git 이력), 리뷰할 diff, 객체가 없는 환경에 만들 수단. 셋 다 "파일 = DB"를 전제하는데 그걸 강제하는 장치가 없으므로 **`check-sql`이 대조한다.**
@@ -846,19 +846,35 @@ DB가 정본이다 — 거기서 고치는 것이 역할을 나눈 취지이고,
 
 ### 7.2 프로시저 목록
 
-| 프로시저 | 하는 일 |
+**이름이 층을 말한다.** `sp_run_<주기>_<무엇>` 은 정책이고 — 언제 어느 대상을 — 나머지는 동작이다. 2026-11-26 까지는 `sp_run_export` 와 `sp_archive_exported` 라서 둘이 같은 종류라는 것이 이름에 없었고, 뒤엣것은 `_exported` 꼬리 때문에 자기가 부르는 `sp_purge_exported`·`sp_compact_exported` 와 같은 층처럼 보였다.
+
+| 정책 (언제·어느 대상) | 주기 | 하는 일 |
+|---|---|---|
+| `sp_run_daily_early` | 평일 07:00 | 이른 아침 DB 단계, 순서대로 |
+| `sp_run_daily_export` | 평일 22:00 | 내보낼 대상 14개 (호출 나열) |
+| `sp_run_daily_batch2` | 평일 21:00 | 늦게 확정되는 것의 DB 단계 |
+| `sp_run_monthly_archive` | 매월 1일 | 대상 4개에 접기 → 비우기 순서만 |
+
+| 동작 (대상 하나에) | 건드리는 곳 | 하는 일 |
+|---|---|---|
+| `sp_export_parquet` | 버킷 | 하루(또는 하루씩 여러 날)를 `<날짜>/` 로 |
+| `sp_compact_exported` | 버킷 | 기간을 `_arch/` 파일 하나로, 날짜별을 접어 넣음 |
+| `sp_purge_exported` | DB | 그 기간이 버킷에서 읽히는지 확인하고 지움 + 자리 반납 |
+
+| 판정 (묻기만) | 답 |
 |---|---|
-| `sp_export_parquet` | 대상 하나를 날짜별 Parquet으로 |
-| `sp_compact_exported` | 대상 하나의 기간을 `_arch` 파일 하나로, 날짜별을 접어 넣음. 버킷만 |
-| `sp_purge_exported` | 그 기간이 버킷에서 읽히는지 확인하고 DB 에서 지움. DB 만 |
-| `sp_archive_exported` | 위 둘의 순서만 정함 (접기 → 비우기), 매월 1일 |
-| `sp_run_export` | 내보낼 대상 목록 (호출 나열) |
-| `fn_export_day_col` | 대상 → 거래일 컬럼 매핑 |
+| `fn_export_base` | 내보내기 경로의 뿌리 (`export_target` 한 행) |
+| `fn_export_day_col` | 대상 → 거래일 컬럼 |
 | `fn_export_obj_kind` | 객체 이름 → `DAY`/`RANGE`/`OTHER` |
 | `fn_export_obj_overlaps` | 객체가 기간과 겹치나 |
+
+| 그 밖 | 하는 일 |
+|---|---|
 | `sp_mst_fuopt_sync` | 원본 마스터 → 정제 마스터, 뒤늦은 만기일 메우기 |
 | `sp_stock_index_his_sync` | 지수 일봉 → 시계열, `v_k2i_atm` 갱신 |
 | `sp_purge_jobs` | 끝난 잡·로그 정리 |
+
+CLI 명령 이름은 그대로 두었다 — `run-export`, `archive-exported`. 서비스 유닛의 `ExecStart` 가 그것을 부르므로, 바꾸면 서버의 유닛을 다시 깔아야 한다. 프로시저 이름은 저장소와 DB 안에서만 쓰이므로 비용이 없었다.
 
 ### 7.3 Oracle에서 걸렸던 것들
 
