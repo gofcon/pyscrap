@@ -39,6 +39,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -249,10 +250,36 @@ class BrowserScraper(BaseScraper):
         context = get_browser().new_context(**options)
         context.set_default_timeout(_TIMEOUT_MS)
         page = context.new_page()
+        page.on("dialog", self._on_dialog)
         try:
             yield page
         finally:
             context.close()
+
+    def _on_dialog(self, dialog: Any) -> None:
+        """Accept whatever the page popped up, and say what it was.
+
+        Playwright *dismisses* dialogs when nothing handles them, and that
+        dismissal racing a navigation kills the driver -- measured on the KRX
+        standard-code screen, which fires 27 alerts for one search:
+        ``ProtocolError (Page.handleJavaScriptDialog): Not attached to an
+        active page``, and the job ended FAILED after 20.7s. Handling them
+        explicitly removes the race.
+
+        Logged rather than swallowed because an alert is often the only way a
+        screen says no -- "조회 결과가 없습니다", a validation refusal, a
+        session that expired. A row that comes back empty is much easier to
+        explain with the text the site actually showed.
+
+        ``accept`` itself can throw when the page is already gone (the dialog
+        outlived its document), which must not fail the job -- the dialog is
+        never the thing we came for."""
+        logger.info("{}: dialog ({}) {}", self.api.api_id, dialog.type,
+                    (dialog.message or "").strip()[:150])
+        try:
+            dialog.accept()
+        except Exception as exc:  # noqa: BLE001 - page gone; nothing to accept onto
+            logger.debug("{}: dialog accept failed ({})", self.api.api_id, exc)
 
     def _resolve(self, text: str) -> str:
         """':KEY' job params first, then '${VAR}' env values -- the same order
@@ -285,6 +312,17 @@ class BrowserScraper(BaseScraper):
         - ``eval``    ``script``
         - ``download`` ``selector`` -- clicks and keeps the file it produces
 
+        Any step may carry ``"expect_navigation": true`` (with optional
+        ``wait_until``, default 'load') when that step is what makes the page
+        navigate -- a site's own search function called through ``eval``, a
+        submit button clicked, Enter pressed. The wait is armed before the
+        step runs and released when the new document arrives, which is the
+        only way to catch it: a ``wait_load`` placed afterwards reads the
+        *current* document's state, and right after a submit there is a window
+        where the old document is already destroyed and the new one has not
+        arrived, so it returns at once and the row is read off the page the
+        search was supposed to replace.
+
         Returns whatever ``download`` steps collected, as
         ``[(filename, bytes), ...]``."""
         target: Page | Frame = page
@@ -300,44 +338,63 @@ class BrowserScraper(BaseScraper):
             timeout = float(step["timeout"]) * 1000 if "timeout" in step else None
             logger.debug("{}: step {} {}", self.api.api_id, number, action)
 
-            if action == "goto":
-                url = self._resolve(step.get("url") or self.api.api_url)
-                _pace_host(url)
-                page.goto(url, wait_until=step.get("wait_until", "load"), timeout=timeout)
-            elif action == "fill":
-                target.fill(selector, self._resolve(str(step.get("value", ""))), timeout=timeout)
-            elif action == "select":
-                target.select_option(selector, self._resolve(str(step.get("value", ""))),
-                                     timeout=timeout)
-            elif action == "check":
-                if step.get("checked", True):
-                    target.check(selector, timeout=timeout)
-                else:
-                    target.uncheck(selector, timeout=timeout)
-            elif action == "click":
-                target.click(selector, timeout=timeout)
-            elif action == "press":
-                key = str(step.get("key", "Enter"))
-                if selector:
-                    target.press(selector, key, timeout=timeout)
-                else:
-                    page.keyboard.press(key)
-            elif action == "wait_for":
-                target.wait_for_selector(selector, state=step.get("state", "visible"),
+            # "expect_navigation": true -- 이 단계가 페이지 **이동을
+            # 일으킨다**. 이동을 기다리는 일을 뒤에 오는 wait_load 에 맡길 수
+            # 없다: 그 호출은 '지금' 문서의 로드 상태를 보는데, 제출 직후에는
+            # 옛 문서가 막 파괴되고 새 문서는 아직 없는 틈이 있어서, 그 틈에
+            # 걸리면 즉시 돌아오고 **이동 전 화면에서** 추출한다. 실측으로
+            # KRX_ISIN_SRCH 가 1.8초에 0건 '성공' 으로 끝났다 (POST 왕복이
+            # 들어갈 시간이 아니다). 선택자로도 못 막는다 -- 그 틈에는 어느
+            # 선택자도 없고, 검색 전 화면과 '결과 0건' 화면이 똑같이
+            # '검색 결과가 없습니다.' 한 행이다.
+            #
+            # expect_navigation 은 트리거 **전에** 걸어 두고 이동 자체를
+            # 기다리므로 타이밍이 빠진다. 이동을 일으키는 단계(eval 로 사이트의
+            # 조회 함수를 부르는 것, click, press)에 붙인다.
+            with ExitStack() as stack:
+                if step.get("expect_navigation"):
+                    stack.enter_context(page.expect_navigation(
+                        wait_until=step.get("wait_until", "load"),
+                        timeout=timeout or _TIMEOUT_MS))
+
+                if action == "goto":
+                    url = self._resolve(step.get("url") or self.api.api_url)
+                    _pace_host(url)
+                    page.goto(url, wait_until=step.get("wait_until", "load"), timeout=timeout)
+                elif action == "fill":
+                    target.fill(selector, self._resolve(str(step.get("value", ""))), timeout=timeout)
+                elif action == "select":
+                    target.select_option(selector, self._resolve(str(step.get("value", ""))),
                                          timeout=timeout)
-            elif action == "wait_load":
-                page.wait_for_load_state(step.get("state", "networkidle"), timeout=timeout)
-            elif action == "sleep":
-                time.sleep(float(step.get("seconds", 1)))
-            elif action == "frame":
-                target = page if step.get("reset") else self._frame(page, step)
-            elif action == "eval":
-                target.evaluate(self._resolve(str(step.get("script", ""))))
-            elif action == "download":
-                downloads.append(self._download(page, target, selector, timeout))
-            else:
-                raise ValueError(f"{self.api.api_id}: unknown behavior action {action!r} "
-                                 f"at step {number}")
+                elif action == "check":
+                    if step.get("checked", True):
+                        target.check(selector, timeout=timeout)
+                    else:
+                        target.uncheck(selector, timeout=timeout)
+                elif action == "click":
+                    target.click(selector, timeout=timeout)
+                elif action == "press":
+                    key = str(step.get("key", "Enter"))
+                    if selector:
+                        target.press(selector, key, timeout=timeout)
+                    else:
+                        page.keyboard.press(key)
+                elif action == "wait_for":
+                    target.wait_for_selector(selector, state=step.get("state", "visible"),
+                                             timeout=timeout)
+                elif action == "wait_load":
+                    page.wait_for_load_state(step.get("state", "networkidle"), timeout=timeout)
+                elif action == "sleep":
+                    time.sleep(float(step.get("seconds", 1)))
+                elif action == "frame":
+                    target = page if step.get("reset") else self._frame(page, step)
+                elif action == "eval":
+                    target.evaluate(self._resolve(str(step.get("script", ""))))
+                elif action == "download":
+                    downloads.append(self._download(page, target, selector, timeout))
+                else:
+                    raise ValueError(f"{self.api.api_id}: unknown behavior action {action!r} "
+                                     f"at step {number}")
 
         return downloads
 
@@ -512,8 +569,56 @@ class BrowserScraper(BaseScraper):
             out[selector] = self._extract_rows(page, rules)
         return out
 
+    # 한 번의 evaluate 로 페이지를 다 읽는다. 행마다 필드마다 Playwright 를
+    # 부르면 호출 하나가 IPC 왕복이라, 237행 x 9필드로 4,000번이 되고 28초가
+    # 걸렸다(실측). 1000행 페이지면 90초다 -- pageSize 로 요청을 200배 줄여 놓고
+    # 그만큼을 IPC 로 다시 내는 셈이었다. 브라우저 안에서 긁어 한 번에 넘기면
+    # 페이지당 호출이 하나다.
+    #
+    # innerText 를 쓰는 것은 옛 구현의 inner_text() 와 같은 값을 얻기
+    # 위해서다(Playwright 의 그 메서드가 element.innerText 를 돌려준다).
+    # 공백 다듬기와 '전부 None 인 행은 버린다' 규칙도 그대로 옮겼다.
+    _EXTRACT_JS = """
+    ({rowSel, fields, cellSel}) => {
+      const read = (el, rule) => {
+        const css  = (typeof rule === 'string') ? rule : rule.css;
+        const attr = (typeof rule === 'string') ? null : rule.attr;
+        const cell = css ? el.querySelector(css) : el;
+        if (!cell) return null;
+        const v = attr ? cell.getAttribute(attr) : cell.innerText;
+        return ((v || '').trim()) || null;
+      };
+      const els = Array.from(document.querySelectorAll(rowSel));
+      if (fields && !Array.isArray(fields)) {
+        return els.map(el => {
+                 const rec = {};
+                 for (const name of Object.keys(fields)) rec[name] = read(el, fields[name]);
+                 return rec;
+               })
+               .filter(rec => Object.keys(rec).some(k => rec[k] !== null));
+      }
+      return els.map(el => Array.from(el.querySelectorAll(cellSel))
+                            .map(c => (c.innerText || '').trim()));
+    }
+    """
+
+    def _extract_rows(self, page: Page, rules: dict[str, Any]) -> list[dict[str, Any]]:
+        fields = rules.get("fields")
+        result = page.evaluate(self._EXTRACT_JS, {
+            "rowSel": rules["rows"],
+            "fields": fields,
+            "cellSel": rules.get("cells", "td, th"),
+        })
+        if isinstance(fields, dict):
+            return result
+        # 위치 기반: 각 행이 셀의 줄이다. skip_rows/has_header 처리는 다른
+        # 표 형식 소스와 같은 자리에서 한다.
+        return rows_to_records([row for row in result if any(row)], rules)
+
     @staticmethod
-    def _extract_rows(page: Page, rules: dict[str, Any]) -> list[dict[str, Any]]:
+    def _extract_rows_slow(page: Page, rules: dict[str, Any]) -> list[dict[str, Any]]:
+        """옛 구현. 느려서 운영 경로에서 뺐지만, 새 것과 결과가 같은지
+        대조하는 데 쓸 수 있어 남긴다 (scratchpad 의 A/B 시험 참고)."""
         elements = page.query_selector_all(rules["rows"])
         fields = rules.get("fields")
 

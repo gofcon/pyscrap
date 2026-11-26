@@ -147,72 +147,72 @@ COMMIT;
 --                       WHERE j.job_id = 'ISIN_BOND_INFO_' || m.isin);
 
 -- ===========================================================================
--- KRX_ISIN_SRCH -- 코드부여일 창을 설정으로 (2026-11-26)
+-- KRX_ISIN_SRCH -- 코드부여일 창 + 과거 채우기 (2026-11-26)
 -- ===========================================================================
--- 표준코드 조회 화면은 조회 기간을 **요구한다.** 그 창을 인자로 끌어낸다.
--- 실측으로 확인한 것들:
+-- 이 화면이 KSD 에 없는 것을 갖고 있다: **상환·만기된 코드까지** 있다
+-- (실측 샘플의 list_yn 이 '상장폐지'다). KSD(ksd_bond_isin)는 살아 있는 종목만
+-- 이므로, 과거 ISIN 을 찾으려면 여기가 유일한 경로다.
 --
---   * 필드는 std_cd_grnt_start_dd / std_cd_grnt_end_dd 이고 그 뜻은
---     **코드부여일**이다 (std_cd_grnt = 표준코드 부여). 화면의 라디오
---     searchDateRadio(1 발행일 · 2 만기일 · 3 상장일 · 4 코드부여일)는 결과에
---     영향이 없다 -- 2010년 한 해로 세 경우 모두 229건이었다. 그 라디오는
---     다운로드 버튼을 보일지만 정한다(fn_search 끝의 fn_viewDownloadBtn).
---     그래서 건드리지 않는다.
+-- 창은 필수다. 날짜를 비우면 0건이고, 지금까지 0건이 아니었던 이유는 페이지가
+-- 열릴 때 dateSetting() 이 최근 1년을 기본값으로 넣고 폼이 그것을 같이 보내기
+-- 때문이다 -- 이 행은 **조용히 '최근 1년' 만 긁고 있었다**(KR2 로 271건).
 --
---   * 날짜를 **비우면 0건**이다. 기간 없이 조회할 수 없는 화면이다.
---     그런데 지금까지 0건이 아니었다 -- 페이지가 열릴 때 dateSetting() 이
---     최근 1년을 기본값으로 넣고 폼이 그것을 같이 보내기 때문이다. 즉 이
---     설정은 **그동안 조용히 '최근 1년' 만 긁고 있었다**(KR2 로 271건).
---     창을 인자로 빼는 것이 그 사실을 드러내는 일이기도 하다.
+-- 실측으로 정한 것들:
 --
---   * **3년을 넘으면 결과가 아니라 알림 페이지가 온다.** HTTP 200 인데 본문이
---     var msg = '3년 이내의 기간을 입력하셔야 합니다.' 이고 #tbody 가 없다.
---     rows 선택자가 아무것도 못 맞추니 엔진에는 **0건(EMPTY)으로 보인다** --
---     실패가 아니라 조용한 누락이다. 914일은 670건으로 되고 1096일은 안 된다.
---     빌더가 창을 좁게 만드는 것이 유일한 방어다.
+--   * 필드는 std_cd_grnt_start_dd / std_cd_grnt_end_dd 이고 **코드부여일**이다.
+--     화면의 searchDateRadio(발행일/만기일/상장일/코드부여일)는 결과에 영향이
+--     없다 -- 2010년으로 세 변형 모두 229건이었다. 다운로드 버튼만 가른다.
 --
---   * 형식은 YYYYMMDD 와 YYYY-MM-DD 둘 다 된다. 엔진 관례대로 YYYYMMDD 를
---     쓴다 -- 화면의 onblur Chk_Date2 가 YYYY-MM-DD 로 정규화하고(실측),
---     정규화 전에 보내도 서버가 받는다(실측으로 두 형식 모두 271건).
+--   * **형식은 YYYY-MM-DD 여야 한다.** 입력란의 onblur Chk_Date2 가 10자리를
+--     요구하고, 8자리를 넣으면 경고창 두 개로 거절한다 -- "입력한 '코드부여
+--     시작일' 은(는) 10자리가 아닙니다", 이어서 "3년 이내의 기간을 입력하셔야
+--     합니다"(날짜가 비워졌으므로). 서버는 8자리도 받지만 화면은 아니다.
 --
---   * 한 페이지 5행이다. pagination max_pages 60 이면 300행이 상한이라,
---     창을 넓히면 페이지 수가 먼저 막힌다 -- KR2 는 1년에 271건(55페이지)으로
---     간신히 들어가고 2년이면 537건으로 넘친다. 창과 max_pages 는 같이 본다.
+--   * **3년을 넘으면 결과가 아니라 알림 페이지가 온다.** 1095일은 793건으로
+--     되고 1096일은 안 된다. 그때 응답은 HTTP 200 에 #tbody 가 없는
+--     var msg = '3년 이내의 기간을 입력하셔야 합니다.' 다. 1년 창이라 안 닿는다.
+--
+--   * **pageSize 는 화면에 없는 파라미터인데 서버가 받는다.** 5행 -> 1000행,
+--     200배다. pageIndex 와 같이 정확히 돈다(1·2·3페이지 각 1000행, 연속,
+--     중복 없음). 비문서 파라미터라 어느 날 안 먹으면 페이지 수가 200배로
+--     뛰고 max_pages 에서 **조용히 잘린다** -- 엔진이 천장에 닿은 것을 자연
+--     종료와 구분하지 않는다. 그 경보는 아직 없다.
+--
+--   * 2011 부터다. 더 과거도 조회된다 -- 달력 위젯의 yearRange 가 "2011:+30"
+--     이라 연도 드롭다운만 2011부터이고 minDate 는 없다. KR6 는 1996년부터
+--     있고 1993~1995 는 0건이다. 필요할 때 CONNECT BY 의 수만 늘리면 된다.
+--
+-- 접두사는 3번째 글자이고 17개가 있다. 채권이 아닌 셋을 뺀 14개와 2011~2026
+-- 건수(실측): KR6 446,883 · KR3 23,328 · KR2 4,110 · KRD 3,098 · KR5 1,518 ·
+-- KR1 963 · KRG 921 · KRX 478 · KRC 254 · KRB 90 · KRF 38 · KR8 29 · KR0 10 ·
+-- KR9 10 = 481,730. 뺀 셋: KR4 선물옵션 · KR7 주식 · KRA ELW.
+--
+-- 실측 처리량: KR2 2011 이 237행 6.6초(2페이지), KR6 2011 이 20,701행
+-- 82.5초(22페이지). 전체 약 32분이다. 엔진의 extract 를 한 번의 evaluate 로
+-- 바꾸기 전에는 같은 일이 19시간이었다.
 
 UPDATE api_mst
-   SET behavior_json = JSON('[
-         {"action": "fill", "selector": "#isur_nm1",             "value": ":CODE"},
-         {"action": "fill", "selector": "#std_cd_grnt_start_dd", "value": ":GRNT_FROM"},
-         {"action": "fill", "selector": "#std_cd_grnt_end_dd",   "value": ":GRNT_TO"},
-         {"action": "eval", "script": "$(''form[name=JLDINF20000]'').append(\"<input type=''hidden'' name=''pageIndex'' value='':PAGE''>\"); fn_search(2);"},
-         {"action": "wait_load", "state": "networkidle"}
-       ]'),
-       -- 창이 job 신원에 들어간다. 안 넣으면 다른 기간을 돌릴 때 같은 job_id 로
-       -- overwrite 되어 앞 창의 결과가 사라진다. 넣으면 창마다 one-shot 잡
-       -- 하나이고, 과거를 조각내 받는 것이 그대로 된다.
-       job_key_params = JSON('["CODE", "GRNT_FROM", "GRNT_TO"]'),
-       -- row_stamp 는 CODE 만 그대로. 행마다의 날짜는 parse_json 의 grant_dd 가
-       -- 이미 담으므로 창을 또 찍으면 같은 값이 두 컬럼에 들어간다.
-       note = '표준코드 목록. 코드부여일 창(:GRNT_FROM~:GRNT_TO, YYYYMMDD)이 필수다 -- '
-              || '비우면 0건, 3년 넘으면 알림 페이지가 와서 엔진에는 0건으로 보인다. '
-              || 'searchDateRadio 는 결과에 영향 없음(다운로드 버튼 전용). 한 페이지 5행'
+   SET behavior_json   = JSON('[{"action":"fill","selector":"#isur_nm1","value":":CODE"},{"action":"fill","selector":"#std_cd_grnt_start_dd","value":":GRNT_FROM"},{"action":"fill","selector":"#std_cd_grnt_end_dd","value":":GRNT_TO"},{"action":"eval","script":"$(''form[name=JLDINF20000]'').append(\"<input type=''hidden'' name=''pageIndex'' value='':PAGE''>\").append(\"<input type=''hidden'' name=''pageSize'' value=''1000''>\"); fn_search(2);","expect_navigation":true,"wait_until":"domcontentloaded"}]'),
+       pagination_json = JSON('{"mode":"page","param":"PAGE","start":1,"max_pages":150}'),
+       job_key_params  = JSON('["CODE","GRNT_FROM","GRNT_TO"]'),
+       note            = '표준코드 목록. 코드부여일 창(:GRNT_FROM~:GRNT_TO, YYYYMMDD)이 필수다 -- 비우면 0건, 3년 넘으면 알림 페이지가 와서 엔진에는 0건으로 보인다. searchDateRadio 는 결과에 영향 없음(다운로드 버튼 전용). 한 페이지 5행'
  WHERE api_id = 'KRX_ISIN_SRCH';
 
--- 시험 빌더: 창을 굴린다. is_active=False · schedule_tag='test' 그대로 둔다 --
--- 운영에 올리는 것은 별개 결정이다.
+-- 과거 채우기 빌더. 접두사 14 x 16년 = 224 잡을 한 번에 만든다.
 --
--- 날짜는 KST 로 만든다. SYSDATE 는 이 DB 에서 UTC 라 자정 근처에 하루가
--- 어긋난다 (sp_run_monthly_archive 가 같은 이유로 AT TIME ZONE 을 쓴다).
+-- **세 파라미터가 한 축이다.** 콤마 키는 한 쿼리의 컬럼들을 짝으로 유지한다 --
+-- 따로 축으로 두면 14 x 16 x 16 조합이 되고 창의 시작과 끝이 다른 해가 된다.
 --
--- 과거를 조각내려면 이 자리를 날짜 목록 쿼리로 바꾼다 -- 분기마다 한 창이면
--- CONNECT BY 로 시작일을 뽑고 끝을 그 분기 말일로 만든다. 3년만 안 넘으면 된다.
+-- schedule_tag 가 'backfill' 이고 **그 태그를 쓰는 타이머가 없다.** 생성도
+-- 실행도 손으로만 된다 (generate-jobs/run-cycle 둘 다 태그 한정이다):
+--   python -m app.cli generate-jobs backfill
+--   python -m app.cli run-cycle    backfill
+--
+-- NOT EXISTS 는 남겨 둔다 -- 다시 생성해도 있는 것은 건너뛰므로 멱등하고,
+-- 중간에 멈춘 뒤 이어 받을 때 그대로 쓴다. ROWNUM 을 줄이면 조금씩 받는다.
 UPDATE api_job_builder
-   SET cartesian_param_json = JSON(q'[{
-         "CODE": "KR2",
-         "GRNT_FROM": {"db": "SELECT TO_CHAR(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE) - 7, 'YYYYMMDD') FROM dual"},
-         "GRNT_TO":   {"db": "SELECT TO_CHAR(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE), 'YYYYMMDD') FROM dual"}
-       }]'),
-       note = 'KR2 로 시작하는 표준코드, 코드부여일 최근 7일. 창이 job_id 에 들어가므로 날마다 새 잡 하나'
- WHERE build_id = 'KRX_ISIN_SRCH_KR2';
+   SET cartesian_param_json = JSON('{"CODE,GRNT_FROM,GRNT_TO":{"db":"SELECT code, grnt_from, grnt_to FROM ( SELECT p.code, y.yr || ''-01-01'' AS grnt_from, y.yr || ''-12-31'' AS grnt_to FROM (SELECT COLUMN_VALUE AS code FROM TABLE(sys.odcivarchar2list(''KR0'',''KR1'',''KR2'',''KR3'',''KR5'',''KR6'',''KR8'',''KR9'',''KRB'',''KRC'',''KRD'',''KRF'',''KRG'',''KRX''))) p CROSS JOIN (SELECT TO_CHAR(2010 + LEVEL) AS yr FROM dual CONNECT BY LEVEL <= 16) y WHERE NOT EXISTS (SELECT 1 FROM api_job j WHERE j.job_id = ''KRX_ISIN_SRCH_'' || p.code || ''_'' || y.yr || ''-01-01_'' || y.yr || ''-12-31'') ORDER BY y.yr, p.code ) WHERE ROWNUM <= 400"}}'),
+       note = '과거 표준코드. 접두사 14 x 2011~2026 = 224 잡을 한 번에 생성. KR4 선물옵션/KR7 주식/KRA ELW 제외. 타이머 없음 -- 손으로 돌린다'
+ WHERE build_id = 'KRX_ISIN_SRCH_HIST';
 
 COMMIT;
