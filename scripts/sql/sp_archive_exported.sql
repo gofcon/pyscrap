@@ -53,6 +53,14 @@ CREATE OR REPLACE PROCEDURE sp_archive_exported (
 --
 -- 대상은 외부 테이블(xt_<대상>)이 있는 것으로 한정한다. 그것이 곧 "Parquet 으로
 -- 읽을 수 있다"의 정의이고, 없는 표를 지우면 데이터가 사라진다.
+--
+-- 그 한정이 아래 v_targets 목록으로 손으로 되어 있다 -- 존재 여부를 묻지
+-- 않는다. 외부 테이블이 없는 계정에서는 검증 질의가 ORA-00942 로 멈춘다.
+-- 멈추는 자리가 삭제 전이므로 데이터는 안전하지만 _arch 를 한 번 쓴 뒤다.
+-- v2(수집 계정)에는 2026-11-26 부터 외부 테이블이 없다. 그래서 거기서는
+-- archive 타이머를 켜지 않는다 (docs/SCHEMA-V2.md 7.6).
+-- 이 참조는 EXECUTE IMMEDIATE 라 user_dependencies 로는 보이지 않는다 --
+-- 그 조회만 믿고 외부 테이블을 내리면 이 의존을 놓친다.
   c_cred  CONSTANT VARCHAR2(30)  := 'BUCKETAUTH_NEW';
   -- 경로의 뿌리는 fn_export_base 가 준다 -- 환경마다 다르고 export_target
   -- 한 행으로 정한다. 그 표가 없는 계정(v1)에서는 함수가 기존 상수로

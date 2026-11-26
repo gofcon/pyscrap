@@ -408,6 +408,12 @@ def archive_exported_cmd(
     tables. Keeping both copies is what fills the database; this drops the one
     that costs.
 
+    Needs those external tables in the calling account: the procedure counts
+    xt_<target> before it deletes anything, so an account without them stops
+    at ORA-00942 rather than deleting. The v2 collection account has had none
+    since 2026-11-26, which is why its archive timer stays off -- archiving
+    belongs with the analysis account that holds the external tables.
+
     A calendar month rather than an age, so one archive file is one month and
     a rerun looks at the same range. The default is last month, which is what
     the timer wants on the 1st; pass a month to catch up one that was missed.

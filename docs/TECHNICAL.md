@@ -715,6 +715,11 @@ python -m app.cli check-sql [--pull NAME]     # 파일 ↔ DB 대조
 이미 읽히므로 DB 에 둔 쪽이 용량만 먹는다. 지우기 전에 외부 테이블이 그
 구간을 읽어내는지 확인하고, 못 읽으면 그 표는 손대지 않고 실패한다.
 
+**v2 에서는 이 타이머를 켜지 않는다** (2026-11-26). 검증에 쓰는 `xt_*` 를
+수집 계정에서 내렸고, 그러면 매월 1일 `ORA-00942` 로 멈춘다 -- 삭제 전에
+멈추므로 데이터는 안전하지만 `_arch` Parquet 을 한 번 쓴 뒤다. 외부 테이블이
+분석 계정으로 가면 그쪽에서 되살린다 (SCHEMA-V2 7.6).
+
 유닛 배포는 [README](../README.md)의 *Deploying the units* 참조.
 
 ### 5.3 실패했을 때
@@ -788,12 +793,9 @@ export(p_name => '<프리픽스>', p_query => 'SELECT ... WHERE d = :DAY');
 
 ### 6.5 분석 DB에서 읽기
 
-```sql
-BEGIN sp_create_external_tables; END;              -- 전부
-BEGIN sp_create_external_tables('v_k2i_atm'); END; -- 하나만
-```
+버킷의 Parquet을 `xt_<대상>` 외부 테이블로 건다. 이 일을 하던 `sp_create_external_tables` 는 **2026-11-26 에 수집 계정에서 내렸고 저장소에서도 지웠다** (SCHEMA-V2 7.6) — 분석 DB 는 자기 인스턴스에 자기 사본을 들고 있다. 아래 설명은 그 사본에 그대로 해당하고, 다시 세울 일이 있으면 git 이력(`git log -- scripts/sql/sp_create_external_tables.sql`)에서 꺼낸다.
 
-버킷의 Parquet을 `xt_<대상>` 외부 테이블로 건다. 컬럼은 Parquet에서 읽어오므로 목록을 적지 않는다 — 그게 곧 내보낸 쿼리의 SELECT 목록이라, 옮겨 적으면 두 군데를 맞춰야 한다. 다만 **타입은 옮겨간다**: `NUMBER` → `BINARY_DOUBLE`, `DATE` → `TIMESTAMP(3)`.
+컬럼은 Parquet에서 읽어오므로 목록을 적지 않는다 — 그게 곧 내보낸 쿼리의 SELECT 목록이라, 옮겨 적으면 두 군데를 맞춰야 한다. 다만 **타입은 옮겨간다**: `NUMBER` → `BINARY_DOUBLE`, `DATE` → `TIMESTAMP(3)`.
 
 다시 걸어야 할 때: 대상이 늘었을 때, 내보내기 쿼리에 컬럼이 늘었을 때. **새 날짜가 쌓이는 것만으로는 다시 걸 필요가 없다** — 경로가 와일드카드라 저절로 들어온다.
 
@@ -828,7 +830,6 @@ DB가 정본이다 — 거기서 고치는 것이 역할을 나눈 취지이고,
 | `sp_export_bulk` | 대상 하나를 기간 통짜로 |
 | `sp_run_export` | 내보낼 대상 목록 (호출 나열) |
 | `fn_export_day_col` | 대상 → 거래일 컬럼 매핑 (위 둘이 공유) |
-| `sp_create_external_tables` | 버킷 → `xt_*` 외부 테이블 |
 | `sp_mst_fuopt_sync` | 원본 마스터 → 정제 마스터, 뒤늦은 만기일 메우기 |
 | `sp_stock_index_his_sync` | 지수 일봉 → 시계열, `v_k2i_atm` 갱신 |
 | `sp_purge_jobs` | 끝난 잡·로그 정리 |

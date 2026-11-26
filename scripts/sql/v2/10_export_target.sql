@@ -24,8 +24,11 @@ COMMENT ON COLUMN export_target.base_uri IS '슬래시로 끝나야 한다 -- �
 
 -- v2 는 같은 버킷의 'v2/' 아래로 쓴다. 버킷을 따로 만들지 않은 이유: 자격
 -- (BUCKETAUTH_NEW)과 분석 DB 의 외부 테이블 설정이 이 버킷에 묶여 있어,
--- 접두사만 가르면 전환할 때 sp_create_external_tables 의 경로 한 줄만
--- 옮기면 된다.
+-- 접두사만 가르면 분석 쪽을 건드리지 않고 갈 수 있다.
+--
+-- 전환할 때 고칠 것은 이 표의 한 행뿐이다. 수집 계정의
+-- sp_create_external_tables 는 2026-11-26 에 내렸으므로 옮길 경로가 더 없다
+-- (docs/SCHEMA-V2.md 7.6).
 INSERT INTO export_target (id, base_uri, note)
 VALUES (1, 'https://objectstorage.ap-chuncheon-1.oraclecloud.com/n/axtl8qsnlcns/b/bucket-20260410-1831/o/v2/',
         'v1 과 같은 버킷을 공유하는 동안 접두사로 가른다. 전환하면 이 행을 지우거나 기본 경로로 바꾼다');

@@ -177,12 +177,22 @@ SELECT SUBSTR(fn_export_base, INSTR(fn_export_base, '/o/')) FROM dual;
 -- /o/v2/  가 나와야 한다. /o/ 만 나오면 export_target 이 없거나 행이 없다
 ```
 
-`sp_create_external_tables` 는 **그대로 둔다.** 분석 DB 에서 돌고 그 계정엔
-함수가 없다. 병행 운행 중엔 분석 쪽이 v1 경로를 계속 읽는 것이 맞고, 전환할
-때 그 프로시저의 경로 한 줄을 v2 쪽으로 옮긴다.
+`sp_create_external_tables` 와 외부 테이블 5개는 **이 계정에서 내렸다**
+(2026-11-26). 분석용 사본을 수집 계정이 들고 있을 이유가 없어서다 -- 저장소의
+`scripts/sql/sp_create_external_tables.sql` 도 함께 지웠고, 분석 DB 는 자기
+인스턴스에 자기 사본을 들고 v1 경로를 계속 읽는다.
 
-전환이 끝나면 `export_target` 행을 지우거나 `base_uri` 를 기본 경로로 바꾼다 --
-그러면 v2 가 원래 자리에 쓴다.
+그래서 전환할 때 고칠 것은 `export_target` 한 행뿐이다 -- 행을 지우거나
+`base_uri` 를 기본 경로로 바꾸면 v2 가 원래 자리에 쓴다. 프로시저의 경로 한
+줄을 옮기는 일은 더 없다.
+
+**딸려 온 것 하나.** `sp_archive_exported` 가 지우기 전 검증에 `xt_<대상>` 을
+쓴다 -- `EXECUTE IMMEDIATE` 라서 `user_dependencies` 에는 보이지 않는다. 이
+계정에 외부 테이블이 없으니 매월 1일 `archive` 는 `ORA-00942` 로 멈춘다.
+멈추는 자리가 **검증**이라 행을 지우지는 않지만(설계대로 닫히는 방향으로
+실패한다), 그 전에 `_arch` Parquet 을 한 번 쓴다. 그래서 v2 에서는 이 타이머를
+켜지 않는다 (아래 §타이머). 되살릴 때는 분석 계정에 외부 테이블을 걸고 그쪽에서
+돌린다.
 
 ## 5. 경로와 사용자 -- 다른 인스턴스면 여기를 고친다
 
@@ -257,8 +267,11 @@ cd ~/pyscrap
 sudo systemctl enable pyscrap-{daily-early,daily-start,daily-batch1,daily-batch2}.timer
 sudo systemctl enable pyscrap-{5m,1h,daily-close}.timer
 sudo systemctl enable pyscrap-{3m-call,3m-put}.timer
-sudo systemctl enable pyscrap-{export,finalize-exports,archive,check-sql}.timer
+sudo systemctl enable pyscrap-{export,finalize-exports,check-sql}.timer
 sudo systemctl start  pyscrap-*.timer
+
+# archive 는 켜지 않는다 -- 검증에 쓰는 xt_* 외부 테이블이 이 계정에 없다 (4.5)
+sudo systemctl disable --now pyscrap-archive.timer
 ```
 
 확인:
@@ -271,6 +284,8 @@ journalctl -u pyscrap-daily-start -n 50 --no-pager
 ---
 
 ## 타이머 13개 -- 무엇이 언제 무엇을 부르나
+
+유닛은 13개이고 **켜는 것은 12개**다. `archive` 는 제외한다 (4.5).
 
 | 타이머 | 시각 (KST) | 부르는 것 |
 |---|---|---|
@@ -285,7 +300,7 @@ journalctl -u pyscrap-daily-start -n 50 --no-pager
 | `export` | 평일 22:00 | `run-export` (버킷에 Parquet) |
 | `check-sql` | 평일 23:00 | `check-sql` |
 | `finalize-exports` | 평일 03:00 | `finalize-exports` → `purge-jobs` → `purge-job-logs` |
-| `archive` | 매월 1일 04:00 | `archive-exported` |
+| ~~`archive`~~ | ~~매월 1일 04:00~~ | **켜지 않는다.** `xt_*` 가 없어 검증에서 멈춘다 (4.5) |
 
 3분 사이클이 `generate-only` 와 `run-only` 로 갈려 있는 이유: 그 잡 집합은
 정적이라(job_id 가 틱이 아니라 종목에서 나온다) 생성이 매 틱 새로 만들 것이

@@ -78,8 +78,9 @@ GRANT SELECT ON v_k2i_atm          TO &scrap_user;
 -- 부르는 것만 할 수 있다. 사전 데이터에 쓰는 권한이 SCRAP 에 가지 않는 것이
 -- 계정을 나눈 이유 중 하나다.
 --
--- (sp_create_external_tables 만 AUTHID CURRENT_USER 다. 그쪽은 부른 사람의
---  스키마에 외부 테이블을 만드는 것이 맞는 동작이라서다.)
+-- (예외였던 sp_create_external_tables 는 2026-11-26 에 내렸다. 그것만
+--  AUTHID CURRENT_USER 였다 -- 부른 사람의 스키마에 외부 테이블을 만드는
+--  것이 맞는 동작이라서다. 이제 정의자 권한이 아닌 프로시저는 없다.)
 GRANT EXECUTE ON sp_mst_bond_sync        TO &scrap_user;
 GRANT EXECUTE ON sp_mst_etf_sync         TO &scrap_user;
 GRANT EXECUTE ON sp_mst_fuopt_sync       TO &scrap_user;
