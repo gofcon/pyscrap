@@ -77,12 +77,15 @@ BEGIN
     sp_compact_exported(p_name => v_targets(i), p_to => v_to, p_from => v_from,
                         p_rows => v_rows);
 
-    -- 접을 것이 없었으면 지울 것도 없다. 그 달에 행이 없다는 뜻이다 --
-    -- sp_purge_exported 도 같은 판정을 하지만 창을 열기 전에 끊는 쪽이 싸다.
-    IF v_rows > 0 THEN
-      sp_purge_exported(p_name => v_targets(i), p_to => v_to, p_from => v_from,
-                        p_deleted => v_del);
-      p_deleted := p_deleted + v_del;
-    END IF;
+    -- compact 의 행수로 purge 를 가르지 않는다. 0 이 두 가지를 뜻하기
+    -- 때문이다 -- "합칠 객체가 없다"(일별 내보내기가 안 돌았다) 와 "이미
+    -- 기간 파일 하나다"(접기는 끝났고 purge 는 남았다). 뒤엣것에서 건너뛰면
+    -- DB 행이 영구히 남는다.
+    --
+    -- 각자 판단하게 두는 것이 맞다. sp_purge_exported 는 DB 행수를 먼저 세고
+    -- 0 이면 창을 열기 전에 끊으므로, 빈 달에 부르는 값이 거의 공짜다.
+    sp_purge_exported(p_name => v_targets(i), p_to => v_to, p_from => v_from,
+                      p_deleted => v_del);
+    p_deleted := p_deleted + v_del;
   END LOOP;
 END;

@@ -47,6 +47,7 @@ CREATE OR REPLACE PROCEDURE sp_purge_exported (
   v_min     VARCHAR2(8);
   v_max     VARCHAR2(8);
   v_days    VARCHAR2(4000);   -- 원본에 있는 그 기간의 날짜들, IN 절에 넣을 꼴
+  v_files   NUMBER;
 
   PROCEDURE drop_window IS
   BEGIN
@@ -79,6 +80,20 @@ BEGIN
                     || '(SELECT DISTINCT ' || v_col || ' AS d FROM ' || p_name
                     || ' WHERE ' || v_col || ' BETWEEN :1 AND :2 ORDER BY 1)'
     INTO v_days USING p_from, p_to;
+
+  -- 객체가 하나도 없으면 창을 열기 전에 끊는다. CREATE_EXTERNAL_TABLE 은
+  -- 와일드카드가 아무것도 못 맞추면 컬럼 목록을 못 만들어 ORA-20000
+  -- (KUP-13023 nothing matched wildcard query) 로 죽는데, 그 메시지는 부른
+  -- 사람에게 '이 구간은 내보낸 적이 없다' 를 말해주지 않는다. 삭제는 어느
+  -- 쪽이든 안 일어나지만, 진단이 되는 쪽으로 멈춘다.
+  SELECT COUNT(*) INTO v_files
+    FROM DBMS_CLOUD.LIST_OBJECTS(c_cred, c_base || LOWER(p_name) || '/');
+  IF v_files = 0 THEN
+    raise_application_error(-20010,
+      LOWER(p_name) || ': 버킷에 이 대상의 객체가 없다 (' || p_from || '..' || p_to
+      || '). 내보낸 적이 없으므로 지울 수 없다 -- sp_export_parquet 를 먼저'
+      || ' 돌린다. 삭제하지 않았다.');
+  END IF;
 
   -- 검증용 창을 연다. 글롭이 <대상>/*/*.parquet 이라 날짜별과 기간 파일을
   -- 같이 읽는다 -- 그래서 위 날짜 목록으로 좁혀 센다. 컬럼은 Parquet 에서

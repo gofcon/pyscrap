@@ -409,11 +409,17 @@ def archive_exported_cmd(
     that costs.
 
     Two steps, one procedure each (split 2026-11-26). sp_compact_exported
-    folds the month into one <target>/_arch/<from>_<to>_part file and touches
-    nothing in the database; sp_purge_exported checks that the month reads
-    back from the bucket and deletes it, touching nothing in the bucket. The
-    check builds its own external table over the month and drops it, so it
-    needs the credential but no pre-existing xt_* in the calling account.
+    reads the month's objects out of the bucket and writes them back as one
+    <target>/_arch/<from>_<to>_part file, touching nothing in the database;
+    sp_purge_exported checks that the month reads back from the bucket and
+    deletes it, touching nothing in the bucket. The check builds its own
+    external table over the month and drops it, so it needs the credential
+    but no pre-existing xt_* in the calling account.
+
+    Because compaction reads the bucket, the daily export must have run for
+    the month -- a day that never reached object storage is not invented from
+    the table, and purge then refuses rather than deleting rows whose only
+    copy is in the database. Re-export the missing day and run again.
 
     The v2 collection account keeps this timer off anyway -- archiving belongs
     with the analysis account, which is where the external tables now live.
