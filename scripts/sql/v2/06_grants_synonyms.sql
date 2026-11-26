@@ -72,6 +72,10 @@ GRANT SELECT ON v_k2i_atm          TO &scrap_user;
 -- 그래서 프로시저째로 SCRAP 에 두었고, 그 덕에 교차 권한이 둘 줄었다 --
 -- 계정 경계는 "누가 쓰는가" 로 긋는 것이 읽는 쪽으로 긋는 것보다 적게 샌다.
 --
+-- 그 규칙이 저장소에서는 폴더로 보인다: REF 소유 객체의 DDL 은
+-- scripts/sql/ref/ 에 있고 수집 계정 소유는 scripts/sql/ 바로 밑이다.
+-- check-sql 이 재귀 없이 훑으므로 그 구분이 곧 "대조 대상인가" 다.
+--
 -- CLI 의 sync-mst-* / sync-meta-maturity / sync-index-his 는 SCRAP 으로
 -- 접속한 채 이것들을 부른다. 프로시저는 **정의자 권한**(기본값)으로 두어야
 -- 한다 -- 그러면 본문이 REF 의 권한으로 돌아서 REF 표에 쓰고, SCRAP 은

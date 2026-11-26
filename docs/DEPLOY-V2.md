@@ -130,6 +130,12 @@ KIS_APP_KEY_2 · KIS_APP_SECRET_2 · KIS_ACCESS_TOKEN_2
 OCI_REGION · OCI_NAMESPACE · OCI_BUCKET_NAME · OCI_ACCESS_KEY · OCI_SECRET_KEY
 ```
 
+REF 소유 객체의 DDL 은 `scripts/sql/ref/` 에 모여 있다 (동기화 프로시저 6개와
+`v_k2i_atm`). 그 폴더는 REF 로 접속해서 실행하고, `scripts/sql/` 바로 밑은
+수집 계정으로 실행한다 -- `check-sql` 이 재귀 없이 훑으므로 폴더가 곧 소유
+계정이고, 섞여 있으면 "남의 계정에 있는 것" 이 "깨진 것" 과 같은 모양으로
+보인다.
+
 **`ORACLE_USER_REF` / `ORACLE_PASSWORD_REF` 는 넣지 않는다.** 엔진이 REF 로
 접속하지 않는다 -- 사전 데이터는 synonym 으로 읽고 동기화 프로시저도 SCRAP
 에서 synonym 으로 불린다(REF 소유 MV 갱신까지 그 길로 된다). REF 자격이

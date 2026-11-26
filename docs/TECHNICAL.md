@@ -848,6 +848,20 @@ _call_procedure('sp_run_daily_export', day, since, out_count=False)
 
 파일은 **검토된 기록**이다. DB가 못 갖는 세 가지 때문에 둔다: 변경의 이유(git 이력), 리뷰할 diff, 객체가 없는 환경에 만들 수단. 셋 다 "파일 = DB"를 전제하는데 그걸 강제하는 장치가 없으므로 **`check-sql`이 대조한다.**
 
+**폴더가 소유 계정을 말한다.** `check-sql` 은 `scripts/sql/*.sql` 을 재귀 없이 훑으므로, 하위 폴더에 있는 것은 대조 대상이 아니다.
+
+```
+scripts/sql/        수집 계정(SCRAP) 소유.  check-sql 이 대조한다
+scripts/sql/ref/    REF 소유.               대조하지 않는다
+scripts/sql/v2/     설치 스크립트(번호순).   대조하지 않는다
+```
+
+어느 폴더인지는 **그 객체가 쓰는 표의 주인**이 정한다. `sp_meta_maturity_sync` 는 `meta_maturity`(REF 표)에 쓰므로 `ref/` 이고, `sp_ksd_no_detail_mark` 는 `ksd_bond_no_detail`(수집 상태 표)에 쓰므로 위다 — 읽는 쪽이 아니라 쓰는 쪽으로 긋는다(`v2/06_grants_synonyms.sql` 의 설명 참고).
+
+2026-11-26 까지 REF 몫 7개가 위에 섞여 있어서 `check-sql` 이 매번 그 6개(+MV 하나는 `skipped`)를 `missing` 으로 잡았다. **깨진 것과 남의 계정에 있는 것이 같은 모양으로 보여서**, 사람이 "6은 정상" 을 기억하는 것으로 버티고 있었다. 폴더를 가르니 `18 object(s) match` 로 0 이 됐고, 이제 `missing` 한 줄은 실제 문제다.
+
+맞바꾼 것: `ref/` 는 이제 **대조되지 않는다**. 거짓 경보가 사라진 대신 그 7개는 검증 밖이다. 검증까지 하려면 `check-sql` 이 REF 로도 붙어야 하는데 그 자격은 `.env` 에서 일부러 뺐으므로(§`db_config`), 필요해지면 플래그로 받는 것이 맞다 — 엔진은 그대로 두고 자격을 가진 사람만 쓴다.
+
 ```bash
 python -m app.cli check-sql                 # 갈라지면 종료코드 1
 python -m app.cli check-sql --pull sp_xxx   # DB 버전을 파일로 가져오기

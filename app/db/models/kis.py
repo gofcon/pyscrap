@@ -100,7 +100,7 @@ class FoIdxCodeMst(ResultTable, SQLModel, table=True):
     is what makes the listing history answerable -- when a contract appeared,
     when it stopped being listed -- which a single overwritten copy cannot
     say. Readers that want "what is listed now" take the rows of the latest
-    trade_at (see scripts/sql/sp_mst_fuopt_sync.sql).
+    trade_at (see scripts/sql/ref/sp_mst_fuopt_sync.sql).
 
     Column names/meanings taken directly from KIS's own ST_FO_IDX_CODE C
     struct (info_type/atm_cls_code/acpr/mmsc_cls_code kept verbatim; the two
