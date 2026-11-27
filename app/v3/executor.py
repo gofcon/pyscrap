@@ -107,7 +107,7 @@ def _run_duckdb_axis_query(query: str, oci_bucket: str) -> list[tuple[Any, ...]]
             if name in sql_lower:
                 con.execute(
                     f"CREATE OR REPLACE TEMP VIEW {name} AS "
-                    f"SELECT * FROM read_parquet('s3://{oci_bucket}/v3/ref/{name}.parquet')"
+                    f"SELECT * FROM read_parquet('s3://{oci_bucket}/v3/snapshot/{name}.parquet')"
                 )
         return con.execute(sql).fetchall()
     finally:
@@ -230,13 +230,12 @@ def execute_etl_job(
     spec = EtlJobSpec.model_validate({
         "job_id": job_id,
         "sql_text": job_row["sql_text"],
-        "output_layer": job_row.get("output_layer", "curated"),
-        "output_rel_path": job_row["output_rel_path"],
+        "output_layer": job_row.get("output_layer", "daily"),
+        "target_name": job_row["target_name"],
         "targets": list(job_row.get("targets") or ["oci"]),
         "memory_limit": job_row.get("memory_limit", "1GB"),
         "threads": job_row.get("threads", 2),
         "min_rows": job_row.get("min_rows", 0),
-        "cleanup_prefix": job_row.get("cleanup_prefix"),
     })
     started = time.monotonic()
     try:
@@ -271,15 +270,12 @@ def execute_etl_job(
             duration_ms=int((time.monotonic() - started) * 1000),
             output_uris=res.uploaded_uris,
         ))
-        out: dict[str, Any] = {
+        return {
             "job_id": job_id,
             "job_type": "ETL",
             "rows": res.row_count,
             "uris": res.uploaded_uris,
         }
-        if res.cleaned_keys:
-            out["cleaned"] = {k: len(v) for k, v in res.cleaned_keys.items()}
-        return out
     except Exception as exc:
         err = classify(exc)
         run_ledger.append(RunLedgerEntry(

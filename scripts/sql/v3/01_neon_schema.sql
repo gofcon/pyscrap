@@ -116,22 +116,26 @@ CREATE INDEX IF NOT EXISTS ix_api_job_schedule
 CREATE INDEX IF NOT EXISTS ix_api_job_api_id
     ON api_job (api_id);
 
--- DuckDB 후처리 · 컴팩션 · 금융 마스터/마트 갱신 실행 정의
+-- DuckDB 후처리 · 일별 정제 · 월별 Compaction · 금융 마스터/스냅샷 갱신 실행 정의
+-- 경로 규약은 엔진이 output_layer + target_name 으로 자동 생성한다:
+--   - snapshot : v3/snapshot/<target_name>.parquet
+--   - daily    : v3/daily/<target_name>/ym=YYYYMM/dt=YYYYMMDD/data.parquet
+--   - monthly  : v3/monthly/<target_name>/ym=YYYYMM/monthly.parquet
 DROP TABLE IF EXISTS etl_job;
 CREATE TABLE etl_job (
     job_id          VARCHAR(100) PRIMARY KEY,
     schedule_tag    VARCHAR(30)  NOT NULL DEFAULT 'daily_close',
     run_order       SMALLINT     NOT NULL DEFAULT 200,  -- 같은 schedule_tag 내 API 수집 이후 실행
     is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
-    output_layer    VARCHAR(15)  NOT NULL DEFAULT 'curated'
-                    CHECK (output_layer IN ('curated', 'ref', 'mart')),
-    output_rel_path VARCHAR(300) NOT NULL,              -- 예: kis_futopt_chart/ym=${TARGET_YM}/monthly.parquet
+    output_layer    VARCHAR(15)  NOT NULL DEFAULT 'daily'
+                    CHECK (output_layer IN ('snapshot', 'daily', 'monthly')),
+    target_name     VARCHAR(100) NOT NULL
+                    CHECK (target_name ~ '^[a-z0-9_]+$'),
     targets         TEXT[]       NOT NULL DEFAULT ARRAY['oci']::TEXT[],
     memory_limit    VARCHAR(16)  NOT NULL DEFAULT '1GB',
     threads         SMALLINT     NOT NULL DEFAULT 2 CHECK (threads BETWEEN 1 AND 8),
     min_rows        INTEGER      NOT NULL DEFAULT 0 CHECK (min_rows >= 0),
-    cleanup_prefix  VARCHAR(300),                       -- 업로드 성공 후 정리할 v3/ 프리픽스 (예: 월별 Compaction 후 dt=)
-    sql_text        TEXT         NOT NULL,              -- 치환 변수: ${OCI_BUCKET}, ${TARGET_DATE}, ${TARGET_YM}
+    sql_text        TEXT         NOT NULL,              -- 치환 변수: ${OCI_BUCKET}, ${TARGET_DATE}, ${TARGET_YM}, ${LEDGER_DIR}
     note            VARCHAR(400),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
@@ -152,9 +156,9 @@ SELECT schedule_tag,
 UNION ALL
 SELECT schedule_tag,
        run_order,
-       'ETL'::VARCHAR(10)                       AS job_type,
+       'ETL'::VARCHAR(10)                    AS job_type,
        job_id,
-       output_layer || '/' || output_rel_path   AS target_ref,
+       output_layer || ':' || target_name    AS target_ref,
        is_active,
        note
   FROM etl_job;

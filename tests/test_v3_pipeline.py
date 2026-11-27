@@ -29,17 +29,17 @@ class TestObjectStorageV3(unittest.TestCase):
             os.environ.pop("V3_BUCKET_PREFIX", None)
             self.assertEqual(v3_prefix(), "v3")
             self.assertEqual(
-                build_v3_key("curated", "kis_futopt_chart", "ym=202611", "monthly.parquet"),
-                "v3/curated/kis_futopt_chart/ym=202611/monthly.parquet",
+                build_v3_key("monthly", "kis_futopt_chart", "ym=202611", "monthly.parquet"),
+                "v3/monthly/kis_futopt_chart/ym=202611/monthly.parquet",
             )
             self.assertEqual(
-                build_v3_key("ref", "mst_etf.parquet"),
-                "v3/ref/mst_etf.parquet",
+                build_v3_key("snapshot", "mst_etf.parquet"),
+                "v3/snapshot/mst_etf.parquet",
             )
 
     def test_build_v3_key_rejects_traversal_and_invalid_layer(self):
         with self.assertRaises(ValueError):
-            build_v3_key("curated", "../v2_secret", "a.parquet")
+            build_v3_key("daily", "../v2_secret", "a.parquet")
         with self.assertRaises(ValueError):
             build_v3_key("unknown_layer", "a.parquet")
 
@@ -143,12 +143,19 @@ class TestV3Spec(unittest.TestCase):
         job = DuckDBJobSpec(
             job_id="compact_chart",
             sql="SELECT 1",
-            output_layer="curated",
-            output_rel_path="kis_futopt_chart/ym=202611/monthly.parquet",
+            output_layer="monthly",
+            target_name="kis_futopt_chart",
             targets=["oci", "r2"],
         )
         self.assertEqual(job.prefix, "v3")
         self.assertEqual(job.memory_limit, "1GB")
+        with self.assertRaises(ValidationError):
+            DuckDBJobSpec(
+                job_id="bad_target",
+                sql="SELECT 1",
+                output_layer="snapshot",
+                target_name="../escape",
+            )
 
 
 class TestCleanseAndContract(unittest.TestCase):
@@ -454,8 +461,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                     "schedule_tag": "daily_batch2",
                     "run_order": 200,
                     "is_active": True,
-                    "output_layer": "ref",
-                    "output_rel_path": "sample_ref.parquet",
+                    "output_layer": "snapshot",
+                    "target_name": "sample_ref",
                     "targets": ["oci"],
                     "memory_limit": "512MB",
                     "threads": 2,
@@ -529,8 +536,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                     "schedule_tag": "daily_batch2",
                     "run_order": 200,
                     "is_active": True,
-                    "output_layer": "ref",
-                    "output_rel_path": "a1_ref.parquet",
+                    "output_layer": "snapshot",
+                    "target_name": "a1_ref",
                     "targets": ["oci"],
                     "memory_limit": "512MB",
                     "threads": 2,
@@ -547,10 +554,10 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         fake_etl = DuckDBJobResult(
             job_id="JOB_ETL",
-            object_key="v3/ref/a1_ref.parquet",
+            object_key="v3/snapshot/a1_ref.parquet",
             row_count=5,
             byte_size=20,
-            uploaded_uris={"oci": "s3://bkt/v3/ref/a1_ref.parquet"},
+            uploaded_uris={"oci": "s3://bkt/v3/snapshot/a1_ref.parquet"},
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261127", base_dir=Path(td))
@@ -566,14 +573,28 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                 ("ETL", "JOB_ETL", "SUCCESS"),
             ])
 
-    def test_duckdb_runner_substitutes_output_rel_path_placeholders(self):
+    def test_duckdb_runner_resolves_canonical_snapshot_daily_monthly_paths(self):
+        from app.object_storage import resolve_etl_object_key
         from app.v3.duckdb_runner import run_duckdb_job
+
+        self.assertEqual(
+            resolve_etl_object_key("snapshot", "mst_etf"),
+            "v3/snapshot/mst_etf.parquet",
+        )
+        self.assertEqual(
+            resolve_etl_object_key("daily", "test_tbl", target_date="20261127"),
+            "v3/daily/test_tbl/ym=202611/dt=20261127/data.parquet",
+        )
+        self.assertEqual(
+            resolve_etl_object_key("monthly", "test_tbl", target_ym="202611"),
+            "v3/monthly/test_tbl/ym=202611/monthly.parquet",
+        )
 
         spec = DuckDBJobSpec(
             job_id="CURATE_TEST",
             sql_text="SELECT '${TARGET_DATE}' AS dt, 1 AS v",
-            output_layer="curated",
-            output_rel_path="test_tbl/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet",
+            output_layer="daily",
+            target_name="test_tbl",
             targets=["oci"],
             memory_limit="256MB",
             threads=1,
@@ -591,7 +612,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                     sql_params={"TARGET_DATE": "20261127", "TARGET_YM": "202611"},
                     temp_directory=Path(td) / "duckdb",
                 )
-            self.assertEqual(res.object_key, "v3/curated/test_tbl/ym=202611/dt=20261127/data.parquet")
+            self.assertEqual(res.object_key, "v3/daily/test_tbl/ym=202611/dt=20261127/data.parquet")
             self.assertEqual(res.row_count, 1)
 
     def test_code_harvester_column_filters_and_builtin_dispatch(self):
@@ -619,8 +640,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                     "schedule_tag": "daily_batch2",
                     "run_order": 250,
                     "is_active": True,
-                    "output_layer": "ref",
-                    "output_rel_path": "src_code.parquet",
+                    "output_layer": "snapshot",
+                    "target_name": "src_code",
                     "targets": ["oci"],
                     "memory_limit": "512MB",
                     "threads": 2,
@@ -631,10 +652,10 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         fake_res = DuckDBJobResult(
             job_id="HARVEST_SRC_CODE",
-            object_key="v3/ref/src_code.parquet",
+            object_key="v3/snapshot/src_code.parquet",
             row_count=42,
             byte_size=1024,
-            uploaded_uris={"oci": "s3://bkt/v3/ref/src_code.parquet"},
+            uploaded_uris={"oci": "s3://bkt/v3/snapshot/src_code.parquet"},
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261127", base_dir=Path(td))
@@ -646,53 +667,46 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             self.assertEqual(entries[0].job_type, "ETL")
             self.assertEqual(entries[0].job_id, "HARVEST_SRC_CODE")
 
-    def test_cleanup_prefix_safety_and_post_upload_cleanup(self):
+    def test_cleanup_prefix_safety_and_purge_verified_daily(self):
+        from datetime import date
         from app.object_storage import _validate_v3_cleanup_prefix
-        from app.v3.duckdb_runner import run_duckdb_job
+        from app.v3.cleanup import purge_verified_daily
 
         self.assertEqual(
-            _validate_v3_cleanup_prefix("v3/curated/kis_futopt_chart/ym=202611/dt="),
-            "v3/curated/kis_futopt_chart/ym=202611/dt=",
+            _validate_v3_cleanup_prefix("v3/daily/kis_futopt_chart/ym=202607/"),
+            "v3/daily/kis_futopt_chart/ym=202607/",
         )
-        for bad in ("v3/", "v3/curated/", "v2/curated/foo/", "v3/curated/../v2/foo"):
+        for bad in ("v3/", "v3/daily/", "v2/daily/foo/", "v3/daily/../v2/foo"):
             with self.assertRaises(ValueError):
                 _validate_v3_cleanup_prefix(bad)
 
-        spec = DuckDBJobSpec(
-            job_id="COMPACT_TEST",
-            sql_text="SELECT 1 AS a",
-            output_layer="curated",
-            output_rel_path="kis_futopt_chart/ym=${TARGET_YM}/monthly.parquet",
-            targets=["oci"],
-            memory_limit="256MB",
-            threads=1,
-            min_rows=1,
-            cleanup_prefix="v3/curated/kis_futopt_chart/ym=${TARGET_YM}/dt=",
-        )
-        seen_cleanup: list[tuple[str, set[str]]] = []
+        daily_keys = [
+            "v3/daily/kis_futopt_chart/ym=202606/dt=20260601/data.parquet",
+            "v3/daily/kis_futopt_chart/ym=202607/dt=20260701/data.parquet",
+            "v3/daily/kis_futopt_chart/ym=202611/dt=20261127/data.parquet",
+        ]
 
-        def _fake_del(pfx, targets=("oci",), *, exclude_keys=(), **kw):
-            seen_cleanup.append((pfx, set(exclude_keys)))
-            return {"oci": [f"{pfx}20261101/data.parquet"]}
+        def _fake_verify(target, ym, **kw):
+            if ym == "202607":
+                return True, {"ym": ym, "monthly_rows": 100, "daily_distinct_rows": 100, "hash_match": True}
+            return False, {"ym": ym, "monthly_rows": 99, "daily_distinct_rows": 100, "hash_match": False}
 
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch("app.v3.duckdb_runner.is_tmpfs_path", return_value=False), \
-                 mock.patch("app.v3.duckdb_runner.register_s3_secrets", return_value=[]), \
-                 mock.patch(
-                     "app.v3.duckdb_runner.upload_file_to_targets",
-                     side_effect=lambda p, key, **kw: {"oci": f"s3://bkt/{key}"},
-                 ), \
-                 mock.patch("app.v3.duckdb_runner.delete_prefix_from_targets", side_effect=_fake_del):
-                res = run_duckdb_job(
-                    spec,
-                    sql_params={"TARGET_YM": "202611"},
-                    temp_directory=Path(td) / "duckdb",
-                )
-        self.assertEqual(
-            seen_cleanup,
-            [("v3/curated/kis_futopt_chart/ym=202611/dt=", {"v3/curated/kis_futopt_chart/ym=202611/monthly.parquet"})],
-        )
-        self.assertEqual(len(res.cleaned_keys["oci"]), 1)
+        with mock.patch("app.v3.cleanup.list_keys_with_prefix", return_value=daily_keys), \
+             mock.patch("app.v3.cleanup.verify_monthly_matches_daily", side_effect=_fake_verify), \
+             mock.patch("app.v3.cleanup.delete_keys_from_targets", return_value={"oci": 1}) as del_mock:
+            dry = purge_verified_daily("kis_futopt_chart", keep_months=3, ref_date=date(2026, 11, 27), dry_run=True)
+            self.assertEqual([m["ym"] for m in dry["verified_months"]], ["202607"])
+            self.assertEqual([m["ym"] for m in dry["skipped_months"]], ["202606"])
+            self.assertEqual(dry["deleted_files"], 0)
+            del_mock.assert_not_called()
+
+            applied = purge_verified_daily("kis_futopt_chart", keep_months=3, ref_date=date(2026, 11, 27), dry_run=False)
+            self.assertEqual(applied["deleted_files"], 1)
+            del_mock.assert_called_once_with(
+                ["v3/daily/kis_futopt_chart/ym=202607/dt=20260701/data.parquet"],
+                targets=("oci",),
+                skip_unconfigured=True,
+            )
 
     def test_purge_raw_clean_and_iter_target_dates(self):
         from datetime import date

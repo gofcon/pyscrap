@@ -8,6 +8,7 @@ Usage::
     python3 -m app.v3.cli run-cycle <schedule_tag> [--date YYYYMMDD | --from YYYYMMDD --to YYYYMMDD]
     python3 -m app.v3.cli flush-log [--date YYYYMMDD]
     python3 -m app.v3.cli purge-raw [--keep-days 30] [--target NAME] [--apply]
+    python3 -m app.v3.cli purge-daily <target_name> [--keep-months 3] [--apply]
     python3 -m app.v3.cli purge-log [--keep-days 90] [--apply]
 """
 
@@ -19,7 +20,7 @@ import sys
 from datetime import datetime, timedelta
 
 from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger
-from app.v3.cleanup import purge_old_job_logs, purge_raw_clean
+from app.v3.cleanup import purge_old_job_logs, purge_raw_clean, purge_verified_daily
 from app.v3.executor import dry_run_api, execute_job, execute_schedule_cycle, now_kst
 from app.v3.neon_sync import load_dotenv_into_env, mirror_user_tables_to_parquet, pull_daily_snapshot
 
@@ -105,6 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     p_praw.add_argument("--target", dest="target_name", default=None, help="Restrict to one raw_clean target folder")
     p_praw.add_argument("--apply", action="store_true", help="Actually delete matched objects (default: dry-run)")
 
+    p_pday = sub.add_parser(
+        "purge-daily",
+        help="Delete v3/daily/<target>/ym=* older than N months ONLY after COUNT+HASH match with v3/monthly/",
+    )
+    p_pday.add_argument("target_name")
+    p_pday.add_argument("--keep-months", type=int, default=3, help="Keep recent N months in daily/ (default: 3)")
+    p_pday.add_argument("--apply", action="store_true", help="Actually delete verified daily files (default: dry-run)")
+
     p_plog = sub.add_parser("purge-log", help="Delete Neon job_log rows older than N days (dry-run by default)")
     p_plog.add_argument("--keep-days", type=int, default=90, help="Retention window in days (default: 90)")
     p_plog.add_argument("--apply", action="store_true", help="Actually delete rows in Neon (default: dry-run)")
@@ -181,6 +190,15 @@ def main(argv: list[str] | None = None) -> int:
         summary = purge_raw_clean(
             keep_days=args.keep_days,
             target_name=args.target_name,
+            dry_run=not args.apply,
+        )
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "purge-daily":
+        summary = purge_verified_daily(
+            args.target_name,
+            keep_months=args.keep_months,
             dry_run=not args.apply,
         )
         print(json.dumps(summary, ensure_ascii=False))

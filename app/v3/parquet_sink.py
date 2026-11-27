@@ -124,20 +124,21 @@ def publish_parquet_batch(
 
     Hive partition layout:
     - ``raw_clean``: ``v3/raw_clean/<target>/dt=YYYYMMDD/<batch>.parquet``
-    - ``curated``:   ``v3/curated/<target>/ym=YYYYMM/dt=YYYYMMDD/<batch>.parquet``
-    - ``ref``:       ``v3/ref/<target>.parquet``
-    - ``mart``:      ``v3/mart/<target>/<batch>.parquet``
+    - ``snapshot``:  ``v3/snapshot/<target>.parquet``
+    - ``daily``:     ``v3/daily/<target>/ym=YYYYMM/dt=YYYYMMDD/<batch>.parquet``
+    - ``monthly``:   ``v3/monthly/<target>/ym=YYYYMM/<batch>.parquet``
     """
     filename = f"{batch_name or uuid.uuid4().hex[:12]}.parquet"
     if layer == "raw_clean":
         key = build_v3_key("raw_clean", target_name, f"dt={target_date}", filename, prefix=prefix)
-    elif layer == "curated":
+    elif layer == "snapshot":
+        key = build_v3_key("snapshot", f"{target_name}.parquet", prefix=prefix)
+    elif layer == "daily":
         ym = target_date[:6]
-        key = build_v3_key("curated", target_name, f"ym={ym}", f"dt={target_date}", filename, prefix=prefix)
-    elif layer == "ref":
-        key = build_v3_key("ref", f"{target_name}.parquet", prefix=prefix)
-    elif layer == "mart":
-        key = build_v3_key("mart", target_name, filename, prefix=prefix)
+        key = build_v3_key("daily", target_name, f"ym={ym}", f"dt={target_date}", filename, prefix=prefix)
+    elif layer == "monthly":
+        ym = target_date[:6]
+        key = build_v3_key("monthly", target_name, f"ym={ym}", filename, prefix=prefix)
     else:
         raise ValueError(f"unsupported parquet layer {layer!r}")
 

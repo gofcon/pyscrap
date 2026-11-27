@@ -12,13 +12,15 @@ default to the ``"oci"`` target and fall back to legacy ``OCI_*`` env vars.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlsplit
 
 V3_DEFAULT_PREFIX = "v3"
-VALID_V3_LAYERS = frozenset({"raw_clean", "curated", "ref", "mart", "binary"})
+VALID_V3_LAYERS = frozenset({"raw_clean", "snapshot", "daily", "monthly", "binary"})
+_TARGET_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,38 @@ def build_v3_key(layer: str, *parts: str, prefix: str | None = None) -> str:
                 raise ValueError(f"path traversal segment '..' is not allowed in object key: {parts!r}")
             cleaned.append(seg)
     return "/".join(cleaned)
+
+
+def resolve_etl_object_key(
+    output_layer: str,
+    target_name: str,
+    *,
+    target_date: str = "",
+    target_ym: str = "",
+    prefix: str | None = None,
+) -> str:
+    """Derive canonical ``v3/<output_layer>/...`` object key for an ``etl_job``.
+
+    Path convention (fixed by engine — never free-typed in DB):
+    - ``snapshot``: ``v3/snapshot/<target_name>.parquet``
+    - ``daily``:    ``v3/daily/<target_name>/ym=YYYYMM/dt=YYYYMMDD/data.parquet``
+    - ``monthly``:  ``v3/monthly/<target_name>/ym=YYYYMM/monthly.parquet``
+    """
+    if not _TARGET_NAME_RE.match(target_name):
+        raise ValueError(f"invalid target_name {target_name!r}; must match ^[a-z0-9_]+$")
+    if output_layer == "snapshot":
+        return build_v3_key("snapshot", f"{target_name}.parquet", prefix=prefix)
+    if output_layer == "daily":
+        if len(target_date) != 8 or not target_date.isdigit():
+            raise ValueError(f"daily output requires YYYYMMDD target_date, got {target_date!r}")
+        ym = target_ym or target_date[:6]
+        return build_v3_key("daily", target_name, f"ym={ym}", f"dt={target_date}", "data.parquet", prefix=prefix)
+    if output_layer == "monthly":
+        ym = target_ym or target_date[:6]
+        if len(ym) != 6 or not ym.isdigit():
+            raise ValueError(f"monthly output requires YYYYMM target_ym, got {ym!r}")
+        return build_v3_key("monthly", target_name, f"ym={ym}", "monthly.parquet", prefix=prefix)
+    raise ValueError(f"unsupported etl output_layer {output_layer!r}; expected snapshot|daily|monthly")
 
 
 def _load_target_from_env(name: str) -> S3TargetConfig | None:

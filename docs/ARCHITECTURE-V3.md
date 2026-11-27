@@ -36,10 +36,10 @@ flowchart TD
 
     subgraph OCI_B["1차 정본 버킷: OCI Object Storage — v3/ 경로 (20GB Free · 서울 내부망)"]
         direction LR
-        REF_P["v3/ref/*.parquet\n(금융 마스터 Parquet + user_* 미러)"]
+        REF_P["v3/snapshot/*.parquet\n(금융 마스터 · 수기 미러 · 집계 스냅샷)"]
         RAW_P["v3/raw_clean/target/dt=YYYYMMDD/*.parquet"]
-        CUR_P["v3/curated/target/ym=YYYYMM/*.parquet\n(월별 Compaction + 키 정렬)"]
-        MRT_P["v3/mart/mart_name/*.parquet\n(사전 집계 마트)"]
+        DAY_P["v3/daily/target/ym=YYYYMM/dt=YYYYMMDD/data.parquet\n(일별 병합 · 중복제거)"]
+        MON_P["v3/monthly/target/ym=YYYYMM/monthly.parquet\n(월별 Compaction + 키 정렬)"]
     end
 
     subgraph ANAL["분석 환경 (DBeaver + DuckDB · SQL 문법 PG 통일)"]
@@ -61,14 +61,14 @@ flowchart TD
     RAW_P --> DKB
     REF_P --> DKB
     DKB --> REF_P
-    DKB --> CUR_P
-    DKB --> MRT_P
-    CUR_P --> LOCAL
-    MRT_P --> LOCAL
+    DKB --> DAY_P
+    DKB --> MON_P
+    DAY_P --> LOCAL
+    MON_P --> LOCAL
     REF_P --> LOCAL
     REF -.->|"선택: DuckDB ATTACH"| LOCAL
     DKB -.->|"targets: oci + r2 (2단계 추가)"| R2
-    MRT_P -.->|"또는 야간 rclone sync"| R2
+    REF_P -.->|"또는 야간 rclone sync"| R2
     OPS -.->|"설정/로그 조회"| API
 ```
 
@@ -153,12 +153,11 @@ flowchart TD
 * **버킷 경로 규약 (`v3/` 접두사 + DuckDB Hive 파티셔닝 최적화)**:
   기존 v2 버킷 데이터와 100% 격리하기 위해 모든 v3 객체는 `v3/` 아래에 적재합니다.
   ```text
-  s3://<bucket>/v3/ref/<table_name>.parquet                                # 금융 마스터 & 수기 미러 Parquet
-  s3://<bucket>/v3/raw_clean/<target>/dt=YYYYMMDD/<batch_or_ts>.parquet    # 일별/스냅샷 정제본
-  s3://<bucket>/v3/curated/<target>/ym=YYYYMM/dt=YYYYMMDD/data.parquet     # DuckDB 일별 병합·중복제거본
-  s3://<bucket>/v3/curated/<target>/ym=YYYYMM/monthly.parquet              # DuckDB 월별 Compaction본 (키 정렬)
-  s3://<bucket>/v3/mart/<mart_name>/data.parquet                           # DuckDB 사전 집계 마트 (웹 UI/리포트용)
-  s3://<bucket>/v3/binary/<group>/<file_name>                              # 다운로드 문서(PDF/ZIP 등)
+  s3://<bucket>/v3/raw_clean/<target>/dt=YYYYMMDD/*.parquet              # api_job 수집 원본 (30일 보관 후 purge-raw)
+  s3://<bucket>/v3/snapshot/<target>.parquet                             # etl_job(snapshot): 금융 마스터 · 수기 미러 · 집계 스냅샷
+  s3://<bucket>/v3/daily/<target>/ym=YYYYMM/dt=YYYYMMDD/data.parquet     # etl_job(daily): 일별 병합·중복제거 정제본
+  s3://<bucket>/v3/monthly/<target>/ym=YYYYMM/monthly.parquet            # etl_job(monthly): 월별 Compaction 아카이브 (키 정렬)
+  s3://<bucket>/v3/binary/<group>/<file_name>                            # 다운로드 문서(PDF/ZIP 등)
   ```
 
 ### Stage 3. DuckDB 추가 처리 (SQL은 Neon DB 데이터로 분리, Python 수정 0)

@@ -14,10 +14,9 @@ from typing import Iterable
 
 from app.object_storage import (
     S3TargetConfig,
-    build_v3_key,
     configured_targets,
-    delete_prefix_from_targets,
     get_target_config,
+    resolve_etl_object_key,
     upload_file_to_targets,
 )
 from app.v3.spec import DuckDBJobSpec
@@ -32,7 +31,6 @@ class DuckDBJobResult:
     row_count: int
     byte_size: int
     uploaded_uris: dict[str, str]
-    cleaned_keys: dict[str, list[str]] = field(default_factory=dict)
 
 
 def is_tmpfs_path(path: Path) -> bool:
@@ -124,14 +122,17 @@ def run_duckdb_job(
     """Execute one configured DuckDB SQL job, write ZSTD Parquet locally, and upload."""
     import duckdb
 
-    rel_path = spec.output_rel_path
+    params = sql_params or {}
+    object_key = resolve_etl_object_key(
+        spec.output_layer,
+        spec.target_name,
+        target_date=params.get("TARGET_DATE", ""),
+        target_ym=params.get("TARGET_YM", ""),
+        prefix=spec.prefix,
+    )
     query = spec.sql_text
-    for key, value in (sql_params or {}).items():
-        token = f"${{{key}}}"
-        rel_path = rel_path.replace(token, value)
-        query = query.replace(token, value)
-
-    object_key = build_v3_key(spec.output_layer, rel_path, prefix=spec.prefix)
+    for key, value in params.items():
+        query = query.replace(f"${{{key}}}", value)
 
     out_dir = (temp_directory or _DEFAULT_DUCKDB_TMP).parent / "duckdb_out"
     out_path = out_dir / object_key
@@ -167,24 +168,10 @@ def run_duckdb_job(
         skip_unconfigured=skip_unconfigured_targets,
     )
 
-    cleaned_keys: dict[str, list[str]] = {}
-    if spec.cleanup_prefix and uploaded:
-        cleanup_pfx = spec.cleanup_prefix
-        for key, value in (sql_params or {}).items():
-            cleanup_pfx = cleanup_pfx.replace(f"${{{key}}}", value)
-        cleaned_keys = delete_prefix_from_targets(
-            cleanup_pfx,
-            targets=spec.targets,
-            exclude_keys={object_key},
-            skip_unconfigured=skip_unconfigured_targets,
-            prefix=spec.prefix,
-        )
-
     return DuckDBJobResult(
         job_id=spec.job_id,
         object_key=object_key,
         row_count=row_count,
         byte_size=byte_size,
         uploaded_uris=uploaded,
-        cleaned_keys=cleaned_keys,
     )

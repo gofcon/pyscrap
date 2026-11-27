@@ -1,5 +1,5 @@
 -- ============================================================================
--- pyscrap v3: 팀 공유용 DBeaver DuckDB 뷰 정의 (v3/ 버킷 경로 기준)
+-- pyscrap v3: 팀 공유용 DBeaver DuckDB 뷰 정의 (v3/ snapshot · daily · monthly)
 --
 -- 사용 절차 (팀원별 PC에서 최초 1회):
 --   1. DBeaver -> New Connection -> DuckDB -> 로컬 파일 경로 지정
@@ -45,61 +45,100 @@
 --     AS neon (TYPE POSTGRES, READ_ONLY);
 
 -- ----------------------------------------------------------------------------
--- [공유 뷰] v3/ref — 금융 마스터 & 수기 미러
+-- [1] v3/snapshot — 금융 마스터 · 기준 · 수기 미러 · 사전 집계 스냅샷
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_mst_etf AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/ref/mst_etf.parquet');
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/mst_etf.parquet');
 
 CREATE OR REPLACE VIEW v_mst_fuopt AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/ref/mst_fuopt.parquet');
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/mst_fuopt.parquet');
 
 CREATE OR REPLACE VIEW v_mst_bond AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/ref/mst_bond.parquet');
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/mst_bond.parquet');
 
 CREATE OR REPLACE VIEW v_mst_stock AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/ref/mst_stock.parquet');
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/mst_stock.parquet');
 
 CREATE OR REPLACE VIEW v_meta_maturity AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/ref/meta_maturity.parquet');
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/meta_maturity.parquet');
+
+CREATE OR REPLACE VIEW v_stock_index_his AS
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/stock_index_his.parquet');
+
+CREATE OR REPLACE VIEW v_k2i_atm AS
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/v_k2i_atm.parquet');
 
 CREATE OR REPLACE VIEW v_user_etf AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/ref/user_etf.parquet');
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/user_etf.parquet');
+
+CREATE OR REPLACE VIEW v_src_code AS
+SELECT * FROM read_parquet('s3://<BUCKET>/v3/snapshot/src_code.parquet');
 
 -- ----------------------------------------------------------------------------
--- [공유 뷰] v3/curated — 대용량 시계열 · 구성종목 (Hive 파티션 ym/dt 자동 프루닝)
+-- [2] v3/daily — 일별 정제 시계열 (Hive 파티션 ym / dt 자동 프루닝)
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW v_kis_futopt_chart AS
+CREATE OR REPLACE VIEW v_kis_futopt_chart_daily AS
 SELECT * FROM read_parquet(
-    's3://<BUCKET>/v3/curated/kis_futopt_chart/**/*.parquet',
+    's3://<BUCKET>/v3/daily/kis_futopt_chart/**/*.parquet',
     hive_partitioning = true
 );
 
-CREATE OR REPLACE VIEW v_kis_futopt_price AS
+CREATE OR REPLACE VIEW v_kis_futopt_price_daily AS
 SELECT * FROM read_parquet(
-    's3://<BUCKET>/v3/curated/kis_futopt_price/**/*.parquet',
+    's3://<BUCKET>/v3/daily/kis_futopt_price/**/*.parquet',
+    hive_partitioning = true
+);
+
+CREATE OR REPLACE VIEW v_kis_futopt_price1_daily AS
+SELECT * FROM read_parquet(
+    's3://<BUCKET>/v3/daily/kis_futopt_price1/**/*.parquet',
     hive_partitioning = true
 );
 
 CREATE OR REPLACE VIEW v_krx_opt_daily AS
 SELECT * FROM read_parquet(
-    's3://<BUCKET>/v3/curated/krx_opt_daily/**/*.parquet',
+    's3://<BUCKET>/v3/daily/krx_opt_daily/**/*.parquet',
     hive_partitioning = true
 );
 
 CREATE OR REPLACE VIEW v_krx_etf_daily AS
 SELECT * FROM read_parquet(
-    's3://<BUCKET>/v3/curated/krx_etf_daily/**/*.parquet',
+    's3://<BUCKET>/v3/daily/krx_etf_daily/**/*.parquet',
     hive_partitioning = true
 );
 
-CREATE OR REPLACE VIEW v_etf_pdf AS
+CREATE OR REPLACE VIEW v_ace_etf_pdf_daily AS
 SELECT * FROM read_parquet(
-    's3://<BUCKET>/v3/curated/etf_pdf/**/*.parquet',
+    's3://<BUCKET>/v3/daily/ace_etf_pdf/**/*.parquet',
     hive_partitioning = true
 );
 
 -- ----------------------------------------------------------------------------
--- [공유 뷰] v3/mart — 사전 집계 마트 (웹 UI / 대시보드용)
+-- [3] v3/monthly — 월별 정렬 Compaction 아카이브 (Hive 파티션 ym 자동 프루닝)
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW v_mart_etf_summary AS
-SELECT * FROM read_parquet('s3://<BUCKET>/v3/mart/etf_summary/data.parquet');
+CREATE OR REPLACE VIEW v_kis_futopt_chart_monthly AS
+SELECT * FROM read_parquet(
+    's3://<BUCKET>/v3/monthly/kis_futopt_chart/**/*.parquet',
+    hive_partitioning = true
+);
+
+CREATE OR REPLACE VIEW v_kis_futopt_price_monthly AS
+SELECT * FROM read_parquet(
+    's3://<BUCKET>/v3/monthly/kis_futopt_price/**/*.parquet',
+    hive_partitioning = true
+);
+
+CREATE OR REPLACE VIEW v_krx_opt_monthly AS
+SELECT * FROM read_parquet(
+    's3://<BUCKET>/v3/monthly/krx_opt_daily/**/*.parquet',
+    hive_partitioning = true
+);
+
+-- 참고: 월별 아카이브가 1개 이상 쌓인 뒤 과거(monthly) + 당월(daily)을
+-- 일 데이터 삭제 없이 중복 0으로 합쳐 보고 싶을 때 사용하는 패턴:
+-- CREATE OR REPLACE VIEW v_kis_futopt_chart_all AS
+-- WITH m AS (SELECT * FROM v_kis_futopt_chart_monthly),
+--      d AS (SELECT * EXCLUDE (dt) FROM v_kis_futopt_chart_daily)
+-- SELECT * FROM m
+-- UNION ALL
+-- SELECT * FROM d WHERE d.ym NOT IN (SELECT DISTINCT ym FROM m);

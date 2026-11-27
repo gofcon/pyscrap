@@ -409,7 +409,7 @@ def _export_ref_parquets(ora_conn, targets: tuple[str, ...] = ("oci",)) -> None:
             rows,
             target_name=table,
             target_date="",
-            layer="ref",
+            layer="snapshot",
             targets=targets,
         )
         print(f"  [EXPORTED] {table}: {res.row_count:,} rows -> {res.uploaded_uris}")

@@ -136,7 +136,7 @@ class SinkSpec(_StrictModel):
     """
 
     target_name: str = Field(min_length=1)
-    layer: Literal["raw_clean", "curated", "ref", "mart", "binary"] = "raw_clean"
+    layer: Literal["raw_clean", "snapshot", "daily", "monthly", "binary"] = "raw_clean"
     prefix: str = "v3"
     targets: list[str] = Field(default_factory=lambda: ["oci"], min_length=1)
     mode: Literal["replace_partition", "append_snapshot", "upsert"] = "replace_partition"
@@ -179,18 +179,17 @@ class ScrapeJobSpec(_StrictModel):
 
 
 class EtlJobSpec(_StrictModel):
-    """Row schema for ``etl_job`` (DuckDB post-processing / compaction / ref refresh)."""
+    """Row schema for ``etl_job`` (DuckDB snapshot / daily / monthly ETL)."""
 
     job_id: str = Field(min_length=1)
     sql_text: str = Field(min_length=1, validation_alias=AliasChoices("sql_text", "sql"))
-    output_layer: Literal["curated", "ref", "mart"] = "curated"
-    output_rel_path: str = Field(min_length=1)
+    output_layer: Literal["snapshot", "daily", "monthly"] = "daily"
+    target_name: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
     prefix: str = "v3"
     targets: list[str] = Field(default_factory=lambda: ["oci"], min_length=1)
     memory_limit: str = "1GB"
     threads: int = Field(default=2, ge=1, le=8)
     min_rows: int = Field(default=0, ge=0)
-    cleanup_prefix: str | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

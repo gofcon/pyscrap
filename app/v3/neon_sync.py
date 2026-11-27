@@ -82,8 +82,8 @@ def pull_daily_snapshot(
             for row in _fetchall_dicts(
                 cur,
                 "SELECT job_id, schedule_tag, run_order, is_active, "
-                "output_layer, output_rel_path, targets, memory_limit, "
-                "threads, min_rows, cleanup_prefix, sql_text, note "
+                "output_layer, target_name, targets, memory_limit, "
+                "threads, min_rows, sql_text, note "
                 "FROM etl_job ORDER BY schedule_tag, run_order, job_id",
             ):
                 etl_jobs[row["job_id"]] = row
@@ -116,7 +116,7 @@ def mirror_user_tables_to_parquet(
     *,
     skip_unconfigured_targets: bool = True,
 ) -> dict[str, dict[str, str]]:
-    """Publish manual ``user_*`` tables from snapshot to ``v3/ref/<table_name>.parquet``."""
+    """Publish manual ``user_*`` tables from snapshot to ``v3/snapshot/<table_name>.parquet``."""
     from app.v3.parquet_sink import publish_parquet_batch
 
     published: dict[str, dict[str, str]] = {}
@@ -127,7 +127,7 @@ def mirror_user_tables_to_parquet(
             rows,
             target_name=table,
             target_date="",
-            layer="ref",
+            layer="snapshot",
             targets=targets,
             skip_unconfigured_targets=skip_unconfigured_targets,
         )

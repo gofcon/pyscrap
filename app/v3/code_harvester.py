@@ -72,7 +72,7 @@ def _discover_raw_clean_targets(oci_bucket: str, prefix: str) -> list[str]:
 
 
 def _load_existing_src_code(con, oci_bucket: str, prefix: str) -> dict[tuple[str, str, str], dict[str, Any]]:
-    uri = f"s3://{oci_bucket}/{prefix}/ref/src_code.parquet"
+    uri = f"s3://{oci_bucket}/{prefix}/snapshot/src_code.parquet"
     try:
         rows = con.execute(
             f"SELECT table_name, column_name, code_value, source_name, "
@@ -176,7 +176,7 @@ def harvest_src_codes(
     if not out_rows:
         return DuckDBJobResult(
             job_id="HARVEST_SRC_CODE",
-            object_key=f"{pfx}/ref/src_code.parquet",
+            object_key=f"{pfx}/snapshot/src_code.parquet",
             row_count=0,
             byte_size=0,
             uploaded_uris={},
@@ -186,7 +186,7 @@ def harvest_src_codes(
         out_rows,
         target_name="src_code",
         target_date="",
-        layer="ref",
+        layer="snapshot",
         targets=targets,
         prefix=pfx,
         skip_unconfigured_targets=skip_unconfigured_targets,

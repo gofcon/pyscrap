@@ -1,7 +1,7 @@
 -- ============================================================================
 -- pyscrap v3: etl_job 전체 시드 (총 27개 — v1/v2 Oracle 프로시저 100% 이관)
 --
---   [그룹 A] 금융 마스터 & 파생 갱신 (7개, v3/ref/*.parquet)
+--   [그룹 A] 금융 마스터 & 파생 갱신 (7개, output_layer=snapshot -> v3/snapshot/*.parquet)
 --     1. REFRESH_REF_MST_STOCK         (daily_early  200) <- sp_mst_stock_sync + dedup
 --     2. REFRESH_REF_META_MATURITY     (daily_early  210) <- sp_meta_maturity_sync
 --     3. REFRESH_REF_MST_FUOPT         (daily_early  220) <- sp_mst_fuopt_sync
@@ -10,13 +10,13 @@
 --     6. REFRESH_REF_STOCK_INDEX_HIS   (daily_close  180) <- sp_stock_index_his_sync + dedup
 --     7. REFRESH_REF_V_K2I_ATM         (daily_close  190) <- v_k2i_atm (MV)
 --
---   [그룹 B-1] 일별 Curated 병합 & 중복제거 (14개, v3/curated/<target>/ym=.../dt=.../data.parquet)
+--   [그룹 B-1] 일별 Curated 병합 & 중복제거 (14개, output_layer=daily -> v3/daily/<target>/ym=.../dt=.../data.parquet)
 --     8..21. sp_run_daily_export 대상 14개 전체 (kis_futopt_price1 체결필터 포함)
 --
---   [그룹 B-2] 월별 정렬 Compaction (4개, v3/curated/<target>/ym=.../monthly.parquet)
+--   [그룹 B-2] 월별 정렬 Compaction (4개, output_layer=monthly -> v3/monthly/<target>/ym=.../monthly.parquet)
 --     22..25. sp_run_monthly_archive 대상 4개 전체
 --
---   [그룹 C] 선택 보조 작업 (2개, v3/ref/*.parquet)
+--   [그룹 C] 선택 보조 작업 (2개, v3/snapshot/*.parquet)
 --     26. MARK_KSD_BOND_NO_DETAIL      (daily_batch2  70) <- sp_ksd_no_detail_mark
 --     27. HARVEST_SRC_CODE             (daily_batch2 250) <- sp_src_code_sync (builtin runner)
 --
@@ -30,14 +30,14 @@
 -- 1. REFRESH_REF_MST_STOCK (sp_mst_stock_sync + sp_krx_stock_base_dedup)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_MST_STOCK', 'daily_early', 200, TRUE,
-    'ref', 'mst_stock.parquet', ARRAY['oci'], '512MB', 2, 1,
+    'snapshot', 'mst_stock', ARRAY['oci'], '512MB', 2, 1,
     $$
         WITH existing AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/mst_stock.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/mst_stock.parquet')
         ),
         incoming AS (
             SELECT
@@ -85,7 +85,7 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -93,17 +93,17 @@ ON CONFLICT (job_id) DO UPDATE SET
 -- 2. REFRESH_REF_META_MATURITY (sp_meta_maturity_sync)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_META_MATURITY', 'daily_early', 210, TRUE,
-    'ref', 'meta_maturity.parquet', ARRAY['oci'], '512MB', 2, 1,
+    'snapshot', 'meta_maturity', ARRAY['oci'], '512MB', 2, 1,
     $$
         WITH existing AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/meta_maturity.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/meta_maturity.parquet')
         ),
         fuopt_info AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/meta_fuopt_info.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/meta_fuopt_info.parquet')
         ),
         from_krx AS (
             SELECT
@@ -224,7 +224,7 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -232,20 +232,20 @@ ON CONFLICT (job_id) DO UPDATE SET
 -- 3. REFRESH_REF_MST_FUOPT (sp_mst_fuopt_sync — meta_maturity 이후 실행)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_MST_FUOPT', 'daily_early', 220, TRUE,
-    'ref', 'mst_fuopt.parquet', ARRAY['oci'], '1GB', 2, 1,
+    'snapshot', 'mst_fuopt', ARRAY['oci'], '1GB', 2, 1,
     $$
         WITH existing AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/mst_fuopt.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/mst_fuopt.parquet')
         ),
         fuopt_info AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/meta_fuopt_info.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/meta_fuopt_info.parquet')
         ),
         maturity AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/meta_maturity.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/meta_maturity.parquet')
         ),
         from_krx AS (
             SELECT
@@ -376,7 +376,7 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -384,14 +384,14 @@ ON CONFLICT (job_id) DO UPDATE SET
 -- 4. REFRESH_REF_MST_BOND (sp_mst_bond_sync — daily_batch2 수집 앞)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_MST_BOND', 'daily_batch2', 50, TRUE,
-    'ref', 'mst_bond.parquet', ARRAY['oci'], '512MB', 2, 1,
+    'snapshot', 'mst_bond', ARRAY['oci'], '512MB', 2, 1,
     $$
         WITH existing AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/mst_bond.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/mst_bond.parquet')
         ),
         incoming AS (
             SELECT
@@ -427,7 +427,7 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -435,14 +435,14 @@ ON CONFLICT (job_id) DO UPDATE SET
 -- 5. REFRESH_REF_MST_ETF (sp_mst_etf_sync — daily_batch2 수집 앞, OCI + R2 발행 대상)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_MST_ETF', 'daily_batch2', 60, TRUE,
-    'ref', 'mst_etf.parquet', ARRAY['oci', 'r2'], '512MB', 2, 1,
+    'snapshot', 'mst_etf', ARRAY['oci', 'r2'], '512MB', 2, 1,
     $$
         WITH existing AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/mst_etf.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/mst_etf.parquet')
         ),
         krx_list AS (
             SELECT
@@ -495,7 +495,7 @@ INSERT INTO etl_job (
         ),
         manual_etf AS (
             SELECT isu_cd AS short_code, MAX(amc_etf_cd) AS amc_etf_cd
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/user_etf.parquet')
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/user_etf.parquet')
             WHERE amc IS NOT NULL AND amc_etf_cd IS NOT NULL
             GROUP BY isu_cd
         ),
@@ -537,7 +537,7 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -545,23 +545,23 @@ ON CONFLICT (job_id) DO UPDATE SET
 -- 6. REFRESH_REF_STOCK_INDEX_HIS (sp_stock_index_his_sync + sp_kis_index_daily_dedup)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_STOCK_INDEX_HIS', 'daily_close', 180, TRUE,
-    'ref', 'stock_index_his.parquet', ARRAY['oci'], '512MB', 2, 1,
+    'snapshot', 'stock_index_his', ARRAY['oci'], '512MB', 2, 1,
     $$
         WITH existing AS (
-            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/stock_index_his.parquet')
+            SELECT * FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/stock_index_his.parquet')
         ),
         fuopt_mv AS (
             SELECT DISTINCT ul_code, mv_id
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/meta_fuopt_info.parquet')
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/meta_fuopt_info.parquet')
             WHERE mv_id IS NOT NULL
         ),
         krx_idx_mst AS (
             SELECT DISTINCT idx_nm, mv_id
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/krx_index_mst.parquet')
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/krx_index_mst.parquet')
             WHERE mv_id IS NOT NULL
         ),
         from_kis AS (
@@ -654,23 +654,23 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
 
--- 7. REFRESH_REF_V_K2I_ATM (v_k2i_atm MV -> v3/ref/v_k2i_atm.parquet)
+-- 7. REFRESH_REF_V_K2I_ATM (v_k2i_atm MV -> v3/snapshot/v_k2i_atm.parquet)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows,
+    output_layer, target_name, targets, memory_limit, threads, min_rows,
     sql_text, note
 ) VALUES (
     'REFRESH_REF_V_K2I_ATM', 'daily_close', 190, TRUE,
-    'ref', 'v_k2i_atm.parquet', ARRAY['oci', 'r2'], '512MB', 2, 1,
+    'snapshot', 'v_k2i_atm', ARRAY['oci', 'r2'], '512MB', 2, 1,
     $$
         WITH idx AS (
             SELECT CAST(trade_date AS DATE) AS trade_date, close_price
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/stock_index_his.parquet')
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/stock_index_his.parquet')
             WHERE mv_id = 'K2I'
         ),
         mat AS (
@@ -678,7 +678,7 @@ INSERT INTO etl_job (
                 prod_type,
                 CAST(mat_date AS DATE)      AS mat_date,
                 CAST(prev_mat_date AS DATE) AS prev_mat_date
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/meta_maturity.parquet')
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/meta_maturity.parquet')
         )
         SELECT
             h.trade_date,
@@ -703,7 +703,7 @@ INSERT INTO etl_job (
 )
 ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -715,10 +715,10 @@ ON CONFLICT (job_id) DO UPDATE SET
 -- 8. CURATE_KIS_FUTOPT_PRICE_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KIS_FUTOPT_PRICE_DAILY', 'daily_close', 200, TRUE,
-    'curated', 'kis_futopt_price/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kis_futopt_price',
     ARRAY['oci'], '1GB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -726,15 +726,15 @@ INSERT INTO etl_job (
         ORDER BY short_code, trade_at
     $$,
     '당일 선물옵션 3분 시세 raw_clean 을 중복제거·정렬해 curated 일별 1파일로 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 9. CURATE_KIS_FUTOPT_PRICE1_DAILY (v_fuopt_price: 체결 있는 행 futs_prpr <> 0)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KIS_FUTOPT_PRICE1_DAILY', 'daily_close', 205, TRUE,
-    'curated', 'kis_futopt_price1/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kis_futopt_price1',
     ARRAY['oci', 'r2'], '1GB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -743,15 +743,15 @@ INSERT INTO etl_job (
         ORDER BY short_code, trade_at
     $$,
     '당일 선물옵션 시세 중 체결 있는 행(futs_prpr <> 0)만 추출 (기존 v_fuopt_price 대체)'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 10. CURATE_KIS_FUTOPT_CHART_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KIS_FUTOPT_CHART_DAILY', 'daily_close', 210, TRUE,
-    'curated', 'kis_futopt_chart/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kis_futopt_chart',
     ARRAY['oci'], '1GB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -759,15 +759,15 @@ INSERT INTO etl_job (
         ORDER BY short_code, stck_bsop_date, stck_cntg_hour
     $$,
     '당일 선물옵션 분봉 raw_clean 중복제거·정렬 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 11. CURATE_KIS_FUTOPT_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KIS_FUTOPT_DAILY', 'daily_close', 215, TRUE,
-    'curated', 'kis_futopt_daily/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kis_futopt_daily',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -775,15 +775,15 @@ INSERT INTO etl_job (
         ORDER BY short_code, stck_bsop_date
     $$,
     '당일 선물옵션 일봉 raw_clean 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 12. CURATE_KRX_OPT_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KRX_OPT_DAILY', 'daily_close', 220, TRUE,
-    'curated', 'krx_opt_daily/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'krx_opt_daily',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -791,15 +791,15 @@ INSERT INTO etl_job (
         ORDER BY isu_cd, bas_dd
     $$,
     '당일 KRX 옵션 일별시세 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 13. CURATE_KRX_FUT_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KRX_FUT_DAILY', 'daily_close', 225, TRUE,
-    'curated', 'krx_fut_daily/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'krx_fut_daily',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -807,15 +807,15 @@ INSERT INTO etl_job (
         ORDER BY isu_cd, bas_dd
     $$,
     '당일 KRX 선물 일별시세 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 14. CURATE_KRX_ETF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KRX_ETF_DAILY', 'daily_close', 230, TRUE,
-    'curated', 'krx_etf_daily/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'krx_etf_daily',
     ARRAY['oci', 'r2'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -823,60 +823,60 @@ INSERT INTO etl_job (
         ORDER BY isu_cd, bas_dd
     $$,
     '당일 KRX ETF 일별시세 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 15. CURATE_KIS_ETF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KIS_ETF_DAILY', 'daily_close', 235, TRUE,
-    'curated', 'kis_etf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kis_etf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/raw_clean/kis_etf/dt=${TARGET_DATE}/*.parquet', union_by_name = true)
     $$,
     '당일 KIS ETF 요약 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 16. CURATE_KIS_ETF_PDF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KIS_ETF_PDF_DAILY', 'daily_close', 240, TRUE,
-    'curated', 'kis_etf_pdf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kis_etf_pdf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/raw_clean/kis_etf_pdf/dt=${TARGET_DATE}/*.parquet', union_by_name = true)
     $$,
     '당일 KIS ETF 구성종목 PDF 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 17. CURATE_AMC_ETF_PDF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_AMC_ETF_PDF_DAILY', 'daily_close', 245, TRUE,
-    'curated', 'amc_etf_pdf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'amc_etf_pdf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/raw_clean/amc_etf_pdf/dt=${TARGET_DATE}/*.parquet', union_by_name = true)
     $$,
     '당일 공통 운용사(TIGER/KB/NH/KIWOOM/TIME) ETF PDF 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 18. CURATE_ACE_ETF_PDF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_ACE_ETF_PDF_DAILY', 'daily_close', 250, TRUE,
-    'curated', 'ace_etf_pdf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'ace_etf_pdf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
@@ -884,52 +884,52 @@ INSERT INTO etl_job (
         ORDER BY fundcd, std_dt
     $$,
     '당일 ACE ETF PDF 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 19. CURATE_PLUS_ETF_PDF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_PLUS_ETF_PDF_DAILY', 'daily_close', 255, TRUE,
-    'curated', 'plus_etf_pdf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'plus_etf_pdf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/raw_clean/plus_etf_pdf/dt=${TARGET_DATE}/*.parquet', union_by_name = true)
     $$,
     '당일 PLUS ETF PDF 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 20. CURATE_SOL_ETF_PDF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_SOL_ETF_PDF_DAILY', 'daily_close', 260, TRUE,
-    'curated', 'sol_etf_pdf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'sol_etf_pdf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/raw_clean/sol_etf_pdf/dt=${TARGET_DATE}/*.parquet', union_by_name = true)
     $$,
     '당일 SOL ETF PDF 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- 21. CURATE_KODEX_ETF_PDF_DAILY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'CURATE_KODEX_ETF_PDF_DAILY', 'daily_close', 265, TRUE,
-    'curated', 'kodex_etf_pdf/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet',
+    'daily', 'kodex_etf_pdf',
     ARRAY['oci'], '512MB', 2, 0,
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/raw_clean/kodex_etf_pdf/dt=${TARGET_DATE}/*.parquet', union_by_name = true)
     $$,
     '당일 KODEX ETF PDF 병합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, updated_at = now();
 
 -- ----------------------------------------------------------------------------
 -- [그룹 B-2] 월별 정렬 Compaction (4개 — sp_run_monthly_archive 전체)
@@ -938,70 +938,66 @@ INSERT INTO etl_job (
 -- 22. COMPACT_KIS_FUTOPT_CHART_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'COMPACT_KIS_FUTOPT_CHART_MONTHLY', 'monthly_archive', 200, TRUE,
-    'curated', 'kis_futopt_chart/ym=${TARGET_YM}/monthly.parquet',
+    'monthly', 'kis_futopt_chart',
     ARRAY['oci'], '1GB', 2, 1,
-    'v3/curated/kis_futopt_chart/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
-        FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/kis_futopt_chart/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
+        FROM read_parquet('s3://${OCI_BUCKET}/v3/daily/kis_futopt_chart/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY short_code, stck_bsop_date, stck_cntg_hour
     $$,
-    '한 달치 선물옵션 분봉을 종목·일시 순 정렬해 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
+    '한 달치 선물옵션 분봉을 종목·일시 순 정렬해 monthly.parquet 1파일로 통합 (일별 v3/daily 는 자동 삭제하지 않음)'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- 23. COMPACT_KIS_FUTOPT_PRICE_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'COMPACT_KIS_FUTOPT_PRICE_MONTHLY', 'monthly_archive', 210, TRUE,
-    'curated', 'kis_futopt_price/ym=${TARGET_YM}/monthly.parquet',
+    'monthly', 'kis_futopt_price',
     ARRAY['oci'], '1GB', 2, 1,
-    'v3/curated/kis_futopt_price/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
-        FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/kis_futopt_price/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
+        FROM read_parquet('s3://${OCI_BUCKET}/v3/daily/kis_futopt_price/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY short_code, trade_at
     $$,
-    '한 달치 선물옵션 3분 시세를 종목·시각 순 정렬해 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
+    '한 달치 선물옵션 3분 시세를 종목·시각 순 정렬해 monthly.parquet 1파일로 통합 (일별 v3/daily 는 자동 삭제하지 않음)'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- 24. COMPACT_KIS_FUTOPT_DAILY_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'COMPACT_KIS_FUTOPT_DAILY_MONTHLY', 'monthly_archive', 220, TRUE,
-    'curated', 'kis_futopt_daily/ym=${TARGET_YM}/monthly.parquet',
+    'monthly', 'kis_futopt_daily',
     ARRAY['oci'], '1GB', 2, 1,
-    'v3/curated/kis_futopt_daily/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
-        FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/kis_futopt_daily/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
+        FROM read_parquet('s3://${OCI_BUCKET}/v3/daily/kis_futopt_daily/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY short_code, stck_bsop_date
     $$,
-    '한 달치 선물옵션 일봉을 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
+    '한 달치 선물옵션 일봉을 monthly.parquet 1파일로 통합 (일별 v3/daily 는 자동 삭제하지 않음)'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- 25. COMPACT_KRX_OPT_DAILY_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'COMPACT_KRX_OPT_DAILY_MONTHLY', 'monthly_archive', 230, TRUE,
-    'curated', 'krx_opt_daily/ym=${TARGET_YM}/monthly.parquet',
+    'monthly', 'krx_opt_daily',
     ARRAY['oci'], '1GB', 2, 1,
-    'v3/curated/krx_opt_daily/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
-        FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/krx_opt_daily/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
+        FROM read_parquet('s3://${OCI_BUCKET}/v3/daily/krx_opt_daily/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY isu_cd, bas_dd
     $$,
-    '한 달치 KRX 옵션 일별시세를 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
+    '한 달치 KRX 옵션 일별시세를 monthly.parquet 1파일로 통합 (일별 v3/daily 는 자동 삭제하지 않음)'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- ----------------------------------------------------------------------------
 -- [그룹 C] 선택 보조 작업 (2개 — sp_ksd_no_detail_mark, sp_src_code_sync)
@@ -1010,14 +1006,14 @@ INSERT INTO etl_job (
 -- 26. MARK_KSD_BOND_NO_DETAIL (sp_ksd_no_detail_mark — daily_batch2 채권 수집 앞)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'MARK_KSD_BOND_NO_DETAIL', 'daily_batch2', 70, TRUE,
-    'ref', 'ksd_bond_no_detail.parquet', ARRAY['oci'], '512MB', 2, 0,
+    'snapshot', 'ksd_bond_no_detail', ARRAY['oci'], '512MB', 2, 0,
     $$
         WITH existing AS (
             SELECT isin, CAST(marked_at AS TIMESTAMP) AS marked_at, note
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/ksd_bond_no_detail.parquet')
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/ksd_bond_no_detail.parquet')
         ),
         zero_logs AS (
             SELECT DISTINCT partition_key AS isin
@@ -1031,7 +1027,7 @@ INSERT INTO etl_job (
                 m.isin,
                 CURRENT_TIMESTAMP AS marked_at,
                 'KSD_BOND_INFO_web closed with 0 rows' AS note
-            FROM read_parquet('s3://${OCI_BUCKET}/v3/ref/mst_bond.parquet') m
+            FROM read_parquet('s3://${OCI_BUCKET}/v3/snapshot/mst_bond.parquet') m
             JOIN zero_logs l ON l.isin = m.isin
             LEFT JOIN existing e ON e.isin = m.isin
             WHERE e.isin IS NULL
@@ -1041,10 +1037,10 @@ INSERT INTO etl_job (
         SELECT isin, marked_at, note FROM newly_marked
         ORDER BY isin
     $$,
-    '세이브로 상세 0행 종료 ISIN 을 v3/ref/ksd_bond_no_detail.parquet 에 영구 마킹 (sp_ksd_no_detail_mark 이관)'
+    '세이브로 상세 0행 종료 ISIN 을 v3/snapshot/ksd_bond_no_detail.parquet 에 영구 마킹 (sp_ksd_no_detail_mark 이관)'
 ) ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
@@ -1052,15 +1048,15 @@ INSERT INTO etl_job (
 -- 27. HARVEST_SRC_CODE (sp_src_code_sync — 내장 DuckDB 동적 컬럼 수확기)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
 ) VALUES (
     'HARVEST_SRC_CODE', 'daily_batch2', 250, TRUE,
-    'ref', 'src_code.parquet', ARRAY['oci'], '512MB', 2, 0,
+    'snapshot', 'src_code', ARRAY['oci'], '512MB', 2, 0,
     '-- builtin:harvest_src_code',
-    'v3/raw_clean/* 저카디널리티(2~40) 문자열 코드값 자동 수확 -> v3/ref/src_code.parquet (sp_src_code_sync 이관)'
+    'v3/raw_clean/* 저카디널리티(2~40) 문자열 코드값 자동 수확 -> v3/snapshot/src_code.parquet (sp_src_code_sync 이관)'
 ) ON CONFLICT (job_id) DO UPDATE SET
     schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
-    output_layer = EXCLUDED.output_layer, output_rel_path = EXCLUDED.output_rel_path,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
     targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
