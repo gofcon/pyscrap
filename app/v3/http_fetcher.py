@@ -30,7 +30,7 @@ from typing import Any
 import httpx
 
 from app.errors import ConfigError, MappingError, ParamError, SessionExpired, SourceRefused, classify
-from app.v3.session_store import get_session_token
+from app.v3.session_store import get_session_token, load_http_cookies, save_http_cookies
 from app.v3.spec import ApiSpec, PagePagination
 
 _PLACEHOLDER_RE = re.compile(r"(?<!\w):(\w+)(?!\w)")
@@ -347,6 +347,68 @@ def _check_markers(response: httpx.Response, spec: ApiSpec, api_id: str) -> None
         )
 
 
+def http_state_key(api_id: str, spec: ApiSpec) -> str:
+    if spec.engine.session.state:
+        return str(spec.engine.session.state)
+    return httpx.URL(spec.engine.request.url).host or api_id.lower()
+
+
+def _load_cookies_for_spec(api_id: str, spec: ApiSpec) -> dict[str, str]:
+    sess = spec.engine.session
+    if not (sess.login or sess.state):
+        return {}
+    cookies = load_http_cookies(http_state_key(api_id, spec))
+    return {str(c["name"]): str(c["value"]) for c in cookies if c.get("name")}
+
+
+def run_http_session_login(
+    api_id: str,
+    spec: ApiSpec,
+    params: dict[str, Any] | None = None,
+    *,
+    host_policies: dict[str, dict[str, Any]] | None = None,
+) -> Path:
+    """Execute an HTTP ``sink_type='SESSION'`` login request and save cookies."""
+    kwargs = build_http_request(spec, params or {})
+    pace_host(kwargs["url"], host_policies=host_policies, api_min=spec.engine.pacing.min_interval_sec)
+    with httpx.Client(timeout=30.0, follow_redirects=True, verify=_ssl_context()) as client:
+        resp = client.request(**kwargs)
+        resp.raise_for_status()
+        expect = spec.engine.session.expect
+        if expect and expect not in resp.text:
+            raise SessionExpired(f"{api_id}: login response did not match expect marker {expect!r}")
+        default_domain = httpx.URL(str(resp.url)).host or ""
+        serialized: list[dict[str, Any]] = []
+        for c in client.cookies.jar:
+            serialized.append({
+                "name": c.name,
+                "value": c.value or "",
+                "domain": c.domain or default_domain,
+                "path": c.path or "/",
+                "secure": bool(c.secure),
+                "httpOnly": False,
+            })
+    return save_http_cookies(http_state_key(api_id, spec), serialized)
+
+
+def fetch_http_binary(
+    api_id: str,
+    spec: ApiSpec,
+    params: dict[str, Any],
+    *,
+    host_policies: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, bytes]:
+    """Fetch a binary HTTP download and return ``(fallback_filename, content_bytes)``."""
+    resp = fetch_once(api_id, spec, params, host_policies=host_policies)
+    cd = resp.headers.get("content-disposition", "")
+    m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";\r\n]+)"?', cd, flags=re.IGNORECASE)
+    if m:
+        fname = m.group(1).strip()
+    else:
+        fname = Path(httpx.URL(str(resp.url)).path).name or f"{api_id.lower()}.bin"
+    return fname, resp.content
+
+
 def fetch_once(
     api_id: str,
     spec: ApiSpec,
@@ -359,6 +421,9 @@ def fetch_once(
     for attempt in range(1, max_attempts + 1):
         try:
             kwargs = build_http_request(spec, params)
+            saved_cookies = _load_cookies_for_spec(api_id, spec)
+            if saved_cookies:
+                kwargs["cookies"] = saved_cookies
             pace_host(kwargs["url"], host_policies=host_policies, api_min=spec.engine.pacing.min_interval_sec)
             resp = get_http_client().request(**kwargs)
             _check_markers(resp, spec, api_id)

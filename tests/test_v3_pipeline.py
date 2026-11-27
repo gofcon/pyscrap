@@ -858,6 +858,191 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             convert_axis_sql_to_duckdb("SELECT * FROM mst_fuopt WHERE mat_date >= TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE))"),
         )
 
+    def test_binary_sink_unzip_and_zip_slip_guard(self):
+        import io
+        import zipfile
+        from app.v3.binary_sink import publish_binary_payload
+        from app.v3.executor import execute_api_job
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("../../escaped/doc1.xml", b"<doc>1</doc>")
+            zf.writestr("nested/doc2.xml", b"<doc>2</doc>")
+        zip_bytes = buf.getvalue()
+
+        uploaded: list[tuple[str, int]] = []
+
+        def _fake_upload(data, key, **kw):
+            uploaded.append((key, len(data)))
+            return {"oci": f"s3://bkt/{key}"}
+
+        with mock.patch("app.v3.binary_sink.upload_bytes_to_targets", side_effect=_fake_upload):
+            recs, last_uris = publish_binary_payload(
+                zip_bytes,
+                staging={"group": "dart_docs", "name": ":RCEPT_NO.zip", "unzip": True},
+                params={"RCEPT_NO": "2026112700001"},
+            )
+        self.assertEqual([r["object_key"] for r in recs], [
+            "v3/binary/dart_docs/doc1.xml",
+            "v3/binary/dart_docs/doc2.xml",
+        ])
+        self.assertEqual(last_uris, {"oci": "s3://bkt/v3/binary/dart_docs/doc2.xml"})
+
+        # End-to-end BINARY execute_api_job
+        snap = DailyConfigSnapshot(
+            generated_at="2026-11-27T06:30:00+09:00",
+            apis={
+                "DART_DOCUMENT": {
+                    "api_id": "DART_DOCUMENT",
+                    "protocol": "HTTP",
+                    "sink_type": "BINARY",
+                    "spec_json": {
+                        "engine": {
+                            "request": {"url": "https://opendart.fss.or.kr/api/document.xml?rcept_no=:RCEPT_NO"},
+                            "extract": {"response_type": "binary"},
+                            "sink": {
+                                "target_name": "dart_document",
+                                "layer": "binary",
+                                "job_key_params": ["RCEPT_NO"],
+                                "staging": {"group": "dart_docs", "name": ":RCEPT_NO.zip", "unzip": True},
+                            },
+                        }
+                    },
+                }
+            },
+            api_jobs={
+                "DART_DOC_JOB": {
+                    "job_id": "DART_DOC_JOB",
+                    "api_id": "DART_DOCUMENT",
+                    "is_active": True,
+                    "params_json": {"RCEPT_NO": "2026112700001"},
+                }
+            },
+        )
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LocalRunLedger("20261127", base_dir=Path(td))
+            with mock.patch("app.v3.executor.fetch_http_binary", return_value=("2026112700001.zip", zip_bytes)), \
+                 mock.patch("app.v3.binary_sink.upload_bytes_to_targets", side_effect=_fake_upload):
+                res = execute_api_job(snap, "DART_DOC_JOB", target_date="20261127", ledger=ledger)
+            self.assertEqual(res["rows"], 2)
+            entries = ledger.read_all()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].status, "SUCCESS")
+            self.assertEqual(entries[0].record_count, 2)
+
+    def test_session_login_auto_retry_and_browser_dispatch(self):
+        from app.errors import SessionExpired
+        from app.v3.executor import execute_api_job
+        from app.v3.parquet_sink import ParquetWriteResult
+        from app.v3.session_store import clear_session_state, load_http_cookies, save_http_cookies
+
+        # 1. Cookie store roundtrip
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td)
+            save_http_cookies("data.krx.co.kr", [{"name": "JSESSIONID", "value": "abc"}], state_dir=sd)
+            loaded = load_http_cookies("data.krx.co.kr", state_dir=sd)
+            self.assertEqual(loaded[0]["value"], "abc")
+            clear_session_state("data.krx.co.kr", state_dir=sd)
+            self.assertEqual(load_http_cookies("data.krx.co.kr", state_dir=sd), [])
+
+        # 2. SessionExpired auto-triggers session.login once and retries
+        snap = DailyConfigSnapshot(
+            generated_at="2026-11-27T06:30:00+09:00",
+            apis={
+                "KRX_DATA_LOGIN": {
+                    "api_id": "KRX_DATA_LOGIN",
+                    "protocol": "HTTP",
+                    "sink_type": "SESSION",
+                    "spec_json": {
+                        "engine": {
+                            "request": {"method": "POST", "url": "https://data.krx.co.kr/login"},
+                            "extract": {"response_type": "session"},
+                            "session": {"expect": "CD001"},
+                        }
+                    },
+                },
+                "KRX_ETF_LIST": {
+                    "api_id": "KRX_ETF_LIST",
+                    "protocol": "HTTP",
+                    "sink_type": "PARQUET",
+                    "spec_json": {
+                        "engine": {
+                            "request": {"method": "POST", "url": "https://data.krx.co.kr/etf"},
+                            "session": {"login": "KRX_DATA_LOGIN", "logged_out": "LOGOUT"},
+                            "sink": {"target_name": "krx_etf_list"},
+                        }
+                    },
+                },
+                "KRX_ISIN_SRCH": {
+                    "api_id": "KRX_ISIN_SRCH",
+                    "protocol": "BROWSER",
+                    "sink_type": "PARQUET",
+                    "spec_json": {
+                        "engine": {
+                            "request": {"url": "https://isin.krx.co.kr/srch"},
+                            "extract": {"response_type": "dom", "parse": {"rows": "tr"}},
+                            "sink": {"target_name": "krx_isin_srch"},
+                        }
+                    },
+                },
+            },
+            api_jobs={
+                "KRX_LOGIN_JOB": {
+                    "job_id": "KRX_LOGIN_JOB",
+                    "api_id": "KRX_DATA_LOGIN",
+                    "is_active": True,
+                    "params_json": {},
+                },
+                "KRX_ETF_JOB": {
+                    "job_id": "KRX_ETF_JOB",
+                    "api_id": "KRX_ETF_LIST",
+                    "is_active": True,
+                    "params_json": {},
+                },
+                "KRX_BROWSER_JOB": {
+                    "job_id": "KRX_BROWSER_JOB",
+                    "api_id": "KRX_ISIN_SRCH",
+                    "is_active": True,
+                    "params_json": {},
+                },
+            },
+        )
+        attempts = {"n": 0}
+
+        def _flaky_collect(api_id, spec, params, **kw):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise SessionExpired("LOGOUT")
+            return [{"isu_cd": "KR1"}]
+
+        fake_pub = ParquetWriteResult(
+            object_key="v3/raw_clean/krx_etf_list/dt=20261127/krx_etf_job.parquet",
+            row_count=1,
+            byte_size=10,
+            uploaded_uris={"oci": "s3://bkt/v3/raw_clean/krx_etf_list/dt=20261127/krx_etf_job.parquet"},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LocalRunLedger("20261127", base_dir=Path(td))
+            with mock.patch("app.v3.executor.run_http_session_login") as login_mock, \
+                 mock.patch("app.v3.executor.collect_http_records", side_effect=_flaky_collect), \
+                 mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
+                # Explicit SESSION job succeeds
+                sres = execute_api_job(snap, "KRX_LOGIN_JOB", target_date="20261127", ledger=ledger)
+                self.assertEqual(sres["sink_type"], "SESSION")
+                # Dependent job recovers from SessionExpired via auto re-login
+                eres = execute_api_job(snap, "KRX_ETF_JOB", target_date="20261127", ledger=ledger)
+                self.assertEqual(eres["rows"], 1)
+                self.assertEqual(login_mock.call_count, 2)
+
+            # 3. BROWSER job dispatches to browser_runner.collect_browser_bundle
+            with mock.patch(
+                "app.v3.browser_runner.collect_browser_bundle",
+                return_value=([{"isin": "KR7069500007"}], {}, []),
+            ) as br_mock, mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
+                bres = execute_api_job(snap, "KRX_BROWSER_JOB", target_date="20261127", ledger=ledger)
+                self.assertEqual(bres["rows"], 1)
+                br_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

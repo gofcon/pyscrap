@@ -18,14 +18,21 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from app.errors import ConfigError, SourceRefused, classify
+from app.errors import ConfigError, SessionExpired, SourceRefused, classify
 from app.object_storage import bucket_name
 from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
+from app.v3.binary_sink import publish_binary_payload
 from app.v3.cleanse import ContractResult, apply_cleanse, evaluate_contract
 from app.v3.duckdb_runner import build_duckdb_config, register_s3_secrets, run_duckdb_job
-from app.v3.http_fetcher import collect_http_bundle, collect_http_records
+from app.v3.http_fetcher import (
+    collect_http_bundle,
+    collect_http_records,
+    fetch_http_binary,
+    http_state_key,
+    run_http_session_login,
+)
 from app.v3.parquet_sink import publish_parquet_batch
-from app.v3.session_store import save_session_tokens
+from app.v3.session_store import clear_session_state, save_session_tokens
 from app.v3.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec
 
 KST = timezone(timedelta(hours=9))
@@ -212,6 +219,71 @@ class DryRunResult:
     sample_rows: list[dict[str, Any]]
 
 
+def _run_session_login(
+    snapshot: DailyConfigSnapshot,
+    login_api_id: str,
+    params: dict[str, Any] | None = None,
+) -> None:
+    """Execute a ``sink_type='SESSION'`` login API (HTTP or BROWSER) and refresh cookies."""
+    login_row = snapshot.apis.get(login_api_id)
+    if login_row is None:
+        raise ConfigError(f"session.login references missing api_id={login_api_id!r}")
+    login_spec = ApiSpec.model_validate(login_row["spec_json"])
+    proto = (login_row.get("protocol") or "HTTP").upper()
+    clear_session_state(http_state_key(login_api_id, login_spec))
+    if proto == "BROWSER":
+        from app.v3.browser_runner import collect_browser_bundle
+
+        collect_browser_bundle(
+            login_api_id, login_spec, params or {}, host_policies=snapshot.host_policies
+        )
+    else:
+        run_http_session_login(
+            login_api_id, login_spec, params or {}, host_policies=snapshot.host_policies
+        )
+
+
+def _fetch_partition_data(
+    snapshot: DailyConfigSnapshot,
+    api_id: str,
+    protocol: str,
+    sink_type: str,
+    api_spec: ApiSpec,
+    params: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], list[tuple[str, bytes]]]:
+    """Fetch one partition (HTTP or BROWSER, PARQUET or BINARY) with 1 auto re-login retry."""
+    def _once():
+        if protocol == "BROWSER":
+            from app.v3.browser_runner import collect_browser_bundle
+
+            return collect_browser_bundle(
+                api_id, api_spec, params, host_policies=snapshot.host_policies
+            )
+        if sink_type == "BINARY":
+            fname, blob = fetch_http_binary(
+                api_id, api_spec, params, host_policies=snapshot.host_policies
+            )
+            return [], {}, [(fname, blob)]
+        if api_spec.engine.extract.extra_selectors:
+            primary, extras = collect_http_bundle(
+                api_id, api_spec, params, host_policies=snapshot.host_policies
+            )
+            return primary, extras, []
+        primary = collect_http_records(
+            api_id, api_spec, params, host_policies=snapshot.host_policies
+        )
+        return primary, {}, []
+
+    try:
+        return _once()
+    except SessionExpired:
+        login_id = api_spec.engine.session.login
+        if not login_id:
+            raise
+        _run_session_login(snapshot, login_id)
+        return _once()
+
+
 def dry_run_api(
     snapshot: DailyConfigSnapshot,
     api_id: str,
@@ -223,11 +295,35 @@ def dry_run_api(
     api_row = snapshot.apis.get(api_id)
     if api_row is None:
         raise ConfigError(f"No api_mst row for {api_id!r} in local snapshot")
-    if (api_row.get("protocol") or "HTTP").upper() != "HTTP":
-        raise ConfigError(f"{api_id}: v3 dry-run currently supports protocol='HTTP' only")
+    proto = (api_row.get("protocol") or "HTTP").upper()
+    sink_type = (api_row.get("sink_type") or "PARQUET").upper()
+    if proto not in ("HTTP", "BROWSER"):
+        raise ConfigError(f"{api_id}: unsupported protocol={proto!r}")
 
     spec = ApiSpec.model_validate(api_row["spec_json"])
-    raw = collect_http_records(api_id, spec, params or {}, host_policies=snapshot.host_policies)
+    if sink_type == "SESSION":
+        _run_session_login(snapshot, api_id, params or {})
+        return DryRunResult(
+            api_id=api_id,
+            raw_count=0,
+            cleaned_count=0,
+            contract=ContractResult(ok=True, action="commit"),
+            columns=[],
+            sample_rows=[],
+        )
+
+    raw, _, downloads = _fetch_partition_data(snapshot, api_id, proto, sink_type, spec, params or {})
+    if sink_type == "BINARY":
+        meta_rows = [{"file_name": fn, "size_bytes": len(blob)} for fn, blob in downloads]
+        return DryRunResult(
+            api_id=api_id,
+            raw_count=len(meta_rows),
+            cleaned_count=len(meta_rows),
+            contract=ContractResult(ok=bool(meta_rows), action="commit" if meta_rows else "fail"),
+            columns=["file_name", "size_bytes"],
+            sample_rows=meta_rows[:sample_limit],
+        )
+
     key_params = _stamp_key_params(spec, params or {}, snapshot_unit=None)
     cleaned = apply_cleanse(raw, spec.engine.cleanse, key_params=key_params, meta={"api_id": api_id})
     contract = evaluate_contract(cleaned, spec.engine.contract)
@@ -343,10 +439,52 @@ def execute_api_job(
     api_row = snapshot.apis.get(api_id)
     if api_row is None:
         raise ConfigError(f"{job_id}: references missing api_id={api_id!r}")
-    if (api_row.get("protocol") or "HTTP").upper() != "HTTP":
-        raise ConfigError(f"{job_id}: protocol={api_row.get('protocol')!r} not yet supported in v3 HTTP runner")
+    protocol = (api_row.get("protocol") or "HTTP").upper()
+    sink_type = (api_row.get("sink_type") or "PARQUET").upper()
+    if protocol not in ("HTTP", "BROWSER"):
+        raise ConfigError(f"{job_id}: unsupported protocol={protocol!r}")
 
     api_spec = ApiSpec.model_validate(api_row["spec_json"])
+    if sink_type == "SESSION":
+        started = time.monotonic()
+        try:
+            _run_session_login(snapshot, api_id)
+            run_ledger.append(RunLedgerEntry(
+                job_type="API",
+                job_id=job_id,
+                api_id=api_id,
+                partition_key="SESSION",
+                target_date=day,
+                status="SUCCESS",
+                record_count=0,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            ))
+            return {
+                "job_id": job_id,
+                "job_type": "API",
+                "api_id": api_id,
+                "sink_type": "SESSION",
+                "partitions_succeeded": 1,
+                "partitions_failed": 0,
+                "partitions_skipped": 0,
+                "rows": 0,
+                "uris": {},
+            }
+        except Exception as exc:
+            err = classify(exc)
+            run_ledger.append(RunLedgerEntry(
+                job_type="API",
+                job_id=job_id,
+                api_id=api_id,
+                partition_key="SESSION",
+                target_date=day,
+                status=err.log_status,
+                error_code=type(err).__name__,
+                error_message=str(err)[:4000],
+                duration_ms=int((time.monotonic() - started) * 1000),
+            ))
+            raise
+
     if api_spec.engine.sink is None:
         raise ConfigError(f"{api_id}: sink spec is required for api_job")
 
@@ -364,8 +502,8 @@ def execute_api_job(
     extra_bundled: dict[str, list[dict[str, Any]]] = {}
     pending_success: list[RunLedgerEntry] = []
     persisted_tokens: list[str] = []
+    binary_uris: dict[str, str] = {}
     succeeded = failed = skipped = 0
-    has_extras = bool(api_spec.engine.extract.extra_selectors)
     persist_map = api_spec.engine.extract.persist_env or {}
 
     for params in param_sets:
@@ -375,11 +513,49 @@ def execute_api_job(
             continue
         started = time.monotonic()
         try:
-            if has_extras:
-                raw, extra_raw = collect_http_bundle(api_id, api_spec, params, host_policies=snapshot.host_policies)
-            else:
-                raw = collect_http_records(api_id, api_spec, params, host_policies=snapshot.host_policies)
-                extra_raw = {}
+            raw, extra_raw, downloads = _fetch_partition_data(
+                snapshot, api_id, protocol, sink_type, api_spec, params
+            )
+
+            if sink_type == "BINARY":
+                sink = api_spec.engine.sink
+                bin_records: list[dict[str, Any]] = []
+                last_bin_uris: dict[str, str] = {}
+                for fname, blob in downloads:
+                    recs, uris = publish_binary_payload(
+                        blob,
+                        staging=sink.staging or {},
+                        params=params,
+                        fallback_name=fname,
+                        targets=sink.targets,
+                        prefix=sink.prefix,
+                        skip_unconfigured_targets=skip_unconfigured_targets,
+                    )
+                    bin_records.extend(recs)
+                    last_bin_uris = uris
+                duration_ms = int((time.monotonic() - started) * 1000)
+                if not bin_records:
+                    raise ConfigError(f"{api_id}: binary download produced 0 files")
+                key_params = _stamp_key_params(api_spec, params, job_row.get("snapshot_unit"))
+                meta = {"api_id": api_id, "job_id": job_id, "target_date": day}
+                for rec in bin_records:
+                    rec.update(key_params)
+                    rec.update(meta)
+                binary_uris = last_bin_uris
+                succeeded += 1
+                run_ledger.append(RunLedgerEntry(
+                    job_type="API",
+                    job_id=job_id,
+                    api_id=api_id,
+                    partition_key=pkey,
+                    target_date=day,
+                    status="SUCCESS",
+                    record_count=len(bin_records),
+                    duration_ms=duration_ms,
+                    output_uris=last_bin_uris,
+                ))
+                bundled_rows.extend(bin_records)
+                continue
 
             if persist_map and raw:
                 token_updates = {
@@ -461,9 +637,9 @@ def execute_api_job(
                 duration_ms=int((time.monotonic() - started) * 1000),
             ))
 
-    uploaded_uris: dict[str, str] = {}
+    uploaded_uris: dict[str, str] = dict(binary_uris)
     extra_uris: dict[str, dict[str, str]] = {}
-    if bundled_rows:
+    if bundled_rows and sink_type != "BINARY":
         sink = api_spec.engine.sink
         if not sink.is_repeated and scrape_spec.save_mode == "overwrite":
             # Deterministic filename so re-running the same day replaces in-place
