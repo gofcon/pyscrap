@@ -1,4 +1,4 @@
-"""Strict Pydantic v2 schemas for v3 ``ops.api_mst.spec_json`` and ``ops.duckdb_job``.
+"""Strict Pydantic v2 schemas for v3 ``api_mst.spec_json`` and ``api_job``.
 
 ``spec_json`` is split into two top-level namespaces:
 - ``engine`` (strict, ``extra="forbid"``): the frozen set of primitives the
@@ -32,7 +32,8 @@ class RequestSpec(_StrictModel):
 class PagePagination(_StrictModel):
     mode: Literal["page"] = "page"
     param: str = "PAGE"
-    start: int = Field(default=1, ge=1)
+    # 0-indexed pagers exist (e.g. Spring Data JPA endpoints like PLUS ETF)
+    start: int = Field(default=1, ge=0)
     max_pages: int = Field(default=100, ge=1)
 
 
@@ -164,16 +165,23 @@ class EngineSpec(_StrictModel):
 
 
 class ApiSpec(_StrictModel):
-    """Root schema for ``ops.api_mst.spec_json``."""
+    """Root schema for ``api_mst.spec_json``."""
 
     engine: EngineSpec
     ext: dict[str, Any] = Field(default_factory=dict)
 
 
-class DuckDBJobSpec(_StrictModel):
-    """Config for a DuckDB SQL post-processing / compaction / master job."""
+class ScrapeJobSpec(_StrictModel):
+    """``job_spec_json`` for ``api_job`` rows with ``job_type='SCRAPE'``."""
 
-    job_name: str = Field(min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+    save_mode: Literal["overwrite", "append"] = "overwrite"
+
+
+class DuckDBJobSpec(_StrictModel):
+    """``job_spec_json`` + id for ``api_job`` rows with ``job_type='DUCKDB'``."""
+
+    job_id: str = Field(min_length=1)
     sql: str = Field(min_length=1)
     output_layer: Literal["curated", "ref", "mart"] = "curated"
     output_rel_path: str = Field(min_length=1)

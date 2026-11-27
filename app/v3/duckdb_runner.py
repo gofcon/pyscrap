@@ -2,7 +2,7 @@
 
 All business SQL (daily merge, monthly sorted compaction, financial master
 refresh with Neon ``user_*`` overrides, mart aggregation) lives in config
-(``ops.duckdb_job`` / local snapshot), keeping this Python runner frozen.
+(``api_job`` / local snapshot), keeping this Python runner frozen.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ _DEFAULT_DUCKDB_TMP = Path(os.environ.get("V3_DUCKDB_TMP_DIR", "data/tmp/duckdb"
 
 @dataclass(frozen=True)
 class DuckDBJobResult:
-    job_name: str
+    job_id: str
     object_key: str
     row_count: int
     byte_size: int
@@ -141,7 +141,7 @@ def run_duckdb_job(
         row_count = int(con.execute("SELECT COUNT(*) FROM _job_out").fetchone()[0])
         if row_count < spec.min_rows:
             raise ValueError(
-                f"duckdb_job {spec.job_name!r} produced {row_count} row(s), "
+                f"api_job {spec.job_id!r} produced {row_count} row(s), "
                 f"below min_rows={spec.min_rows}"
             )
         con.execute(f"COPY _job_out TO {dst} (FORMAT PARQUET, COMPRESSION 'ZSTD')")
@@ -157,7 +157,7 @@ def run_duckdb_job(
         skip_unconfigured=skip_unconfigured_targets,
     )
     return DuckDBJobResult(
-        job_name=spec.job_name,
+        job_id=spec.job_id,
         object_key=object_key,
         row_count=row_count,
         byte_size=byte_size,

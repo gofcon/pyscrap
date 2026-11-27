@@ -38,7 +38,7 @@
 --     USE_SSL   true
 -- );
 --
--- -- 선택: Neon DB 수기 테이블(ref.user_*) 실시간 조인이 필요할 때만
+-- -- 선택: Neon DB 수기 테이블(user_*) 실시간 조인이 필요할 때만
 -- INSTALL postgres;
 -- LOAD postgres;
 -- ATTACH 'postgresql://<USER>:<PASS>@<HOST>-pooler.neon.tech/<DB>?sslmode=require'

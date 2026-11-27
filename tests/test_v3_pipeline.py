@@ -141,7 +141,7 @@ class TestV3Spec(unittest.TestCase):
         self.assertIn("engine", schema["properties"])
         self.assertIn("ext", schema["properties"])
         job = DuckDBJobSpec(
-            job_name="compact_chart",
+            job_id="compact_chart",
             sql="SELECT 1",
             output_layer="curated",
             output_rel_path="kis_futopt_chart/ym=202611/monthly.parquet",
@@ -247,6 +247,7 @@ class TestDuckDBConfigAndBatchCache(unittest.TestCase):
 
             ledger = LocalRunLedger("20261127", base_dir=root / "ledger")
             ledger.append(RunLedgerEntry(
+                job_id="KIS_FUTOPT_PRICE_3M_CALL",
                 api_id="KIS_FUTOPT_PRICE",
                 partition_key="A01612",
                 target_date="20261127",
@@ -255,6 +256,7 @@ class TestDuckDBConfigAndBatchCache(unittest.TestCase):
                 output_uris={"oci": "s3://b/v3/raw_clean/kis_futopt_price/dt=20261127/0903.parquet"},
             ))
             ledger.append(RunLedgerEntry(
+                job_id="KIS_FUTOPT_PRICE_3M_CALL",
                 api_id="KIS_FUTOPT_PRICE",
                 partition_key="A01613",
                 target_date="20261127",
@@ -263,9 +265,69 @@ class TestDuckDBConfigAndBatchCache(unittest.TestCase):
             ))
             self.assertEqual(len(ledger.read_all()), 2)
             self.assertEqual(
-                ledger.succeeded_partitions("KIS_FUTOPT_PRICE"),
+                ledger.succeeded_partitions("KIS_FUTOPT_PRICE_3M_CALL"),
                 {("A01612", "20261127")},
             )
+
+
+class TestV2ToV3MigrationConverters(unittest.TestCase):
+    def test_convert_api_mst_and_builder_rows(self):
+        from scripts.migrate_v2_to_v3 import convert_api_mst_row, convert_builder_row
+
+        v2_api = {
+            "api_id": "ACE_ETF_PDF",
+            "api_name": "ACE ETF 구성종목",
+            "source_name": "AMC",
+            "domain": "ETF",
+            "protocol": "HTTP",
+            "method": "GET",
+            "api_url": "https://papi.aceetf.co.kr/api/funds/:FUNDCD/pdf?stdDt=:STD_DT",
+            "header_json": {"Accept": "application/json"},
+            "payload_type": None,
+            "payload_json": None,
+            "payload_xml": None,
+            "behavior_json": None,
+            "response_type": None,
+            "parse_json": None,
+            "session_json": None,
+            "staging_json": None,
+            "options_json": {"empty_keeps_previous": True, "timeout_sec": 10},
+            "persist_env_json": None,
+            "record_map_json": {"data": "api_rst"},
+            "merge_fields_json": None,
+            "job_key_params": ["FUNDCD", "STD_DT"],
+            "row_stamp_json": {"FUNDCD": "fundcd", "STD_DT": "std_dt"},
+            "is_repeated": False,
+            "snapshot_column": None,
+            "pagination_json": None,
+            "note": "ACE PDF",
+        }
+        v3_api = convert_api_mst_row(v2_api)
+        self.assertEqual(v3_api["sink_type"], "PARQUET")
+        self.assertEqual(v3_api["spec_json"]["engine"]["sink"]["prefix"], "v3")
+        self.assertEqual(v3_api["spec_json"]["engine"]["sink"]["targets"], ["oci"])
+        self.assertEqual(v3_api["spec_json"]["engine"]["sink"]["target_name"], "ace_etf_pdf")
+        self.assertEqual(v3_api["spec_json"]["engine"]["contract"]["empty_policy"], "keep_previous")
+        self.assertEqual(v3_api["spec_json"]["engine"]["cleanse"]["rules"]["std_dt"], ["digits_only"])
+
+        v2_builder = {
+            "build_id": "ACE_ETF_PDF_DAILY",
+            "api_id": "ACE_ETF_PDF",
+            "cartesian_param_json": {
+                "FUNDCD": {"db": "SELECT amc_etf_cd FROM mst_etf WHERE amc='한국투자신탁운용'"},
+                "STD_DT": {"date": "today"},
+            },
+            "is_active": True,
+            "save_mode": "overwrite",
+            "schedule_tag": "daily_batch2",
+            "snapshot_unit": None,
+            "note": "daily ace",
+        }
+        v3_job = convert_builder_row(v2_builder)
+        self.assertEqual(v3_job["job_id"], "ACE_ETF_PDF_DAILY")
+        self.assertEqual(v3_job["job_type"], "SCRAPE")
+        self.assertEqual(v3_job["api_id"], "ACE_ETF_PDF")
+        self.assertEqual(v3_job["job_spec_json"]["save_mode"], "overwrite")
 
 
 if __name__ == "__main__":

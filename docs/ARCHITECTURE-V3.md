@@ -18,10 +18,10 @@
 
 ```mermaid
 flowchart TD
-    subgraph NEON["Neon DB (Serverless PostgreSQL · 최소 테이블만 유지)"]
+    subgraph NEON["Neon DB (Serverless PostgreSQL · 단일 public 스키마)"]
         direction LR
-        OPS["신규 운영 테이블 (ops)\n(api_mst · api_mst_hist · host_policy · run_ledger · duckdb_job)"]
-        REF["수기 입력 테이블 (ref)\n(user_etf · user_code_map · mst_code · 필요 시 user_xxx)"]
+        OPS["운영 테이블\n(api_mst · api_mst_hist · api_job · api_job_log · host_policy)"]
+        REF["수기 입력 테이블\n(user_etf · mst_code · user_code_map · krx_index_mst · mst_index · meta_fuopt_info)"]
     end
 
     subgraph VM["1단계: OCI ARM A1 배치 VM (2GB 메모리 예산 · Python 코드 동결)"]
@@ -76,14 +76,14 @@ flowchart TD
 
 ## 2. Neon DB 최소 구성 및 금융 마스터 저장 위치 비교
 
-### 2-1. Neon DB 테이블 최소화 (신규 운영 + `user_*` 수기 테이블만 유지)
-결과 테이블 43개와 금융 마스터까지 모두 버킷 Parquet(`v3/`)으로 이동하므로, Neon DB에는 **복잡한 다계정/시노님 구조 없이 딱 두 묶음의 테이블만** 남습니다.
-* **신규 운영 테이블 (`ops` 스키마)**: `api_mst`, `api_mst_hist`, `host_policy`, `run_ledger`, `duckdb_job`, `session_store`
-* **수기 입력 테이블 (`ref` 스키마)**: `user_etf`, `user_code_map`, `mst_code`, `krx_index_mst` 등 **재수집 불가능한 수기 데이터** — 향후 수기 보정·오버라이드가 필요할 때만 `user_xxx` 테이블을 추가
-* 권한 분리도 `ops_role`은 `ref` 스키마에 `SELECT`만 허용하는 단순한 Role 2개로 끝납니다.
+### 2-1. Neon DB 테이블 최소화 (단일 `public` 스키마 · 운영 + `user_*` 수기 테이블만 유지)
+결과 테이블 43개와 금융 마스터까지 모두 버킷 Parquet(`v3/`)으로 이동하므로, Neon DB에는 **총 9개 소형 테이블만** 남습니다. 스키마를 나눌 필요 없이 기본 **`public` 단일 스키마**로 통합해 `search_path` 설정이나 스키마 접두사 없이 바로 조회·편집합니다.
+* **운영 테이블**: `api_mst`, `api_mst_hist`, `api_job` (`SCRAPE` 빌더 + `DUCKDB` 후처리 통합), `api_job_log` (실행 이력 + 멱등성 원장), `host_policy`
+* **수기 입력 테이블**: `user_etf`, `mst_code`, `user_code_map`, `krx_index_mst`, `mst_index`, `meta_fuopt_info` 등 **재수집 불가능한 수기 데이터** — 향후 수기 보정·오버라이드가 필요할 때만 `user_xxx` 테이블을 추가
+* 향후 배치 전용 Role 권한 분리가 필요해지면 테이블 단위 `GRANT`(`user_*`는 `SELECT`만 허용)로 제어합니다.
 
 ### 2-2. 확정 결정: 방식 B — 금융시장 데이터 전체를 버킷 Parquet으로 일원화
-운영 테이블(`api_mst`, `run_ledger`)과 수기 테이블(`user_*`)은 Neon DB에 두고, 수집물에서 자동 파생되는 **모든 금융시장 데이터(금융 마스터 `mst_etf`·`mst_fuopt`·`mst_bond`·`mst_stock`·`mst_index`·`meta_maturity`·`stock_index_his` 포함)**는 **버킷 Parquet(`v3/ref/*.parquet`)으로 일원화**합니다.
+운영 테이블(`api_mst`, `api_job_log`)과 수기 테이블(`user_*`)은 Neon DB에 두고, 수집물에서 자동 파생되는 **모든 금융시장 데이터(금융 마스터 `mst_etf`·`mst_fuopt`·`mst_bond`·`mst_stock`·`mst_index`·`meta_maturity`·`stock_index_his` 포함)**는 **버킷 Parquet(`v3/ref/*.parquet`)으로 일원화**합니다.
 
 | 비교 축 | 방식 A (금융 마스터도 Neon 저장) | **방식 B (확정) — 금융 데이터 전체 버킷 Parquet** |
 |---|---|---|
@@ -95,22 +95,22 @@ flowchart TD
 | **복구 단위** | 재수집 가능/불가 데이터 혼재 | **Neon = 재수집 불가(운영·수기) / 버킷 = 재수집 가능(모든 금융 데이터)** |
 
 > [!IMPORTANT]
-> **수기 보정 원칙 (`user_xxx`)**: `v3/ref/mst_*.parquet`은 100% 자동 파생물로 유지하고 직접 수정하지 않습니다. 특정 종목·만기·ETF에 사람의 수동 보정이 필요하면 Neon `ref` 스키마에 `user_xxx` 테이블을 만들어 관리하고, DuckDB 마스터 생성 SQL에서 `COALESCE(user_xxx.col, auto.col)`로 합칩니다.
+> **수기 보정 원칙 (`user_xxx`)**: `v3/ref/mst_*.parquet`은 100% 자동 파생물로 유지하고 직접 수정하지 않습니다. 특정 종목·만기·ETF에 사람의 수동 보정이 필요하면 Neon(`public`)에 `user_xxx` 테이블을 만들어 관리하고, DuckDB 마스터 생성 SQL에서 `COALESCE(user_xxx.col, auto.col)`로 합칩니다.
 
 ### 2-3. 하루치 전체 배치의 Neon Scale-to-Zero & 벌크 동기화 규칙
 3분 작업(`3m_call`, `3m_put`)만 예외로 두지 않고, **일별 배치(`daily_*`)와 장중 배치(`3m`·`5m`·`1h`)를 포함한 하루치 전체**에 동일한 일괄 처리 패턴을 적용합니다.
 
 ```text
 [06:30 장전 — Neon 1회 접속 (~10초)]
-  Neon ops/ref  ──(1회 벌크 Pull)──▶  OCI A1 VM 로컬 스냅샷 (data/cache/config_snapshot.json)
+  Neon 설정/수기  ──(1회 벌크 Pull)──▶  OCI A1 VM 로컬 스냅샷 (data/cache/config_snapshot.json)
 
 [06:30 ~ 23:30 하루 전체 배치 — Neon 접속 0회!]
   daily_start · daily_early · 3m · 5m · 1h · daily_batch1 · daily_batch2 · daily_close
   → 로컬 스냅샷을 읽고 수집·정제·버킷 Parquet 업로드
-  → 모든 잡의 실행 로그는 VM 로컬 NDJSON (data/logs/run_ledger_YYYYMMDD.ndjson)에 누적
+  → 모든 잡의 실행 로그는 VM 로컬 NDJSON (data/logs/api_job_log_YYYYMMDD.ndjson)에 누적
 
 [야간 마감 — Neon 1회 접속 (~20초)]
-  로컬 누적 로그(하루치 전체)  ──(1회 벌크 COPY/INSERT)──▶  Neon scrap.run_ledger
+  로컬 누적 로그(하루치 전체)  ──(1회 벌크 COPY/INSERT)──▶  Neon api_job_log
   (긴급 설정 변경 시에만 수동 명령 `pyscrap sync-config`로 즉시 재동기화)
 ```
 
@@ -147,7 +147,7 @@ flowchart TD
     S3_R2_ACCESS_KEY=...
     S3_R2_SECRET_KEY=...
     ```
-  * 각 소스 또는 `duckdb_job` 설정에서 `targets: ["oci"]` (기본) 또는 `targets: ["oci", "r2"]` (웹 UI 서빙 대상)를 선언하면, 로컬에서 생성한 **동일한 ZSTD Parquet 파일 1개를 지정된 버킷들에 순차 업로드**합니다.
+  * 각 소스 또는 `api_job` 설정에서 `targets: ["oci"]` (기본) 또는 `targets: ["oci", "r2"]` (웹 UI 서빙 대상)를 선언하면, 로컬에서 생성한 **동일한 ZSTD Parquet 파일 1개를 지정된 버킷들에 순차 업로드**합니다.
   * **업로드 전략**: 잡 1건마다 개별 PUT하지 않고 **사이클/일 단위로 묶어 업로드**해 OCI 월 50,000 API 요청 한도를 여유 있게 유지.
   * **총 30GB 무료 동시 활용**: OCI(20GB, 전체 원천·장기 아카이브 정본) + Cloudflare R2(10GB, 웹 UI용 `mart/`·최근 `curated/` 고속 서빙)를 함께 운용.
 * **버킷 경로 규약 (`v3/` 접두사 + DuckDB Hive 파티셔닝 최적화)**:
@@ -162,7 +162,7 @@ flowchart TD
   ```
 
 ### Stage 3. DuckDB 추가 처리 (SQL은 Neon DB 데이터로 분리, Python 수정 0)
-* **고정 DuckDB 러너**: Python에는 `duckdb_job` 설정(로컬 스냅샷에 포함)의 SQL을 실행하고 결과를 로컬 Parquet 생성 → 지정된 `targets` 버킷(`["oci"]` 또는 `["oci", "r2"]`)에 업로드하는 고정 러너만 유지.
+* **고정 DuckDB 러너**: Python에는 `api_job` 설정(로컬 스냅샷에 포함)의 SQL을 실행하고 결과를 로컬 Parquet 생성 → 지정된 `targets` 버킷(`["oci"]` 또는 `["oci", "r2"]`)에 업로드하는 고정 러너만 유지.
 * **일별/월별 처리 흐름**:
   1. 장중 스냅샷(3분/5분): 사이클 단위 소형 Parquet을 OCI `v3/raw_clean/.../dt=YYYYMMDD/`에 누적.
   2. 장 마감 후(야간 단독): DuckDB가 당일 `v3/raw_clean`을 읽어 중복 제거·정렬 후 `v3/curated/<target>/ym=YYYYMM/dt=YYYYMMDD/data.parquet` 1개 파일로 병합 + 금융 마스터(`v3/ref/*.parquet`) 갱신 + `v3/mart/` 생성(2단계 시 `v3/mart/`·최근 `v3/curated/`는 R2에도 추가 업로드).
@@ -173,7 +173,7 @@ flowchart TD
 ## 4. DB-First 설정 아키텍처 (Neon PostgreSQL · DDL 변경 0)
 
 ```sql
-CREATE TABLE ops.api_mst (
+CREATE TABLE api_mst (
     api_id          VARCHAR(150) PRIMARY KEY,
     api_name        VARCHAR(100) NOT NULL,
     source_name     VARCHAR(20)  NOT NULL,   -- 인덱스/조회용
@@ -192,8 +192,8 @@ CREATE TABLE ops.api_mst (
   * `spec_json->'engine'`: Python이 해석하는 안정화된 Primitive만 포함(`request`, `pagination`, `extract`, `cleanse`, `contract`, `session`, `pacing`, `sink`[`targets` 포함]).
   * `spec_json->'ext'`: Python은 통과만 시키는 자유 영역(`additionalProperties: true`). 운영 인력이 커스텀 메타를 **Python 수정·DDL 변경 없이 자유롭게 추가**.
 * **오타 방지 3중 방어**: Pydantic v2 모델 → `model_json_schema()` 자동 파생으로 **① API `POST/PATCH` 및 배치 `check-config` 사전 검증**, **② JSON Schema 기반 어드민 자동 폼**, **③ PostgreSQL 기본 구조 `CHECK` 제약** 적용.
-* **운영 안전장치**: PostgreSQL `BEFORE UPDATE OR DELETE` 트리거로 `ops.api_mst_hist`에 직전 스냅샷 자동 백업 + `DRAFT → pyscrap dry-run → ACTIVE` 워크플로.
-* **작업 모델 (`Partition × Run Ledger`)**: 날짜별 `api_job` 행 누적 폐기 → 실행 시점에 `(대상 파티션) - (로컬/원장 SUCCEEDED)` 차집합만 실행하고 하루 마감 시 `ops.run_ledger`에 일괄 적재.
+* **운영 안전장치**: PostgreSQL `BEFORE UPDATE OR DELETE` 트리거로 `api_mst_hist`에 직전 스냅샷 자동 백업 + `DRAFT → pyscrap dry-run → ACTIVE` 워크플로.
+* **작업 모델 (`Partition × Run Ledger`)**: 날짜별 `api_job` 행 누적 폐기 → 실행 시점에 `(대상 파티션) - (로컬/원장 SUCCEEDED)` 차집합만 실행하고 하루 마감 시 `api_job_log`에 일괄 적재.
 
 ---
 
@@ -262,6 +262,6 @@ con = duckdb.connect(":memory:", config={
 
 1. **Phase 0 — 현행 v2 즉시 안정화**: P0 버그 수정(`ApiRst.target_date`, `TABLE_REGISTRY` 유령 테이블 8개, `jobs.py`/`crud.py` 검증, `JSONDecodeError` 분류, `diagnose=False`, API 인증 & `SCRAP_*` 시크릿 격리) + 핵심 순수 로직 `pytest` 구축.
 2. **Phase 1 — 멀티 S3 레지스트리 + Python 정제 → OCI Parquet 파일럿**: `app/object_storage.py`를 멀티 타깃(`oci` 기본 + `r2` 추가 가능)으로 일반화, `dynamic.py` 모듈 분해(`transport`/`parsers`/`cleanse`/`sink`), 대용량 소스 1~2개(`kis_futopt_chart`, `ace_etf_pdf`) Parquet 직적재 전환 및 기존 데이터 대조 검증.
-3. **Phase 2 — DuckDB 고정 러너 + 금융 마스터 Parquet화 + DBeaver 분석 전환**: A1 2GB 안전 설정 내장 고정 러너 + `duckdb_job` + 금융 마스터(`ref/*.parquet`) DuckDB 갱신 파이프라인 + `duckdb_views.sql` 배포.
-4. **Phase 3 — Neon DB 이관 & Oracle 완전 퇴역**: Neon `ops`/`ref` 최소 테이블 구축(`api_mst` 단일 `spec_json`, `*_hist`, `run_ledger`, `user_*`), **하루치 전체 배치 로컬 스냅샷 캐시 + 야간 1회 벌크 로깅** 적용, `psycopg` 전환 후 Oracle 의존성·결과 ORM 43개 완전 제거.
+3. **Phase 2 — DuckDB 고정 러너 + 금융 마스터 Parquet화 + DBeaver 분석 전환**: A1 2GB 안전 설정 내장 고정 러너 + `api_job` + 금융 마스터(`ref/*.parquet`) DuckDB 갱신 파이프라인 + `duckdb_views.sql` 배포.
+4. **Phase 3 — Neon DB 이관 & Oracle 완전 퇴역**: Neon `public` 단일 스키마 최소 테이블 구축(`api_mst` 단일 `spec_json`, `*_hist`, `api_job_log`, `user_*`), **하루치 전체 배치 로컬 스냅샷 캐시 + 야간 1회 벌크 로깅** 적용, `psycopg` 전환 후 Oracle 의존성·결과 ORM 43개 완전 제거.
 5. **Phase 4 (웹 UI 필요 시) — Cloudflare R2 버킷 추가 + Web UI**: `S3_R2_*` 설정 추가만으로 `mart/`·최근 `curated/`를 R2에 병행 업로드(`targets: ["oci", "r2"]`)하고, FastAPI DuckDB API + Cloudflare Pages 연결.
