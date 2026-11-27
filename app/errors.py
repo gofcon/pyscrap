@@ -18,8 +18,11 @@ error_code 로 질의 가능하게 둔다" 까지만 뜻한다 -- 채널이 생�
 
 from __future__ import annotations
 
+import json
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 class ScrapeError(Exception):
@@ -306,12 +309,41 @@ def classify(exc: BaseException) -> ScrapeError:
     if status is not None:
         return SourceUnavailable(f"HTTP {status}: {exc}").caused_by(exc)
 
+    # json.JSONDecodeError 는 ValueError 의 하위 클래스이므로 ValueError 분기보다
+    # 먼저 처리한다. 원천이 일시적으로 HTML 에러 페이지나 깨진 본문을 돌려줄 때
+    # ConfigError 로 오분류되면 재시도와 서킷브레이커(_FailStreak)에서 빠져
+    # 밤새 반복 실패한다. XML ParseError 도 같은 이유로 원천 오류로 분류한다.
+    if isinstance(exc, (json.JSONDecodeError, ET.ParseError)):
+        return SourceUnavailable(f"{name}: {exc}").caused_by(exc)
+
     # 설정이 틀렸을 때 우리 코드가 올리는 것. ValueError 는 "이 행의 설정으로는
     # 요청을 만들 수 없다" 로 쓰여 왔다 (payload_type, 파싱 명세).
     if isinstance(exc, (ValueError, KeyError, TypeError)):
         return ConfigError(f"{name}: {exc}").caused_by(exc)
 
     return ScrapeError(f"{name}: {exc}").caused_by(exc)
+
+
+_SENSITIVE_QUERY_KEYS = frozenset({
+    "key", "api_key", "apikey", "auth_key", "authkey", "crtfc_key",
+    "servicekey", "service_key", "token", "access_token", "secret",
+    "password", "passwd", "appkey", "appsecret",
+})
+
+
+def _mask_url(raw_url: str) -> str:
+    """Mask secret-like query parameter values before persisting URLs to logs."""
+    if not raw_url or "?" not in raw_url:
+        return raw_url
+    try:
+        parts = urlsplit(raw_url)
+        masked = [
+            (k, "***" if k.lower() in _SENSITIVE_QUERY_KEYS else v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(masked), parts.fragment))
+    except Exception:
+        return raw_url
 
 
 def detail_of(exc: BaseException, limit: int = 8000) -> str:
@@ -326,7 +358,7 @@ def detail_of(exc: BaseException, limit: int = 8000) -> str:
     response = getattr(exc, "response", None)
     if response is not None:
         head: Any = getattr(response, "text", None)
-        url = getattr(response, "url", "")
+        url = _mask_url(str(getattr(response, "url", "")))
         status = getattr(response, "status_code", "")
         if isinstance(head, str):
             parts.append(f"--- reply {status} {url}\n{head[:2000]}")

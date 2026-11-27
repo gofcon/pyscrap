@@ -12,8 +12,9 @@ Run locally with:
     uvicorn app.api.main:app --reload
 """
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from app.api.deps import verify_admin_api_key
 from app.api.routers import health, job_logs, jobs, results
 from app.api.routers.crud import make_crud_router
 from app.db.models import ApiJob, ApiJobBuilder, ApiMst
@@ -22,26 +23,30 @@ from app.logging_config import setup_logging
 setup_logging()
 
 app = FastAPI(title="pyscrap")
+_AUTH_DEPS = [Depends(verify_admin_api_key)]
 
 app.include_router(health.router)
 
 # Config-table CRUD (see app.api.routers.crud) -- one call per table, kept
 # explicit rather than looped/auto-discovered since this set is small and
-# fixed (same three as app.services.export._BOOKKEEPING_TABLES).
+# fixed.
 app.include_router(make_crud_router(ApiMst, id_field="api_id", prefix="/api-mst", tag="api_mst",
                                     children={"job-builders": (ApiJobBuilder, "api_id"),
-                                              "jobs": (ApiJob, "api_id")}))
+                                              "jobs": (ApiJob, "api_id")}),
+                   dependencies=_AUTH_DEPS)
 app.include_router(make_crud_router(ApiJobBuilder, id_field="build_id", prefix="/job-builders",
-                                    tag="api_job_builder", children={"jobs": (ApiJob, "build_id")}))
-app.include_router(make_crud_router(ApiJob, id_field="job_id", prefix="/jobs", tag="api_job"))
+                                    tag="api_job_builder", children={"jobs": (ApiJob, "build_id")}),
+                   dependencies=_AUTH_DEPS)
+app.include_router(make_crud_router(ApiJob, id_field="job_id", prefix="/jobs", tag="api_job"),
+                   dependencies=_AUTH_DEPS)
 
 # ApiJob action endpoints (generate/run) -- mounted at the same "/jobs"
 # prefix as its CRUD router above; see app.api.routers.jobs for why the
 # routes don't collide.
-app.include_router(jobs.router)
+app.include_router(jobs.router, dependencies=_AUTH_DEPS)
 
 # Read-only result-table browsing (see app.api.routers.results).
-app.include_router(results.router)
+app.include_router(results.router, dependencies=_AUTH_DEPS)
 
 # Read-only ApiJobLog browsing (see app.api.routers.job_logs).
-app.include_router(job_logs.router)
+app.include_router(job_logs.router, dependencies=_AUTH_DEPS)

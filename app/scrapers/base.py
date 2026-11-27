@@ -19,6 +19,7 @@ import io
 import json
 import re
 import zipfile
+from pathlib import PurePosixPath
 from typing import Any
 
 from loguru import logger
@@ -171,12 +172,22 @@ class BaseScraper:
 
     # ---- shared request building -----------------------------------------
 
+    _PLACEHOLDER_RE = re.compile(r"(?<!\w):(\w+)(?!\w)")
+
     def _substitute_placeholders(self, text: str) -> str:
-        for key, value in self.params.items():
-            # ':KEY' (Oracle bind-variable style), matched as a whole token so
-            # ':KACD' doesn't also swallow something like ':KACD2'.
-            text = re.sub(rf"(?<!\w):{re.escape(key)}(?!\w)", str(value), text)
-        return text
+        if not self.params or ":" not in text:
+            return text
+
+        def _replace(match: re.Match[str]) -> str:
+            key = match.group(1)
+            if key in self.params:
+                return str(self.params[key])
+            return match.group(0)
+
+        # Single-pass substitution prevents backslash escapes in values from
+        # breaking re.sub and stops earlier param values containing ':OTHER'
+        # from being substituted a second time.
+        return self._PLACEHOLDER_RE.sub(_replace, text)
 
     # ---- collection (the one thing a subclass owns) ----------------------
 
@@ -296,9 +307,14 @@ class BaseScraper:
                 for info in archive.infolist():
                     if info.is_dir():
                         continue
+                    safe_parts = [p for p in PurePosixPath(info.filename.replace("\\", "/")).parts
+                                  if p not in ("", ".", "..", "/")]
+                    if not safe_parts:
+                        raise ConfigError(f"{self.api.api_id}: unsafe zip member path {info.filename!r}")
+                    member_name = "/".join(safe_parts)
                     body = archive.read(info)
-                    stage_file(group, info.filename, body)
-                    records.append(self._describe(group, info.filename, len(body), None))
+                    stage_file(group, member_name, body)
+                    records.append(self._describe(group, member_name, len(body), None))
             logger.info("{}: staged {} file(s) from archive {}",
                         self.api.api_id, len(records), name)
             return records
@@ -326,6 +342,7 @@ class BaseScraper:
         session: Session,
         job_id: str,
         key_params: dict[str, Any] | None = None,
+        target_date: str | None = None,
     ) -> dict[str, int]:
         """Collect every selector and save each to its mapped table. Returns
         ``{table_name: record_count}`` (summed if >1 selector maps to the same
@@ -366,11 +383,14 @@ class BaseScraper:
                     #
                     # 순서는 타입 경로와 같다: key_params 먼저, record 나중.
                     # 이름이 진짜로 겹치면 소스의 값이 잡 파라미터를 이긴다.
-                    obj = model_cls(
-                        api_id=self.api.api_id,
-                        job_id=job_id,
-                        result_json=_fold_keys({**key_params, **record}),
-                    )
+                    generic_kwargs: dict[str, Any] = {
+                        "api_id": self.api.api_id,
+                        "job_id": job_id,
+                        "result_json": _fold_keys({**key_params, **record}),
+                    }
+                    if "target_date" in model_cls.model_fields:
+                        generic_kwargs["target_date"] = target_date
+                    obj = model_cls(**generic_kwargs)
                 else:
                     # model_validate (not plain __init__) so string values from
                     # JSON/XML actually get coerced to the field's real type

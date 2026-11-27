@@ -21,16 +21,34 @@ load_dotenv(_DOTENV_PATH)
 
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
+# Infrastructure / DB / storage credentials must NEVER be resolved or
+# overwritten through scraper config placeholders (${VAR} / persist_env_json).
+_BLOCKED_ENV_PREFIXES = (
+    "ORACLE_", "OCI_", "S3_", "NEON_", "PG", "POSTGRES_", "AWS_", "ADMIN_",
+)
+_BLOCKED_ENV_NAMES = frozenset({
+    "DATABASE_URL", "SECRET_KEY", "PATH", "HOME", "USER",
+})
+
+
+def _is_blocked_env_var(name: str) -> bool:
+    upper = name.upper()
+    return upper in _BLOCKED_ENV_NAMES or upper.startswith(_BLOCKED_ENV_PREFIXES)
+
 
 def resolve_env_placeholders(value: str) -> str:
     """Replace '${ENV_VAR_NAME}' with os.environ values. Left unchanged
     (with a warning) if the env var isn't set, rather than sending "${...}"
-    literally to the site."""
+    literally to the site. Refuses infrastructure secret names."""
 
     def _replace(m: re.Match) -> str:
         name = m.group(1)
+        if _is_blocked_env_var(name):
+            raise PermissionError(
+                f"env var {name!r} is restricted and cannot be referenced in scraper config"
+            )
         if name not in os.environ:
-            logger.warning("env var '{}' referenced in header_json is not set", name)
+            logger.warning("env var '{}' referenced in scraper config is not set", name)
             return m.group(0)
         return os.environ[name]
 
@@ -40,6 +58,10 @@ def resolve_env_placeholders(value: str) -> str:
 def persist_env_var(name: str, value: str) -> None:
     """Update NAME in both os.environ (this process) and the .env file on
     disk (so future runs pick it up without a manual copy-paste)."""
+    if _is_blocked_env_var(name):
+        raise PermissionError(
+            f"env var {name!r} is restricted and cannot be modified by persist_env_json"
+        )
     os.environ[name] = value
     set_key(_DOTENV_PATH, name, value)
 

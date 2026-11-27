@@ -24,9 +24,7 @@ from __future__ import annotations
 
 import csv
 import inspect
-import io
 import os
-import typing
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -38,6 +36,18 @@ from sqlmodel import SQLModel
 
 from app.db import models as _models
 from app.object_storage import bucket_name, get_client as get_object_storage_client
+
+# v2 에서 api_rst + v_* 뷰로 내려간 8개 표는 실제 물리 테이블이 없다
+# (scripts/sql/v2/gen_ddl.py 의 TO_GENERIC). 모델은 뷰 생성 입력으로만 남아
+# 있으므로 TABLE_REGISTRY 에서 제외해 GET /results 와 validate_api_config 가
+# 존재하지 않는 테이블을 허용하지 않게 한다.
+_VIEW_ONLY_TABLES: frozenset[str] = frozenset({
+    "ace_etf", "ace_etf_pdf",
+    "kodex_etf", "kodex_etf_pdf",
+    "plus_etf", "plus_etf_pdf",
+    "sol_etf", "sol_etf_pdf",
+})
+
 
 def _discover_table_registry() -> dict[str, type[SQLModel]]:
     """table_name -> SQLModel class, for every result table in app.db.models.
@@ -70,7 +80,7 @@ def _discover_table_registry() -> dict[str, type[SQLModel]]:
                 and obj is not ResultTable):
             continue
         table_name = getattr(obj, "__tablename__", None)
-        if table_name:
+        if table_name and table_name not in _VIEW_ONLY_TABLES:
             registry[table_name] = obj
     return registry
 

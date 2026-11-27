@@ -197,7 +197,7 @@ def _interval_for(host: str) -> float:
     (``seibro.or.kr`` also covers ``isin.krx.co.kr``-style hosts only if
     listed separately -- this is a suffix match, not a guess at ownership).
     """
-    for suffix, interval in _HOST_INTERVALS.items():
+    for suffix, interval in sorted(_HOST_INTERVALS.items(), key=lambda kv: len(kv[0]), reverse=True):
         if host == suffix or host.endswith("." + suffix):
             return interval
     return _REQUEST_MIN_INTERVAL_SEC
@@ -346,8 +346,10 @@ def _extract_json_records(data: Any, selector: str) -> list[dict[str, Any]]:
     if data is None:
         return []
     if isinstance(data, dict):
-        data = [data]
-    return list(data)
+        return [data]
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    return []
 
 
 def _extract_json_scalar(data: Any, path: str) -> Any:
@@ -738,9 +740,12 @@ class DynamicApiScraper(BaseScraper):
         spec = self.api.parse_json or {}
         encoding = spec.get("encoding", "utf-8")
 
-        zf = zipfile.ZipFile(io.BytesIO(response.content))
-        inner_file = spec.get("inner_file") or zf.namelist()[0]
-        text = zf.read(inner_file).decode(encoding)
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+            names = zf.namelist()
+            if not names:
+                return []
+            inner_file = spec.get("inner_file") or names[0]
+            text = zf.read(inner_file).decode(encoding)
         return self._parse_delimited_text(text, spec)
 
     def _parse_delimited(self, response: httpx.Response) -> list[dict[str, Any]]:
@@ -770,9 +775,6 @@ class DynamicApiScraper(BaseScraper):
         - blank fields become None rather than "" (e.g. KRX pads
           "not applicable" with a lone space)."""
         delimiter = spec.get("delimiter", ",")
-        has_header = spec.get("has_header", False)
-        fields = spec.get("fields")
-
         rows = [row for row in csv.reader(io.StringIO(text), delimiter=delimiter) if row]
         return rows_to_records(rows, spec)
 

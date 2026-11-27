@@ -38,6 +38,16 @@ dependencies = [
 #   pip install -e ".[browser]"
 #   playwright install --with-deps chromium
 browser = ["playwright>=1.48"]
+# v3: Neon DB(PostgreSQL) + DuckDB + Parquet 직적재 파이프라인
+v3 = [
+    "duckdb>=1.1.0",
+    "pyarrow>=17.0.0",
+    "psycopg[binary]>=3.2.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.7.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

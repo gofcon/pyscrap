@@ -152,9 +152,14 @@ def _target_date(key_params: dict[str, Any]) -> str | None:
         digits = _DAY_RE.sub("", value)
         if len(digits) != 8:
             continue
-        year, month, day = int(digits[:4]), int(digits[4:6]), int(digits[6:])
-        if 1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
-            return digits
+        year = int(digits[:4])
+        if not (1990 <= year <= 2100):
+            continue
+        try:
+            datetime.strptime(digits, "%Y%m%d")
+        except ValueError:
+            continue
+        return digits
     return None
 
 
@@ -228,7 +233,12 @@ def _execute_job(session: Session, job: ApiJob, attempt_no: int = 1) -> ScrapeEr
         # app.scrapers.make_scraper. Everything from here down is the same
         # either way.
         scraper = make_scraper(api, params=job.params_json)
-        counts = scraper.run_and_save(session, job_id=job.job_id, key_params=key_params)
+        counts = scraper.run_and_save(
+            session,
+            job_id=job.job_id,
+            key_params=key_params,
+            target_date=target_date,
+        )
         job.engine_note = ", ".join(f"{table}: {n}" for table, n in counts.items())
         # A row can say that an empty reply means "not yet" rather than
         # "nothing" (options_json['empty_is_pending']). KRX's open API
@@ -281,12 +291,15 @@ def _execute_job(session: Session, job: ApiJob, attempt_no: int = 1) -> ScrapeEr
                           and bool((api.options_json or {}).get("empty_keeps_previous")))
         if keeps_previous:
             note = job.engine_note
+            kept_note = f"empty reply, previous rows kept ({note})"
             # 실패 경로와 같은 방식이다 -- 이 잡이 세션에 올린 것(그 DELETE)을
             # 버린다. 0행이라 되돌릴 결과 행은 없다.
             session.rollback()
-            job = session.get(ApiJob, job.job_id)
-            job.engine_note = f"empty reply, previous rows kept ({note})"
-            session.add(job)
+            refreshed = session.get(ApiJob, job.job_id)
+            if refreshed is not None:
+                refreshed.engine_note = kept_note
+                session.add(refreshed)
+            job.engine_note = kept_note
             _log(session, job.job_id, "EMPTY", commit=False,
                  record_count=0,
                  duration_ms=int((time.monotonic() - started) * 1000),

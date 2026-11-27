@@ -37,6 +37,7 @@ globals (where the closure-local `model` doesn't exist)."""
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import ValidationError
 from sqlalchemy import Column, func
 from sqlmodel import SQLModel, select
 
@@ -141,7 +142,10 @@ def make_crud_router(
         if row_id is not None and session.get(model, row_id) is not None:
             raise HTTPException(409, f"{model.__name__} '{row_id}' already exists")
         body.pop("updated_at", None)  # DB-managed -- server_default/onupdate, see models.py
-        row = model.model_validate(body)
+        try:
+            row = model.model_validate(body)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors()) from exc
         session.add(row)
         session.commit()
         session.refresh(row)
@@ -157,8 +161,15 @@ def make_crud_router(
         unknown = set(body) - set(model.model_fields)
         if unknown:
             raise HTTPException(400, f"unknown field(s): {sorted(unknown)}")
-        for key, value in body.items():
-            setattr(row, key, value)
+        # SQLModel(table=True) skips pydantic validation on setattr(), so
+        # validate the merged payload explicitly before mutating the ORM row.
+        merged = {**row.model_dump(), **body}
+        try:
+            validated = model.model_validate(merged)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors()) from exc
+        for key in body:
+            setattr(row, key, getattr(validated, key))
         session.add(row)
         session.commit()
         session.refresh(row)

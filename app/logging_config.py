@@ -36,5 +36,7 @@ def setup_logging() -> None:
         compression="zip",  # rotated files get compressed
         enqueue=True,  # process-safe appends (relevant if two timers overlap)
         backtrace=True,
-        diagnose=True,  # full local-variable dump in tracebacks, not just the message
+        # diagnose=True dumps local variables (headers/tokens/passwords) into
+        # 30-day retained log files. Keep off by default; opt in via LOG_DIAGNOSE=1.
+        diagnose=os.environ.get("LOG_DIAGNOSE", "0").lower() in ("1", "true", "yes"),
     )

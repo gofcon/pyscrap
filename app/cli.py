@@ -304,13 +304,14 @@ def finalize_exports_cmd():
     # contracts that have settled, and the DB (and the Parquet exported from
     # it) already holds all of it.
     with Session(engine) as session:
-        keep_from = session.exec(text("""
+        row = session.exec(text("""
             SELECT prev_mat_date FROM meta_maturity
              WHERE prod_type = 'K2I'
                AND mat_date = (SELECT MIN(mat_date) FROM meta_maturity
                                 WHERE prod_type = 'K2I'
                                   AND mat_date >= TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul'
-                                                             AS DATE)))""")).one()[0]
+                                                             AS DATE)))""")).one_or_none()
+        keep_from = row[0] if row is not None else None
 
     typer.echo(f"finalized {len(results)} document upload(s)")
     for name, key in results.items():

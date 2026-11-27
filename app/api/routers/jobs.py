@@ -20,10 +20,16 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.deps import SessionDep
 from app.db.models import ApiJob
-from app.errors import SourceRefused
+from app.errors import ConfigError, SourceRefused
 from app.services.execution import generate_all_jobs, generate_jobs, generate_jobs_for_builder, run_job
 
 router = APIRouter(prefix="/jobs", tags=["api_job"])
+
+
+def _raise_config_http(exc: ConfigError) -> None:
+    msg = str(exc)
+    status = 404 if msg.startswith("No ApiJobBuilder row") else 400
+    raise HTTPException(status, msg) from exc
 
 
 @router.post("/generate/cycle/{schedule_tag}")
@@ -31,7 +37,10 @@ def generate_by_cycle(schedule_tag: str, session: SessionDep) -> list[str]:
     """Create any still-missing ApiJob rows for this schedule_tag -- same
     as `python -m app.cli generate-jobs <schedule_tag>` (see app.cli).
     Returns the newly-created job_ids (empty if everything already existed)."""
-    created = generate_jobs(session, schedule_tag)
+    try:
+        created = generate_jobs(session, schedule_tag)
+    except ConfigError as exc:
+        _raise_config_http(exc)
     return [job.job_id for job in created]
 
 
@@ -40,7 +49,10 @@ def generate_all(session: SessionDep) -> list[str]:
     """Create any still-missing ApiJob rows for every active builder,
     regardless of schedule_tag -- a manual "generate everything now",
     e.g. for a one-off full refresh outside the normal per-cycle schedule."""
-    created = generate_all_jobs(session)
+    try:
+        created = generate_all_jobs(session)
+    except ConfigError as exc:
+        _raise_config_http(exc)
     return [job.job_id for job in created]
 
 
@@ -52,7 +64,9 @@ def generate_for_builder(build_id: str, session: SessionDep) -> list[str]:
     active first."""
     try:
         created = generate_jobs_for_builder(session, build_id)
-    except ValueError as exc:
+    except (ConfigError, ValueError) as exc:
+        if isinstance(exc, ConfigError):
+            _raise_config_http(exc)
         raise HTTPException(404, str(exc)) from exc
     return [job.job_id for job in created]
 
