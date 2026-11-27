@@ -1,9 +1,11 @@
-"""v3 Job Executor: runs ``SCRAPE`` and ``DUCKDB`` rows from ``DailyConfigSnapshot``.
+"""v3 Job Executor: runs ``api_job`` (API scrape) and ``etl_job`` (DuckDB ETL)
+from ``DailyConfigSnapshot``.
 
 Zero Neon DB connection during collection — reads config from the daily local
-snapshot, expands ``SCRAPE`` parameter axes (dates, literals, or DuckDB queries
+snapshot, expands ``api_job`` parameter axes (dates, literals, or DuckDB queries
 over ``v3/ref/*.parquet``), cleanses + validates records, uploads ONE bundled
-ZSTD Parquet per job under ``v3/raw_clean/``, and logs to ``LocalRunLedger``.
+ZSTD Parquet per job under ``v3/raw_clean/``, executes ``etl_job`` SQL
+post-processing, and logs all outcomes to ``LocalRunLedger`` (``job_log``).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from app.v3.cleanse import ContractResult, apply_cleanse, evaluate_contract
 from app.v3.duckdb_runner import build_duckdb_config, register_s3_secrets, run_duckdb_job
 from app.v3.http_fetcher import collect_http_records
 from app.v3.parquet_sink import publish_parquet_batch
-from app.v3.spec import ApiSpec, DuckDBJobSpec, ScrapeJobSpec
+from app.v3.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec
 
 KST = timezone(timedelta(hours=9))
 _CYCLE_RE = re.compile(r"^(\d+)([mhdw])(?:_\w+)?$")
@@ -202,6 +204,70 @@ def dry_run_api(
     )
 
 
+def execute_etl_job(
+    snapshot: DailyConfigSnapshot,
+    job_id: str,
+    *,
+    target_date: str | None = None,
+    ledger: LocalRunLedger | None = None,
+    skip_unconfigured_targets: bool = True,
+) -> dict[str, Any]:
+    """Execute one ``etl_job`` (DuckDB SQL -> Parquet -> S3) from the daily snapshot."""
+    job_row = snapshot.etl_jobs.get(job_id)
+    if job_row is None:
+        raise ConfigError(f"No etl_job row for {job_id!r} in local snapshot")
+
+    day = target_date or now_kst().strftime("%Y%m%d")
+    run_ledger = ledger or LocalRunLedger(day)
+    spec = EtlJobSpec.model_validate({
+        "job_id": job_id,
+        "sql_text": job_row["sql_text"],
+        "output_layer": job_row.get("output_layer", "curated"),
+        "output_rel_path": job_row["output_rel_path"],
+        "targets": list(job_row.get("targets") or ["oci"]),
+        "memory_limit": job_row.get("memory_limit", "1GB"),
+        "threads": job_row.get("threads", 2),
+        "min_rows": job_row.get("min_rows", 0),
+    })
+    started = time.monotonic()
+    try:
+        res = run_duckdb_job(
+            spec,
+            sql_params={
+                "OCI_BUCKET": bucket_name("oci"),
+                "TARGET_DATE": day,
+                "TARGET_YM": day[:6],
+            },
+            skip_unconfigured_targets=skip_unconfigured_targets,
+        )
+        run_ledger.append(RunLedgerEntry(
+            job_type="ETL",
+            job_id=job_id,
+            api_id=None,
+            partition_key=day,
+            target_date=day,
+            status="SUCCESS",
+            record_count=res.row_count,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            output_uris=res.uploaded_uris,
+        ))
+        return {"job_id": job_id, "job_type": "ETL", "rows": res.row_count, "uris": res.uploaded_uris}
+    except Exception as exc:
+        err = classify(exc)
+        run_ledger.append(RunLedgerEntry(
+            job_type="ETL",
+            job_id=job_id,
+            api_id=None,
+            partition_key=day,
+            target_date=day,
+            status=err.log_status,
+            error_code=type(err).__name__,
+            error_message=str(err)[:4000],
+            duration_ms=int((time.monotonic() - started) * 1000),
+        ))
+        raise
+
+
 def execute_api_job(
     snapshot: DailyConfigSnapshot,
     job_id: str,
@@ -211,54 +277,14 @@ def execute_api_job(
     ledger: LocalRunLedger | None = None,
     skip_unconfigured_targets: bool = True,
 ) -> dict[str, Any]:
-    """Execute one ``api_job`` (``SCRAPE`` or ``DUCKDB``) from the daily snapshot."""
+    """Execute one ``api_job`` (HTTP scrape -> Parquet -> S3) from the daily snapshot."""
     job_row = snapshot.api_jobs.get(job_id)
     if job_row is None:
         raise ConfigError(f"No api_job row for {job_id!r} in local snapshot")
 
     day = target_date or now_kst().strftime("%Y%m%d")
     run_ledger = ledger or LocalRunLedger(day)
-    job_type = job_row["job_type"].upper()
 
-    if job_type == "DUCKDB":
-        spec = DuckDBJobSpec.model_validate({"job_id": job_id, **job_row["job_spec_json"]})
-        started = time.monotonic()
-        try:
-            res = run_duckdb_job(
-                spec,
-                sql_params={
-                    "OCI_BUCKET": bucket_name("oci"),
-                    "TARGET_DATE": day,
-                    "TARGET_YM": day[:6],
-                },
-                skip_unconfigured_targets=skip_unconfigured_targets,
-            )
-            run_ledger.append(RunLedgerEntry(
-                job_id=job_id,
-                api_id=None,
-                partition_key=day,
-                target_date=day,
-                status="SUCCESS",
-                record_count=res.row_count,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                output_uris=res.uploaded_uris,
-            ))
-            return {"job_id": job_id, "job_type": "DUCKDB", "rows": res.row_count, "uris": res.uploaded_uris}
-        except Exception as exc:
-            err = classify(exc)
-            run_ledger.append(RunLedgerEntry(
-                job_id=job_id,
-                api_id=None,
-                partition_key=day,
-                target_date=day,
-                status=err.log_status,
-                error_code=type(err).__name__,
-                error_message=str(err)[:4000],
-                duration_ms=int((time.monotonic() - started) * 1000),
-            ))
-            raise
-
-    # job_type == 'SCRAPE'
     api_id = job_row["api_id"]
     api_row = snapshot.apis.get(api_id)
     if api_row is None:
@@ -268,15 +294,18 @@ def execute_api_job(
 
     api_spec = ApiSpec.model_validate(api_row["spec_json"])
     if api_spec.engine.sink is None:
-        raise ConfigError(f"{api_id}: sink spec is required for SCRAPE job")
+        raise ConfigError(f"{api_id}: sink spec is required for api_job")
 
-    scrape_spec = ScrapeJobSpec.model_validate(job_row["job_spec_json"])
+    scrape_spec = ScrapeJobSpec.model_validate({
+        "params": job_row.get("params_json") or {},
+        "save_mode": job_row.get("save_mode") or "overwrite",
+    })
     ref_day = datetime.strptime(day, "%Y%m%d").date()
     param_sets = expand_scrape_params(scrape_spec.params, ref_date=ref_day)
     if limit is not None:
         param_sets = param_sets[:limit]
 
-    already_done = run_ledger.succeeded_partitions(job_id)
+    already_done = run_ledger.succeeded_partitions(job_id, job_type="API")
     bundled_rows: list[dict[str, Any]] = []
     pending_success: list[RunLedgerEntry] = []
     succeeded = failed = skipped = 0
@@ -303,6 +332,7 @@ def execute_api_job(
                 raise ConfigError(f"{api_id}: contract failed: {'; '.join(contract.violations)}")
             if contract.action in ("pending", "keep_previous"):
                 run_ledger.append(RunLedgerEntry(
+                    job_type="API",
                     job_id=job_id,
                     api_id=api_id,
                     partition_key=pkey,
@@ -316,6 +346,7 @@ def execute_api_job(
             bundled_rows.extend(cleaned)
             succeeded += 1
             pending_success.append(RunLedgerEntry(
+                job_type="API",
                 job_id=job_id,
                 api_id=api_id,
                 partition_key=pkey,
@@ -326,6 +357,7 @@ def execute_api_job(
             ))
         except SourceRefused as exc:
             run_ledger.append(RunLedgerEntry(
+                job_type="API",
                 job_id=job_id,
                 api_id=api_id,
                 partition_key=pkey,
@@ -340,6 +372,7 @@ def execute_api_job(
             err = classify(exc)
             failed += 1
             run_ledger.append(RunLedgerEntry(
+                job_type="API",
                 job_id=job_id,
                 api_id=api_id,
                 partition_key=pkey,
@@ -370,6 +403,7 @@ def execute_api_job(
             err = classify(exc)
             for entry in pending_success:
                 run_ledger.append(RunLedgerEntry(
+                    job_type="API",
                     job_id=entry.job_id,
                     api_id=entry.api_id,
                     partition_key=entry.partition_key,
@@ -386,7 +420,7 @@ def execute_api_job(
 
     return {
         "job_id": job_id,
-        "job_type": "SCRAPE",
+        "job_type": "API",
         "api_id": api_id,
         "partitions_succeeded": succeeded,
         "partitions_failed": failed,
@@ -396,19 +430,66 @@ def execute_api_job(
     }
 
 
+def execute_job(
+    snapshot: DailyConfigSnapshot,
+    job_id: str,
+    *,
+    job_type: str | None = None,
+    target_date: str | None = None,
+    limit: int | None = None,
+    ledger: LocalRunLedger | None = None,
+    skip_unconfigured_targets: bool = True,
+) -> dict[str, Any]:
+    """Dispatch one job by ``job_id`` across ``api_job`` and ``etl_job``."""
+    kind = job_type.upper() if job_type else None
+    if kind == "API":
+        return execute_api_job(
+            snapshot, job_id, target_date=target_date, limit=limit,
+            ledger=ledger, skip_unconfigured_targets=skip_unconfigured_targets,
+        )
+    if kind == "ETL":
+        return execute_etl_job(
+            snapshot, job_id, target_date=target_date,
+            ledger=ledger, skip_unconfigured_targets=skip_unconfigured_targets,
+        )
+    if kind is not None:
+        raise ConfigError(f"Unknown job_type={job_type!r}; expected 'API' or 'ETL'")
+
+    in_api = job_id in snapshot.api_jobs
+    in_etl = job_id in snapshot.etl_jobs
+    if in_api and in_etl:
+        raise ConfigError(f"job_id {job_id!r} exists in both api_job and etl_job; pass job_type='API' or 'ETL'")
+    if in_api:
+        return execute_api_job(
+            snapshot, job_id, target_date=target_date, limit=limit,
+            ledger=ledger, skip_unconfigured_targets=skip_unconfigured_targets,
+        )
+    if in_etl:
+        return execute_etl_job(
+            snapshot, job_id, target_date=target_date,
+            ledger=ledger, skip_unconfigured_targets=skip_unconfigured_targets,
+        )
+    raise ConfigError(f"No api_job or etl_job row for {job_id!r} in local snapshot")
+
+
 def execute_schedule_cycle(
     snapshot: DailyConfigSnapshot,
     schedule_tag: str,
     *,
     target_date: str | None = None,
+    ledger: LocalRunLedger | None = None,
 ) -> list[dict[str, Any]]:
-    """Run every active ``api_job`` for ``schedule_tag`` ordered by ``run_order``."""
-    matching = [
-        row for row in snapshot.api_jobs.values()
-        if row.get("is_active") and row.get("schedule_tag") == schedule_tag
-    ]
-    matching.sort(key=lambda r: (int(r.get("run_order", 100)), r["job_id"]))
+    """Run all active ``api_job`` + ``etl_job`` rows for ``schedule_tag`` ordered by ``run_order``."""
+    items: list[tuple[int, int, str, str]] = []
+    for row in snapshot.api_jobs.values():
+        if row.get("is_active") and row.get("schedule_tag") == schedule_tag:
+            items.append((int(row.get("run_order", 100)), 0, row["job_id"], "API"))
+    for row in snapshot.etl_jobs.values():
+        if row.get("is_active") and row.get("schedule_tag") == schedule_tag:
+            items.append((int(row.get("run_order", 200)), 1, row["job_id"], "ETL"))
+    items.sort()
+
     results: list[dict[str, Any]] = []
-    for row in matching:
-        results.append(execute_api_job(snapshot, row["job_id"], target_date=target_date))
+    for _, _, jid, jtype in items:
+        results.append(execute_job(snapshot, jid, job_type=jtype, target_date=target_date, ledger=ledger))
     return results

@@ -1,4 +1,4 @@
-"""Strict Pydantic v2 schemas for v3 ``api_mst.spec_json`` and ``api_job``.
+"""Strict Pydantic v2 schemas for v3 ``api_mst.spec_json``, ``api_job``, and ``etl_job``.
 
 ``spec_json`` is split into two top-level namespaces:
 - ``engine`` (strict, ``extra="forbid"``): the frozen set of primitives the
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class _StrictModel(BaseModel):
@@ -172,17 +172,17 @@ class ApiSpec(_StrictModel):
 
 
 class ScrapeJobSpec(_StrictModel):
-    """``job_spec_json`` for ``api_job`` rows with ``job_type='SCRAPE'``."""
+    """Parameter & save-mode validation for ``api_job`` rows."""
 
     params: dict[str, Any] = Field(default_factory=dict)
     save_mode: Literal["overwrite", "append"] = "overwrite"
 
 
-class DuckDBJobSpec(_StrictModel):
-    """``job_spec_json`` + id for ``api_job`` rows with ``job_type='DUCKDB'``."""
+class EtlJobSpec(_StrictModel):
+    """Row schema for ``etl_job`` (DuckDB post-processing / compaction / ref refresh)."""
 
     job_id: str = Field(min_length=1)
-    sql: str = Field(min_length=1)
+    sql_text: str = Field(min_length=1, validation_alias=AliasChoices("sql_text", "sql"))
     output_layer: Literal["curated", "ref", "mart"] = "curated"
     output_rel_path: str = Field(min_length=1)
     prefix: str = "v3"
@@ -190,6 +190,12 @@ class DuckDBJobSpec(_StrictModel):
     memory_limit: str = "1GB"
     threads: int = Field(default=2, ge=1, le=8)
     min_rows: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+# Backwards-compatible alias
+DuckDBJobSpec = EtlJobSpec
 
 
 def export_spec_json_schema() -> dict[str, Any]:

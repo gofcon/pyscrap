@@ -4,7 +4,7 @@ Usage::
 
     python3 -m app.v3.cli sync-config [--mirror-user-parquet]
     python3 -m app.v3.cli dry-run <api_id> [--param K=V ...]
-    python3 -m app.v3.cli run-job <job_id> [--date YYYYMMDD] [--limit N]
+    python3 -m app.v3.cli run-job <job_id> [--type api|etl] [--date YYYYMMDD] [--limit N]
     python3 -m app.v3.cli run-cycle <schedule_tag> [--date YYYYMMDD]
     python3 -m app.v3.cli flush-log [--date YYYYMMDD]
 """
@@ -16,7 +16,7 @@ import json
 import sys
 
 from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger
-from app.v3.executor import dry_run_api, execute_api_job, execute_schedule_cycle, now_kst
+from app.v3.executor import dry_run_api, execute_job, execute_schedule_cycle, now_kst
 from app.v3.neon_sync import load_dotenv_into_env, mirror_user_tables_to_parquet, pull_daily_snapshot
 
 
@@ -45,16 +45,18 @@ def main(argv: list[str] | None = None) -> int:
     p_dry.add_argument("--param", action="append", help="Repeatable KEY=VALUE")
     p_dry.add_argument("--sample", type=int, default=3)
 
-    p_job = sub.add_parser("run-job", help="Run one api_job (SCRAPE or DUCKDB) from local snapshot")
+    p_job = sub.add_parser("run-job", help="Run one api_job or etl_job from local snapshot")
     p_job.add_argument("job_id")
+    p_job.add_argument("--type", dest="job_type", choices=["api", "etl", "API", "ETL"], default=None,
+                       help="Optional explicit job type (auto-detected if omitted)")
     p_job.add_argument("--date", dest="target_date", default=None, help="YYYYMMDD (default: today KST)")
-    p_job.add_argument("--limit", type=int, default=None, help="Cap expanded partitions (for pilots)")
+    p_job.add_argument("--limit", type=int, default=None, help="Cap expanded partitions (for api_job pilots)")
 
-    p_cyc = sub.add_parser("run-cycle", help="Run all active api_job rows for a schedule_tag")
+    p_cyc = sub.add_parser("run-cycle", help="Run all active api_job + etl_job rows for a schedule_tag")
     p_cyc.add_argument("schedule_tag")
     p_cyc.add_argument("--date", dest="target_date", default=None, help="YYYYMMDD (default: today KST)")
 
-    p_flush = sub.add_parser("flush-log", help="Bulk-push full day's local ledger to Neon api_job_log")
+    p_flush = sub.add_parser("flush-log", help="Bulk-push full day's local ledger to Neon job_log")
     p_flush.add_argument("--date", dest="target_date", default=None, help="YYYYMMDD (default: today KST)")
 
     args = parser.parse_args(argv)
@@ -64,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"synced snapshot -> {path} "
             f"(api_mst={len(snap.apis)}, api_job={len(snap.api_jobs)}, "
-            f"host_policy={len(snap.host_policies)})"
+            f"etl_job={len(snap.etl_jobs)}, host_policy={len(snap.host_policies)})"
         )
         if args.mirror_user_parquet:
             uris = mirror_user_tables_to_parquet(snap)
@@ -88,7 +90,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run-job":
         snap = DailyConfigSnapshot.load()
-        res = execute_api_job(snap, args.job_id, target_date=args.target_date, limit=args.limit)
+        res = execute_job(
+            snap,
+            args.job_id,
+            job_type=args.job_type,
+            target_date=args.target_date,
+            limit=args.limit,
+        )
         print(json.dumps(res, ensure_ascii=False))
         return 0
 
@@ -102,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "flush-log":
         day = args.target_date or now_kst().strftime("%Y%m%d")
         count = LocalRunLedger(day).flush_to_neon()
-        print(f"flushed {count} log row(s) for {day} -> Neon api_job_log")
+        print(f"flushed {count} log row(s) for {day} -> Neon job_log")
         return 0
 
     return 2

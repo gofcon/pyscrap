@@ -268,19 +268,19 @@ def convert_api_mst_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def convert_builder_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Convert one Oracle v2 ``api_job_builder`` row into a Neon v3 ``api_job`` (SCRAPE)."""
+    """Convert one Oracle v2 ``api_job_builder`` row into a Neon v3 ``api_job``."""
     params = _as_json(row.get("cartesian_param_json")) or {}
     save_mode = row.get("save_mode") or "overwrite"
     spec = ScrapeJobSpec.model_validate({"params": params, "save_mode": save_mode})
     return {
         "job_id": str(row["build_id"]),
-        "job_type": "SCRAPE",
         "api_id": str(row["api_id"]),
         "schedule_tag": row.get("schedule_tag") or "daily",
         "run_order": 100,
         "is_active": bool(row.get("is_active")),
         "snapshot_unit": row.get("snapshot_unit"),
-        "job_spec_json": spec.model_dump(mode="json"),
+        "save_mode": spec.save_mode,
+        "params_json": spec.params,
         "note": row.get("note"),
     }
 
@@ -335,26 +335,27 @@ def _upsert_neon(neon_dsn: str, apis: list[dict], jobs: list[dict], manual_data:
                 """,
                 [{**r, "spec_json": json.dumps(r["spec_json"], ensure_ascii=False)} for r in apis],
             )
-            # 2. api_job (SCRAPE)
+            # 2. api_job
             cur.executemany(
                 """
                 INSERT INTO api_job (
-                    job_id, job_type, api_id, schedule_tag, run_order,
-                    is_active, snapshot_unit, job_spec_json, note
+                    job_id, api_id, schedule_tag, run_order,
+                    is_active, snapshot_unit, save_mode, params_json, note
                 ) VALUES (
-                    %(job_id)s, %(job_type)s, %(api_id)s, %(schedule_tag)s, %(run_order)s,
-                    %(is_active)s, %(snapshot_unit)s, %(job_spec_json)s::jsonb, %(note)s
+                    %(job_id)s, %(api_id)s, %(schedule_tag)s, %(run_order)s,
+                    %(is_active)s, %(snapshot_unit)s, %(save_mode)s, %(params_json)s::jsonb, %(note)s
                 )
                 ON CONFLICT (job_id) DO UPDATE SET
                     api_id = EXCLUDED.api_id,
                     schedule_tag = EXCLUDED.schedule_tag,
                     is_active = EXCLUDED.is_active,
                     snapshot_unit = EXCLUDED.snapshot_unit,
-                    job_spec_json = EXCLUDED.job_spec_json,
+                    save_mode = EXCLUDED.save_mode,
+                    params_json = EXCLUDED.params_json,
                     note = EXCLUDED.note,
                     updated_at = now()
                 """,
-                [{**r, "job_spec_json": json.dumps(r["job_spec_json"], ensure_ascii=False)} for r in jobs],
+                [{**r, "params_json": json.dumps(r["params_json"], ensure_ascii=False)} for r in jobs],
             )
             # 3. host_policy
             cur.executemany(
@@ -440,7 +441,7 @@ def main() -> None:
 
         print("\n=== Migration Summary (validated via Pydantic ApiSpec / ScrapeJobSpec) ===")
         print(f"  api_mst        : {len(apis):>5} rows")
-        print(f"  api_job(SCRAPE): {len(jobs):>5} rows (active={sum(1 for j in jobs if j['is_active'])})")
+        print(f"  api_job        : {len(jobs):>5} rows (active={sum(1 for j in jobs if j['is_active'])})")
         print(f"  host_policy    : {len(DEFAULT_HOST_POLICIES):>5} rows")
         for table, rows in manual_data.items():
             print(f"  {table:<15}: {len(rows):>5} rows")

@@ -2,13 +2,13 @@
 
 Applies uniformly to EVERY daily and intraday batch (``3m``, ``5m``, ``1h``,
 ``daily_*``):
-1. Pre-market (once/day): pull ``api_mst``, ``host_policy``, ``api_job``,
-   and ``user_*`` from Neon into a local JSON snapshot.
+1. Pre-market (once/day): pull ``api_mst``, ``api_job``, ``etl_job``,
+   ``host_policy``, and ``user_*`` from Neon into a local JSON snapshot.
 2. All day: every systemd timer reads only the local snapshot and appends its
    execution outcomes to a local NDJSON ledger (zero Neon connections during
    collection; immune to Neon latency or brief maintenance).
 3. End of day (once/day): bulk-push the full day's ``LocalRunLedger`` entries
-   to Neon ``run_ledger`` in a single connection.
+   to Neon ``job_log`` in a single connection.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ class DailyConfigSnapshot:
     apis: dict[str, dict[str, Any]] = field(default_factory=dict)
     host_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
     api_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    etl_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     user_tables: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def save(self, path: Path | None = None) -> Path:
@@ -54,6 +55,7 @@ class DailyConfigSnapshot:
             apis=payload.get("apis", {}),
             host_policies=payload.get("host_policies", {}),
             api_jobs=payload.get("api_jobs", {}),
+            etl_jobs=payload.get("etl_jobs", {}),
             user_tables=payload.get("user_tables", {}),
         )
 
@@ -65,6 +67,7 @@ class RunLedgerEntry:
     partition_key: str
     target_date: str | None
     status: str  # SUCCESS | FAILED | EMPTY | BLOCKED | SKIPPED
+    job_type: str = "API"  # API | ETL
     error_code: str | None = None
     error_message: str | None = None
     record_count: int | None = None
@@ -80,8 +83,8 @@ class LocalRunLedger:
     def __init__(self, day_str: str, base_dir: Path | None = None):
         self.day_str = day_str
         self.base_dir = base_dir or _DEFAULT_LEDGER_DIR
-        self.path = self.base_dir / f"api_job_log_{day_str}.ndjson"
-        self.flushed_marker = self.base_dir / f"api_job_log_{day_str}.flushed"
+        self.path = self.base_dir / f"job_log_{day_str}.ndjson"
+        self.flushed_marker = self.base_dir / f"job_log_{day_str}.flushed"
 
     def append(self, entry: RunLedgerEntry) -> None:
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -99,16 +102,18 @@ class LocalRunLedger:
             entries.append(RunLedgerEntry(**json.loads(raw)))
         return entries
 
-    def succeeded_partitions(self, job_id: str) -> set[tuple[str, str | None]]:
+    def succeeded_partitions(self, job_id: str, *, job_type: str | None = None) -> set[tuple[str, str | None]]:
         """Set of ``(partition_key, target_date)`` already succeeded today."""
         return {
             (e.partition_key, e.target_date)
             for e in self.read_all()
-            if e.job_id == job_id and e.status == "SUCCESS"
+            if e.job_id == job_id
+            and e.status == "SUCCESS"
+            and (job_type is None or e.job_type == job_type)
         }
 
     def flush_to_neon(self, dsn: str | None = None) -> int:
-        """Bulk-insert the full day's ledger entries into Neon ``api_job_log``.
+        """Bulk-insert the full day's ledger entries into Neon ``job_log``.
 
         Uses a single Neon connection with ``psycopg`` ``executemany`` so Neon
         wakes once at end of day and immediately returns to Scale-to-Zero.
@@ -120,12 +125,12 @@ class LocalRunLedger:
 
         conn_dsn = dsn or os.environ["NEON_DATABASE_URL"]
         sql = """
-            INSERT INTO api_job_log (
-                job_id, api_id, partition_key, target_date, status,
+            INSERT INTO job_log (
+                job_type, job_id, api_id, partition_key, target_date, status,
                 error_code, error_message, record_count, duration_ms,
                 attempt_no, output_uris, executed_at
             ) VALUES (
-                %(job_id)s, %(api_id)s, %(partition_key)s, %(target_date)s, %(status)s,
+                %(job_type)s, %(job_id)s, %(api_id)s, %(partition_key)s, %(target_date)s, %(status)s,
                 %(error_code)s, %(error_message)s, %(record_count)s, %(duration_ms)s,
                 %(attempt_no)s, %(output_uris)s::jsonb, %(executed_at)s::timestamptz
             )

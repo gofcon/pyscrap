@@ -1,9 +1,10 @@
 """Single-connection Neon DB snapshot puller (Scale-to-Zero friendly).
 
 Called once pre-market (``python3 -m app.v3.cli sync-config``) to pull all
-active ``api_mst``, ``api_job``, ``host_policy``, and manual ``user_*`` tables
-from Neon into ``data/cache/config_snapshot.json`` so the entire day's batches
-run without waking Neon again until the end-of-day ledger flush.
+active ``api_mst``, ``api_job``, ``etl_job``, ``host_policy``, and manual
+``user_*`` tables from Neon into ``data/cache/config_snapshot.json`` so the
+entire day's batches run without waking Neon again until the end-of-day
+``job_log`` flush.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ def pull_daily_snapshot(
     conn_dsn = dsn or os.environ["NEON_DATABASE_URL"]
     apis: dict[str, dict[str, Any]] = {}
     api_jobs: dict[str, dict[str, Any]] = {}
+    etl_jobs: dict[str, dict[str, Any]] = {}
     host_policies: dict[str, dict[str, Any]] = {}
     user_tables: dict[str, list[dict[str, Any]]] = {}
 
@@ -71,11 +73,20 @@ def pull_daily_snapshot(
 
             for row in _fetchall_dicts(
                 cur,
-                "SELECT job_id, job_type, api_id, schedule_tag, run_order, "
-                "is_active, snapshot_unit, job_spec_json, note "
+                "SELECT job_id, api_id, schedule_tag, run_order, "
+                "is_active, snapshot_unit, save_mode, params_json, note "
                 "FROM api_job ORDER BY schedule_tag, run_order, job_id",
             ):
                 api_jobs[row["job_id"]] = row
+
+            for row in _fetchall_dicts(
+                cur,
+                "SELECT job_id, schedule_tag, run_order, is_active, "
+                "output_layer, output_rel_path, targets, memory_limit, "
+                "threads, min_rows, sql_text, note "
+                "FROM etl_job ORDER BY schedule_tag, run_order, job_id",
+            ):
+                etl_jobs[row["job_id"]] = row
 
             for row in _fetchall_dicts(
                 cur,
@@ -92,6 +103,7 @@ def pull_daily_snapshot(
         apis=apis,
         host_policies=host_policies,
         api_jobs=api_jobs,
+        etl_jobs=etl_jobs,
         user_tables=user_tables,
     )
     saved = snapshot.save(out_path)

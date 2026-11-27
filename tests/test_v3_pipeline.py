@@ -325,9 +325,9 @@ class TestV2ToV3MigrationConverters(unittest.TestCase):
         }
         v3_job = convert_builder_row(v2_builder)
         self.assertEqual(v3_job["job_id"], "ACE_ETF_PDF_DAILY")
-        self.assertEqual(v3_job["job_type"], "SCRAPE")
         self.assertEqual(v3_job["api_id"], "ACE_ETF_PDF")
-        self.assertEqual(v3_job["job_spec_json"]["save_mode"], "overwrite")
+        self.assertEqual(v3_job["save_mode"], "overwrite")
+        self.assertIn("FUNDCD", v3_job["params_json"])
 
 
 class TestHttpFetcherAndExecutor(unittest.TestCase):
@@ -440,10 +440,27 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             api_jobs={
                 "SAMPLE_JOB": {
                     "job_id": "SAMPLE_JOB",
-                    "job_type": "SCRAPE",
                     "api_id": "SAMPLE_API",
+                    "schedule_tag": "daily_batch2",
+                    "run_order": 100,
                     "is_active": True,
-                    "job_spec_json": {"params": {"STD_DT": {"date": "today"}}},
+                    "save_mode": "overwrite",
+                    "params_json": {"STD_DT": {"date": "today"}},
+                }
+            },
+            etl_jobs={
+                "SAMPLE_ETL": {
+                    "job_id": "SAMPLE_ETL",
+                    "schedule_tag": "daily_batch2",
+                    "run_order": 200,
+                    "is_active": True,
+                    "output_layer": "ref",
+                    "output_rel_path": "sample_ref.parquet",
+                    "targets": ["oci"],
+                    "memory_limit": "512MB",
+                    "threads": 2,
+                    "min_rows": 1,
+                    "sql_text": "SELECT 1 AS x",
                 }
             },
         )
@@ -465,14 +482,89 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                  mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
                 res = execute_api_job(snap, "SAMPLE_JOB", target_date="20261125", ledger=ledger)
             self.assertEqual(seen_params, [{"STD_DT": "20261125"}])
+            self.assertEqual(res["job_type"], "API")
             self.assertEqual(res["rows"], 1)
             entries = ledger.read_all()
             self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].job_type, "API")
             self.assertEqual(entries[0].status, "SUCCESS")
             self.assertEqual(
                 entries[0].output_uris,
                 {"oci": "s3://bkt/v3/raw_clean/sample_tbl/dt=20261125/batch.parquet"},
             )
+
+    def test_execute_schedule_cycle_orders_api_job_before_etl_job(self):
+        from app.v3.duckdb_runner import DuckDBJobResult
+        from app.v3.executor import execute_schedule_cycle
+        from app.v3.parquet_sink import ParquetWriteResult
+
+        snap = DailyConfigSnapshot(
+            generated_at="2026-11-27T06:30:00+09:00",
+            apis={
+                "A1": {
+                    "api_id": "A1",
+                    "protocol": "HTTP",
+                    "spec_json": {
+                        "engine": {
+                            "request": {"url": "https://example.com"},
+                            "sink": {"target_name": "a1"},
+                        }
+                    },
+                }
+            },
+            api_jobs={
+                "JOB_API": {
+                    "job_id": "JOB_API",
+                    "api_id": "A1",
+                    "schedule_tag": "daily_batch2",
+                    "run_order": 100,
+                    "is_active": True,
+                    "save_mode": "overwrite",
+                    "params_json": {},
+                }
+            },
+            etl_jobs={
+                "JOB_ETL": {
+                    "job_id": "JOB_ETL",
+                    "schedule_tag": "daily_batch2",
+                    "run_order": 200,
+                    "is_active": True,
+                    "output_layer": "ref",
+                    "output_rel_path": "a1_ref.parquet",
+                    "targets": ["oci"],
+                    "memory_limit": "512MB",
+                    "threads": 2,
+                    "min_rows": 1,
+                    "sql_text": "SELECT 1 AS id",
+                }
+            },
+        )
+        fake_pub = ParquetWriteResult(
+            object_key="v3/raw_clean/a1/dt=20261127/batch.parquet",
+            row_count=1,
+            byte_size=10,
+            uploaded_uris={"oci": "s3://bkt/v3/raw_clean/a1/dt=20261127/batch.parquet"},
+        )
+        fake_etl = DuckDBJobResult(
+            job_id="JOB_ETL",
+            object_key="v3/ref/a1_ref.parquet",
+            row_count=5,
+            byte_size=20,
+            uploaded_uris={"oci": "s3://bkt/v3/ref/a1_ref.parquet"},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LocalRunLedger("20261127", base_dir=Path(td))
+            with mock.patch("app.v3.executor.collect_http_records", return_value=[{"x": 1}]), \
+                 mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub), \
+                 mock.patch("app.v3.executor.bucket_name", return_value="bkt"), \
+                 mock.patch("app.v3.executor.run_duckdb_job", return_value=fake_etl):
+                results = execute_schedule_cycle(snap, "daily_batch2", target_date="20261127", ledger=ledger)
+            self.assertEqual([(r["job_type"], r["job_id"]) for r in results], [("API", "JOB_API"), ("ETL", "JOB_ETL")])
+            entries = ledger.read_all()
+            self.assertEqual([(e.job_type, e.job_id, e.status) for e in entries], [
+                ("API", "JOB_API", "SUCCESS"),
+                ("ETL", "JOB_ETL", "SUCCESS"),
+            ])
 
 
 if __name__ == "__main__":

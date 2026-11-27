@@ -1,24 +1,29 @@
 -- ============================================================================
 -- pyscrap v3: Neon DB (Serverless PostgreSQL) 단일 public 스키마
 --
--- 구조: api_mst -> api_job (SCRAPE | DUCKDB) -> api_job_log
---   - api_mst       : 외부 사이트 수집 명세 (~60행, spec_json = engine + ext)
---   - api_mst_hist  : api_mst 변경/삭제 자동 스냅샷 (롤백 안전망)
---   - api_job       : 스케줄 실행 정의 (~120행 고정, 구 api_job_builder + DuckDB 잡 통합)
---   - api_job_log   : 하루치 실행 이력 + 멱등성 원장 (야간 1회 벌크 적재)
---   - host_policy   : 호스트별 호출 간격 / 차단 쿨다운 정책
---   - 수기 테이블   : user_etf, mst_code, user_code_map, krx_index_mst,
---                     mst_index, meta_fuopt_info (필요 시 user_xxx 계속 추가)
---   - 금융 데이터   : 결과 43표 + 파생 마스터(mst_etf/mst_fuopt/mst_bond/mst_stock/
---                     meta_maturity/stock_index_his)는 전부 버킷 v3/ Parquet 으로 일원화
+-- 구조:
+--   - api_mst        : 외부 사이트 수집 명세 (~60행, spec_json = engine + ext)
+--   - api_mst_hist   : api_mst 변경/삭제 자동 스냅샷 (롤백 안전망)
+--   - api_job        : API 수집 실행 정의 (~96행 고정, 구 api_job_builder)
+--   - etl_job        : DuckDB 가공 · 월별 Compaction · 금융 마스터 갱신 SQL 정의
+--   - v_schedule_job : api_job + etl_job 통합 스케줄 순서 조회 뷰
+--   - job_log        : 통합 실행 이력 + 멱등성 원장 (야간 1회 벌크 적재)
+--   - host_policy    : 호스트별 호출 간격 / 차단 쿨다운 정책
+--   - 수기 테이블    : user_etf, mst_code, user_code_map, krx_index_mst,
+--                      mst_index, meta_fuopt_info (필요 시 user_xxx 계속 추가)
+--   - 금융 데이터    : 결과 43표 + 파생 마스터(mst_etf/mst_fuopt/mst_bond/mst_stock/
+--                      meta_maturity/stock_index_his)는 전부 버킷 v3/ Parquet 으로 일원화
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- 0. 구 스키마/임시 테이블 정리 (멱등)
 -- ----------------------------------------------------------------------------
 DROP SCHEMA IF EXISTS ops, ref CASCADE;
+DROP VIEW IF EXISTS v_schedule_job;
+DROP VIEW IF EXISTS v_code_map;
 DROP TABLE IF EXISTS duckdb_job;
 DROP TABLE IF EXISTS run_ledger;
+DROP TABLE IF EXISTS api_job_log;
 
 DO $$
 BEGIN
@@ -29,7 +34,7 @@ $$;
 SET search_path TO public;
 
 -- ----------------------------------------------------------------------------
--- 1. 운영 테이블 (api_mst -> api_job -> api_job_log + host_policy)
+-- 1. 운영 테이블 (api_mst -> api_job / etl_job -> job_log + host_policy)
 -- ----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS api_mst (
@@ -88,28 +93,22 @@ CREATE TRIGGER trg_api_mst_audit
 BEFORE UPDATE OR DELETE ON api_mst
 FOR EACH ROW EXECUTE FUNCTION fn_api_mst_audit();
 
--- 실행 정의 통합 테이블: 구 api_job_builder(SCRAPE) + DuckDB 후처리(DUCKDB)
+-- API 수집 실행 정의 (구 api_job_builder)
 -- 날짜×종목 조합을 DB에 미리 쌓지 않고 실행 시점에 동적 전개한다.
 DROP TABLE IF EXISTS api_job;
 CREATE TABLE api_job (
     job_id          VARCHAR(100) PRIMARY KEY,
-    job_type        VARCHAR(10)  NOT NULL CHECK (job_type IN ('SCRAPE', 'DUCKDB')),
-    api_id          VARCHAR(150),                       -- SCRAPE 일 때 api_mst.api_id 참조
+    api_id          VARCHAR(150) NOT NULL REFERENCES api_mst(api_id),
     schedule_tag    VARCHAR(30)  NOT NULL DEFAULT 'daily',
     run_order       SMALLINT     NOT NULL DEFAULT 100,  -- 같은 schedule_tag 내 실행 순서
     is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
     snapshot_unit   VARCHAR(10),                        -- 3m, 5m, 1d 등 (스냅샷 절삭 단위)
-    -- SCRAPE: {"params": {...}, "save_mode": "overwrite"|"append"}
-    -- DUCKDB: {"output_layer": "curated"|"ref"|"mart", "output_rel_path": "...",
-    --          "targets": ["oci", ...], "memory_limit": "1GB", "threads": 2,
-    --          "min_rows": 0, "sql": "..."}
-    job_spec_json   JSONB        NOT NULL,
+    save_mode       VARCHAR(20)  NOT NULL DEFAULT 'overwrite'
+                    CHECK (save_mode IN ('overwrite', 'append')),
+    params_json     JSONB        NOT NULL DEFAULT '{}'::jsonb
+                    CHECK (jsonb_typeof(params_json) = 'object'),
     note            VARCHAR(400),
-    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CHECK (
-        (job_type = 'SCRAPE' AND api_id IS NOT NULL) OR
-        (job_type = 'DUCKDB' AND api_id IS NULL)
-    )
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS ix_api_job_schedule
@@ -117,9 +116,52 @@ CREATE INDEX IF NOT EXISTS ix_api_job_schedule
 CREATE INDEX IF NOT EXISTS ix_api_job_api_id
     ON api_job (api_id);
 
+-- DuckDB 후처리 · 컴팩션 · 금융 마스터/마트 갱신 실행 정의
+DROP TABLE IF EXISTS etl_job;
+CREATE TABLE etl_job (
+    job_id          VARCHAR(100) PRIMARY KEY,
+    schedule_tag    VARCHAR(30)  NOT NULL DEFAULT 'daily_close',
+    run_order       SMALLINT     NOT NULL DEFAULT 200,  -- 같은 schedule_tag 내 API 수집 이후 실행
+    is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    output_layer    VARCHAR(15)  NOT NULL DEFAULT 'curated'
+                    CHECK (output_layer IN ('curated', 'ref', 'mart')),
+    output_rel_path VARCHAR(300) NOT NULL,              -- 예: kis_futopt_chart/ym=${TARGET_YM}/monthly.parquet
+    targets         TEXT[]       NOT NULL DEFAULT ARRAY['oci']::TEXT[],
+    memory_limit    VARCHAR(16)  NOT NULL DEFAULT '1GB',
+    threads         SMALLINT     NOT NULL DEFAULT 2 CHECK (threads BETWEEN 1 AND 8),
+    min_rows        INTEGER      NOT NULL DEFAULT 0 CHECK (min_rows >= 0),
+    sql_text        TEXT         NOT NULL,              -- 치환 변수: ${OCI_BUCKET}, ${TARGET_DATE}, ${TARGET_YM}
+    note            VARCHAR(400),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_etl_job_schedule
+    ON etl_job (schedule_tag, is_active, run_order);
+
+-- api_job + etl_job 전체 스케줄 순서를 한눈에 확인하는 통합 뷰
+CREATE OR REPLACE VIEW v_schedule_job AS
+SELECT schedule_tag,
+       run_order,
+       'API'::VARCHAR(10) AS job_type,
+       job_id,
+       api_id             AS target_ref,
+       is_active,
+       note
+  FROM api_job
+UNION ALL
+SELECT schedule_tag,
+       run_order,
+       'ETL'::VARCHAR(10)                       AS job_type,
+       job_id,
+       output_layer || '/' || output_rel_path   AS target_ref,
+       is_active,
+       note
+  FROM etl_job;
+
 -- 하루치 전체 배치 실행 이력 + 멱등성 원장 (야간 마감 시 로컬 NDJSON 에서 1회 벌크 적재)
-CREATE TABLE IF NOT EXISTS api_job_log (
+CREATE TABLE IF NOT EXISTS job_log (
     id              BIGSERIAL    PRIMARY KEY,
+    job_type        VARCHAR(10)  NOT NULL CHECK (job_type IN ('API', 'ETL')),
     job_id          VARCHAR(100) NOT NULL,
     api_id          VARCHAR(150),
     partition_key   VARCHAR(150) NOT NULL DEFAULT '',
@@ -135,10 +177,10 @@ CREATE TABLE IF NOT EXISTS api_job_log (
     executed_at     TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS ix_api_job_log_lookup
-    ON api_job_log (job_id, target_date, status);
-CREATE INDEX IF NOT EXISTS ix_api_job_log_executed
-    ON api_job_log (executed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_job_log_lookup
+    ON job_log (job_type, job_id, target_date, status);
+CREATE INDEX IF NOT EXISTS ix_job_log_executed
+    ON job_log (executed_at DESC);
 
 -- 호스트별 호출 간격 / 차단 쿨다운 정책 (코드 하드코딩 _HOST_INTERVALS 대체)
 CREATE TABLE IF NOT EXISTS host_policy (
