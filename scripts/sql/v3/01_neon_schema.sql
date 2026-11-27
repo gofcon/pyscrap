@@ -130,6 +130,7 @@ CREATE TABLE etl_job (
     memory_limit    VARCHAR(16)  NOT NULL DEFAULT '1GB',
     threads         SMALLINT     NOT NULL DEFAULT 2 CHECK (threads BETWEEN 1 AND 8),
     min_rows        INTEGER      NOT NULL DEFAULT 0 CHECK (min_rows >= 0),
+    cleanup_prefix  VARCHAR(300),                       -- 업로드 성공 후 정리할 v3/ 프리픽스 (예: 월별 Compaction 후 dt=)
     sql_text        TEXT         NOT NULL,              -- 치환 변수: ${OCI_BUCKET}, ${TARGET_DATE}, ${TARGET_YM}
     note            VARCHAR(400),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()

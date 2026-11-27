@@ -8,7 +8,7 @@ refresh with Neon ``user_*`` overrides, mart aggregation) lives in config
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -16,6 +16,7 @@ from app.object_storage import (
     S3TargetConfig,
     build_v3_key,
     configured_targets,
+    delete_prefix_from_targets,
     get_target_config,
     upload_file_to_targets,
 )
@@ -31,6 +32,7 @@ class DuckDBJobResult:
     row_count: int
     byte_size: int
     uploaded_uris: dict[str, str]
+    cleaned_keys: dict[str, list[str]] = field(default_factory=dict)
 
 
 def is_tmpfs_path(path: Path) -> bool:
@@ -164,10 +166,25 @@ def run_duckdb_job(
         delete_local=delete_local,
         skip_unconfigured=skip_unconfigured_targets,
     )
+
+    cleaned_keys: dict[str, list[str]] = {}
+    if spec.cleanup_prefix and uploaded:
+        cleanup_pfx = spec.cleanup_prefix
+        for key, value in (sql_params or {}).items():
+            cleanup_pfx = cleanup_pfx.replace(f"${{{key}}}", value)
+        cleaned_keys = delete_prefix_from_targets(
+            cleanup_pfx,
+            targets=spec.targets,
+            exclude_keys={object_key},
+            skip_unconfigured=skip_unconfigured_targets,
+            prefix=spec.prefix,
+        )
+
     return DuckDBJobResult(
         job_id=spec.job_id,
         object_key=object_key,
         row_count=row_count,
         byte_size=byte_size,
         uploaded_uris=uploaded,
+        cleaned_keys=cleaned_keys,
     )

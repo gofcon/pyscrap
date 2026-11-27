@@ -646,6 +646,91 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             self.assertEqual(entries[0].job_type, "ETL")
             self.assertEqual(entries[0].job_id, "HARVEST_SRC_CODE")
 
+    def test_cleanup_prefix_safety_and_post_upload_cleanup(self):
+        from app.object_storage import _validate_v3_cleanup_prefix
+        from app.v3.duckdb_runner import run_duckdb_job
+
+        self.assertEqual(
+            _validate_v3_cleanup_prefix("v3/curated/kis_futopt_chart/ym=202611/dt="),
+            "v3/curated/kis_futopt_chart/ym=202611/dt=",
+        )
+        for bad in ("v3/", "v3/curated/", "v2/curated/foo/", "v3/curated/../v2/foo"):
+            with self.assertRaises(ValueError):
+                _validate_v3_cleanup_prefix(bad)
+
+        spec = DuckDBJobSpec(
+            job_id="COMPACT_TEST",
+            sql_text="SELECT 1 AS a",
+            output_layer="curated",
+            output_rel_path="kis_futopt_chart/ym=${TARGET_YM}/monthly.parquet",
+            targets=["oci"],
+            memory_limit="256MB",
+            threads=1,
+            min_rows=1,
+            cleanup_prefix="v3/curated/kis_futopt_chart/ym=${TARGET_YM}/dt=",
+        )
+        seen_cleanup: list[tuple[str, set[str]]] = []
+
+        def _fake_del(pfx, targets=("oci",), *, exclude_keys=(), **kw):
+            seen_cleanup.append((pfx, set(exclude_keys)))
+            return {"oci": [f"{pfx}20261101/data.parquet"]}
+
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch("app.v3.duckdb_runner.is_tmpfs_path", return_value=False), \
+                 mock.patch("app.v3.duckdb_runner.register_s3_secrets", return_value=[]), \
+                 mock.patch(
+                     "app.v3.duckdb_runner.upload_file_to_targets",
+                     side_effect=lambda p, key, **kw: {"oci": f"s3://bkt/{key}"},
+                 ), \
+                 mock.patch("app.v3.duckdb_runner.delete_prefix_from_targets", side_effect=_fake_del):
+                res = run_duckdb_job(
+                    spec,
+                    sql_params={"TARGET_YM": "202611"},
+                    temp_directory=Path(td) / "duckdb",
+                )
+        self.assertEqual(
+            seen_cleanup,
+            [("v3/curated/kis_futopt_chart/ym=202611/dt=", {"v3/curated/kis_futopt_chart/ym=202611/monthly.parquet"})],
+        )
+        self.assertEqual(len(res.cleaned_keys["oci"]), 1)
+
+    def test_purge_raw_clean_and_iter_target_dates(self):
+        from datetime import date
+        from app.v3.cleanup import extract_dt_from_key, purge_raw_clean
+        from app.v3.cli import iter_target_dates
+
+        self.assertEqual(extract_dt_from_key("v3/raw_clean/ace_etf_pdf/dt=20261015/a.parquet"), "20261015")
+        self.assertIsNone(extract_dt_from_key("v3/ref/mst_etf.parquet"))
+
+        keys = [
+            "v3/raw_clean/ace_etf_pdf/dt=20261001/old.parquet",
+            "v3/raw_clean/ace_etf_pdf/dt=20261120/recent.parquet",
+        ]
+        with mock.patch("app.v3.cleanup.list_keys_with_prefix", return_value=keys), \
+             mock.patch("app.v3.cleanup.delete_keys_from_targets", return_value={"oci": 1}) as del_mock:
+            dry = purge_raw_clean(keep_days=30, ref_date=date(2026, 11, 27), dry_run=True)
+            self.assertEqual(dry["matched"], {"oci": 1})
+            self.assertEqual(dry["deleted"], {"oci": 0})
+            del_mock.assert_not_called()
+
+            applied = purge_raw_clean(keep_days=30, ref_date=date(2026, 11, 27), dry_run=False)
+            self.assertEqual(applied["deleted"], {"oci": 1})
+            del_mock.assert_called_once()
+
+        # 2026-11-26 (Thu) .. 2026-11-30 (Mon): skips Sat 28 & Sun 29 by default
+        self.assertEqual(
+            iter_target_dates(date_from="20261126", date_to="20261130"),
+            ["20261126", "20261127", "20261130"],
+        )
+        self.assertEqual(
+            iter_target_dates(date_from="20261126", date_to="20261130", include_weekends=True),
+            ["20261126", "20261127", "20261128", "20261129", "20261130"],
+        )
+        with self.assertRaises(ValueError):
+            iter_target_dates(target_date="20261127", date_from="20261126", date_to="20261127")
+        with self.assertRaises(ValueError):
+            iter_target_dates(date_from="20261130", date_to="20261126")
+
 
 if __name__ == "__main__":
     unittest.main()

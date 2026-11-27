@@ -83,7 +83,7 @@ def pull_daily_snapshot(
                 cur,
                 "SELECT job_id, schedule_tag, run_order, is_active, "
                 "output_layer, output_rel_path, targets, memory_limit, "
-                "threads, min_rows, sql_text, note "
+                "threads, min_rows, cleanup_prefix, sql_text, note "
                 "FROM etl_job ORDER BY schedule_tag, run_order, job_id",
             ):
                 etl_jobs[row["job_id"]] = row

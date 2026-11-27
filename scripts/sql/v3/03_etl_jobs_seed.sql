@@ -938,66 +938,70 @@ INSERT INTO etl_job (
 -- 22. COMPACT_KIS_FUTOPT_CHART_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
 ) VALUES (
     'COMPACT_KIS_FUTOPT_CHART_MONTHLY', 'monthly_archive', 200, TRUE,
     'curated', 'kis_futopt_chart/ym=${TARGET_YM}/monthly.parquet',
     ARRAY['oci'], '1GB', 2, 1,
+    'v3/curated/kis_futopt_chart/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/kis_futopt_chart/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY short_code, stck_bsop_date, stck_cntg_hour
     $$,
-    '한 달치 선물옵션 분봉을 종목·일시 순 정렬해 monthly.parquet 1파일로 통합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+    '한 달치 선물옵션 분봉을 종목·일시 순 정렬해 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- 23. COMPACT_KIS_FUTOPT_PRICE_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
 ) VALUES (
     'COMPACT_KIS_FUTOPT_PRICE_MONTHLY', 'monthly_archive', 210, TRUE,
     'curated', 'kis_futopt_price/ym=${TARGET_YM}/monthly.parquet',
     ARRAY['oci'], '1GB', 2, 1,
+    'v3/curated/kis_futopt_price/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/kis_futopt_price/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY short_code, trade_at
     $$,
-    '한 달치 선물옵션 3분 시세를 종목·시각 순 정렬해 monthly.parquet 1파일로 통합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+    '한 달치 선물옵션 3분 시세를 종목·시각 순 정렬해 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- 24. COMPACT_KIS_FUTOPT_DAILY_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
 ) VALUES (
     'COMPACT_KIS_FUTOPT_DAILY_MONTHLY', 'monthly_archive', 220, TRUE,
     'curated', 'kis_futopt_daily/ym=${TARGET_YM}/monthly.parquet',
     ARRAY['oci'], '1GB', 2, 1,
+    'v3/curated/kis_futopt_daily/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/kis_futopt_daily/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY short_code, stck_bsop_date
     $$,
-    '한 달치 선물옵션 일봉을 monthly.parquet 1파일로 통합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+    '한 달치 선물옵션 일봉을 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- 25. COMPACT_KRX_OPT_DAILY_MONTHLY
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
-    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, sql_text, note
+    output_layer, output_rel_path, targets, memory_limit, threads, min_rows, cleanup_prefix, sql_text, note
 ) VALUES (
     'COMPACT_KRX_OPT_DAILY_MONTHLY', 'monthly_archive', 230, TRUE,
     'curated', 'krx_opt_daily/ym=${TARGET_YM}/monthly.parquet',
     ARRAY['oci'], '1GB', 2, 1,
+    'v3/curated/krx_opt_daily/ym=${TARGET_YM}/dt=',
     $$
         SELECT DISTINCT *
         FROM read_parquet('s3://${OCI_BUCKET}/v3/curated/krx_opt_daily/ym=${TARGET_YM}/dt=*/*.parquet', union_by_name = true)
         ORDER BY isu_cd, bas_dd
     $$,
-    '한 달치 KRX 옵션 일별시세를 monthly.parquet 1파일로 통합'
-) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, run_order = EXCLUDED.run_order, updated_at = now();
+    '한 달치 KRX 옵션 일별시세를 monthly.parquet 1파일로 통합 후 일별 dt= 폴더 자동 정리'
+) ON CONFLICT (job_id) DO UPDATE SET sql_text = EXCLUDED.sql_text, output_rel_path = EXCLUDED.output_rel_path, cleanup_prefix = EXCLUDED.cleanup_prefix, run_order = EXCLUDED.run_order, note = EXCLUDED.note, updated_at = now();
 
 -- ----------------------------------------------------------------------------
 -- [그룹 C] 선택 보조 작업 (2개 — sp_ksd_no_detail_mark, sp_src_code_sync)

@@ -236,6 +236,7 @@ def execute_etl_job(
         "memory_limit": job_row.get("memory_limit", "1GB"),
         "threads": job_row.get("threads", 2),
         "min_rows": job_row.get("min_rows", 0),
+        "cleanup_prefix": job_row.get("cleanup_prefix"),
     })
     started = time.monotonic()
     try:
@@ -270,7 +271,15 @@ def execute_etl_job(
             duration_ms=int((time.monotonic() - started) * 1000),
             output_uris=res.uploaded_uris,
         ))
-        return {"job_id": job_id, "job_type": "ETL", "rows": res.row_count, "uris": res.uploaded_uris}
+        out: dict[str, Any] = {
+            "job_id": job_id,
+            "job_type": "ETL",
+            "rows": res.row_count,
+            "uris": res.uploaded_uris,
+        }
+        if res.cleaned_keys:
+            out["cleaned"] = {k: len(v) for k, v in res.cleaned_keys.items()}
+        return out
     except Exception as exc:
         err = classify(exc)
         run_ledger.append(RunLedgerEntry(
@@ -405,7 +414,12 @@ def execute_api_job(
     uploaded_uris: dict[str, str] = {}
     if bundled_rows:
         sink = api_spec.engine.sink
-        batch_name = f"{job_id.lower()}_{now_kst().strftime('%H%M%S')}"
+        if not sink.is_repeated and scrape_spec.save_mode == "overwrite":
+            # Deterministic filename so re-running the same day replaces in-place
+            # instead of leaving duplicate batch files under dt=YYYYMMDD/.
+            batch_name = job_id.lower()
+        else:
+            batch_name = f"{job_id.lower()}_{now_kst().strftime('%H%M%S')}"
         try:
             res = publish_parquet_batch(
                 bundled_rows,

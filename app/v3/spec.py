@@ -190,6 +190,7 @@ class EtlJobSpec(_StrictModel):
     memory_limit: str = "1GB"
     threads: int = Field(default=2, ge=1, le=8)
     min_rows: int = Field(default=0, ge=0)
+    cleanup_prefix: str | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

@@ -197,3 +197,102 @@ def upload_file_to_targets(
     if delete_local and uploaded:
         local_path.unlink(missing_ok=True)
     return uploaded
+
+
+def _validate_v3_cleanup_prefix(key_prefix: str, *, prefix: str | None = None) -> str:
+    """Ensure cleanup prefixes are strictly scoped beneath ``v3/<layer>/<subpath>``.
+
+    Prevents accidental wipes of the bucket root, v1/v2 prefixes, or an entire
+    v3 layer (e.g. ``v3/curated/``).
+    """
+    norm = key_prefix.replace("\\", "/").lstrip("/")
+    if not norm or ".." in norm.split("/"):
+        raise ValueError(f"invalid cleanup prefix: {key_prefix!r}")
+    root = (prefix if prefix is not None else v3_prefix()).strip().strip("/")
+    parts = [p for p in norm.split("/") if p]
+    if root:
+        if len(parts) < 3 or parts[0] != root or parts[1] not in VALID_V3_LAYERS:
+            raise ValueError(
+                f"cleanup prefix {key_prefix!r} must be scoped under '{root}/<layer>/<target>/...'"
+            )
+    else:
+        if len(parts) < 2 or parts[0] not in VALID_V3_LAYERS:
+            raise ValueError(f"cleanup prefix {key_prefix!r} must be scoped under '<layer>/<target>/...'")
+    return norm
+
+
+def list_keys_with_prefix(key_prefix: str, target: str = "oci") -> list[str]:
+    """List every object key under ``key_prefix`` in the given S3 target."""
+    cfg = get_target_config(target)
+    client = get_client(target)
+    paginator = client.get_paginator("list_objects_v2")
+    keys: list[str] = []
+    for page in paginator.paginate(Bucket=cfg.bucket, Prefix=key_prefix):
+        for obj in page.get("Contents", []):
+            keys.append(obj["Key"])
+    return keys
+
+
+def delete_keys_from_targets(
+    keys: Iterable[str],
+    targets: Iterable[str] = ("oci",),
+    *,
+    skip_unconfigured: bool = True,
+) -> dict[str, int]:
+    """Delete explicit object keys from one or more S3 targets."""
+    key_list = [k for k in keys if k]
+    if not key_list:
+        return {}
+    counts: dict[str, int] = {}
+    for target in targets:
+        cfg = _load_target_from_env(target)
+        if cfg is None:
+            if skip_unconfigured:
+                continue
+            raise KeyError(f"S3 target {target!r} is not configured")
+        client = get_client(target)
+        deleted = 0
+        for i in range(0, len(key_list), 1000):
+            chunk = key_list[i : i + 1000]
+            try:
+                client.delete_objects(
+                    Bucket=cfg.bucket,
+                    Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+                )
+                deleted += len(chunk)
+            except Exception:
+                # Some S3-compatible gateways reject batch delete_objects; fall back safely.
+                for k in chunk:
+                    client.delete_object(Bucket=cfg.bucket, Key=k)
+                    deleted += 1
+        counts[cfg.name] = deleted
+    return counts
+
+
+def delete_prefix_from_targets(
+    key_prefix: str,
+    targets: Iterable[str] = ("oci",),
+    *,
+    exclude_keys: Iterable[str] = (),
+    dry_run: bool = False,
+    skip_unconfigured: bool = True,
+    prefix: str | None = None,
+) -> dict[str, list[str]]:
+    """Delete every object under a validated ``v3/<layer>/<subpath>`` prefix.
+
+    Returns ``{target_name: [deleted_or_matched_keys]}``.
+    """
+    norm = _validate_v3_cleanup_prefix(key_prefix, prefix=prefix)
+    excluded = set(exclude_keys)
+    result: dict[str, list[str]] = {}
+    for target in targets:
+        cfg = _load_target_from_env(target)
+        if cfg is None:
+            if skip_unconfigured:
+                continue
+            raise KeyError(f"S3 target {target!r} is not configured")
+        matched = [k for k in list_keys_with_prefix(norm, target=target) if k not in excluded]
+        if matched and not dry_run:
+            delete_keys_from_targets(matched, targets=(target,), skip_unconfigured=skip_unconfigured)
+        result[cfg.name] = matched
+    return result
