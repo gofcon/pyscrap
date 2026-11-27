@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -172,9 +173,27 @@ def convert_api_mst_row(row: dict[str, Any]) -> dict[str, Any]:
     else:
         sink_type = "PARQUET"
 
-    primary_selector = next(iter(record_map.keys()), ".")
-    primary_table = next(iter(record_map.values()), api_id.lower())
-    target_name = api_id.lower() if primary_table == "api_rst" else str(primary_table)
+    # Multi-selector priority: prefer the first non-'api_rst' typed table as primary
+    # (e.g. KIS_FUTOPT_CHART {'output1': 'api_rst', 'output2': 'kis_futopt_chart'} -> primary='output2')
+    # so cursor pagination iterates over the primary series while secondary selectors
+    # land in extract.extra_selectors.
+    primary_selector = "."
+    primary_table = api_id.lower()
+    extra_selectors: dict[str, str] = {}
+    if record_map:
+        named = [(sel, tbl) for sel, tbl in record_map.items() if str(tbl) != "api_rst"]
+        if named:
+            primary_selector, primary_table = named[0][0], str(named[0][1])
+        else:
+            primary_selector, primary_table = next(iter(record_map.items()))
+            primary_table = str(primary_table)
+        for sel, tbl in record_map.items():
+            if sel == primary_selector:
+                continue
+            tbl_str = str(tbl)
+            extra_target = f"{api_id.lower()}_meta" if tbl_str == "api_rst" else tbl_str
+            extra_selectors[sel] = extra_target
+    target_name = api_id.lower() if primary_table == "api_rst" else primary_table
 
     # Derive v3 mechanical cleanse rules from v2 model conventions
     wildcard_filters: list[str] = ["strip", "blank_to_null"]
@@ -212,6 +231,7 @@ def convert_api_mst_row(row: dict[str, Any]) -> dict[str, Any]:
         "extract": {
             "response_type": response_type if response_type != "" else "auto",
             "selector": primary_selector,
+            "extra_selectors": extra_selectors,
             "parse": parse_json,
             "merge_fields": flat_merge,
             "persist_env": persist_env,
@@ -272,9 +292,88 @@ def convert_api_mst_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def convert_axis_sql_to_duckdb(sql: str) -> str:
+    """Translate Oracle-isms in v2 ``cartesian_param_json`` SQL axes to DuckDB SQL."""
+    s = sql.strip()
+
+    # 1. KRX_DERIV_INFO_DAILY: SELECT ... FROM dual UNION ALL ... -> VALUES (...)
+    if "FROM dual" in s and "UNION ALL" in s and "KRDRV" in s:
+        codes = re.findall(r"'(KRDRV[A-Z0-9]+)'", s)
+        if codes:
+            vals = ", ".join(f"('{c}')" for c in codes)
+            return f"SELECT c, c FROM (VALUES {vals}) AS t(c)"
+
+    # 2. KRX_ISIN_SRCH_HIST: odcivarchar2list + CONNECT BY LEVEL + ROWNUM
+    if "odcivarchar2list" in s and "CONNECT BY LEVEL" in s:
+        prefixes = re.findall(r"'(KR[0-9A-Z])'", s)
+        plist = ", ".join(f"'{p}'" for p in prefixes)
+        return (
+            "SELECT p.code, CAST(y.yr AS VARCHAR) || '-01-01' AS grnt_from, "
+            "CAST(y.yr AS VARCHAR) || '-12-31' AS grnt_to "
+            f"FROM (SELECT UNNEST([{plist}]) AS code) p "
+            "CROSS JOIN (SELECT UNNEST(range(2011, 2027)) AS yr) y "
+            "ORDER BY y.yr, p.code LIMIT 400"
+        )
+
+    # 3. ISIN_BOND_INFO_DAILY: replace v2 api_job lookup with isin_bond_info parquet view
+    if "api_job" in s and "ISIN_BOND_INFO_" in s:
+        return (
+            "SELECT m.isin FROM mst_bond m "
+            "WHERE m.isin IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM isin_bond_info b WHERE b.isin = m.isin) "
+            "ORDER BY m.first_seen DESC, m.issu_dt DESC NULLS LAST LIMIT 2000"
+        )
+
+    # 4. General Oracle -> DuckDB replacements
+    # TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE)) -> CAST(strptime('${TARGET_DATE}', '%Y%m%d') AS DATE)
+    s = re.sub(
+        r"TRUNC\s*\(\s*CAST\s*\(\s*SYSTIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'\s+AS\s+DATE\s*\)\s*\)",
+        "CAST(strptime('${TARGET_DATE}', '%Y%m%d') AS DATE)",
+        s,
+        flags=re.IGNORECASE,
+    )
+    # SELECT TO_CHAR(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE) - N, 'YYYYMMDD') FROM dual
+    s = re.sub(
+        r"SELECT\s+TO_CHAR\s*\(\s*CAST\s*\(\s*SYSTIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'\s+AS\s+DATE\s*\)\s*-\s*(\d+)\s*,\s*'YYYYMMDD'\s*\)\s*FROM\s+dual",
+        r"SELECT strftime(CAST(strptime('${TARGET_DATE}', '%Y%m%d') AS DATE) - INTERVAL '\1 days', '%Y%m%d')",
+        s,
+        flags=re.IGNORECASE,
+    )
+    # TO_CHAR(col, 'YYYYMMDD') -> strftime(CAST(col AS DATE), '%Y%m%d')
+    s = re.sub(
+        r"TO_CHAR\s*\(\s*([\w.]+)\s*,\s*'YYYYMMDD'\s*\)",
+        r"strftime(CAST(\1 AS DATE), '%Y%m%d')",
+        s,
+        flags=re.IGNORECASE,
+    )
+    # mat_date >= CAST(...) -> CAST(mat_date AS DATE) >= CAST(...)
+    s = re.sub(
+        r"\bmat_date\s*>=\s*CAST\(strptime",
+        "CAST(mat_date AS DATE) >= CAST(strptime",
+        s,
+    )
+    # SELECT <cols> FROM ( <inner> ) WHERE ROWNUM <= N  -> <inner> LIMIT N
+    m_rn = re.match(
+        r"^\s*SELECT\s+[\w,\s]+\s+FROM\s*\(\s*(.+?)\s*\)\s*WHERE\s+ROWNUM\s*<=\s*(\d+)\s*$",
+        s,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m_rn:
+        s = f"{m_rn.group(1).strip()} LIMIT {m_rn.group(2)}"
+    # Standalone FROM dual -> drop FROM dual
+    s = re.sub(r"\s+FROM\s+dual\b", "", s, flags=re.IGNORECASE)
+    return s
+
+
 def convert_builder_row(row: dict[str, Any]) -> dict[str, Any]:
     """Convert one Oracle v2 ``api_job_builder`` row into a Neon v3 ``api_job``."""
-    params = _as_json(row.get("cartesian_param_json")) or {}
+    raw_params = _as_json(row.get("cartesian_param_json")) or {}
+    params: dict[str, Any] = {}
+    for k, v in raw_params.items():
+        if isinstance(v, dict) and "db" in v and isinstance(v["db"], str):
+            params[k] = {**v, "db": convert_axis_sql_to_duckdb(v["db"])}
+        else:
+            params[k] = v
     save_mode = row.get("save_mode") or "overwrite"
     spec = ScrapeJobSpec.model_validate({"params": params, "save_mode": save_mode})
     return {

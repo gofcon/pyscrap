@@ -745,6 +745,119 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         with self.assertRaises(ValueError):
             iter_target_dates(date_from="20261130", date_to="20261126")
 
+    def test_session_store_and_persist_env_and_multi_selector(self):
+        import httpx
+        from app.v3.executor import execute_api_job
+        from app.v3.http_fetcher import resolve_secret_placeholders
+        from app.v3.parquet_sink import ParquetWriteResult
+        from app.v3.session_store import get_session_token, save_session_tokens
+
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "session_store.json"
+            with self.assertRaises(PermissionError):
+                save_session_tokens({"OCI_SECRET_KEY": "bad"}, path=store)
+            with self.assertRaises(PermissionError):
+                save_session_tokens({"NEON_DATABASE_URL": "bad"}, path=store)
+
+            save_session_tokens({"KIS_ACCESS_TOKEN": "tok-123"}, path=store)
+            self.assertEqual(get_session_token("KIS_ACCESS_TOKEN", path=store), "tok-123")
+            with mock.patch("app.v3.http_fetcher.get_session_token", side_effect=lambda k: get_session_token(k, path=store)):
+                self.assertEqual(resolve_secret_placeholders("Bearer ${KIS_ACCESS_TOKEN}"), "Bearer tok-123")
+
+            # Multi-selector + persist_env end-to-end via execute_api_job
+            snap = DailyConfigSnapshot(
+                generated_at="2026-11-27T06:30:00+09:00",
+                apis={
+                    "KIS_ETF_PDF": {
+                        "api_id": "KIS_ETF_PDF",
+                        "protocol": "HTTP",
+                        "spec_json": {
+                            "engine": {
+                                "request": {"url": "https://example.com/etf"},
+                                "extract": {
+                                    "response_type": "json",
+                                    "selector": "output1",
+                                    "extra_selectors": {"output2": "kis_etf_pdf"},
+                                    "persist_env": {"next_tok": "KIS_TEST_TOKEN"},
+                                },
+                                "sink": {"target_name": "kis_etf"},
+                            }
+                        },
+                    }
+                },
+                api_jobs={
+                    "KIS_ETF_PDF_JOB": {
+                        "job_id": "KIS_ETF_PDF_JOB",
+                        "api_id": "KIS_ETF_PDF",
+                        "schedule_tag": "daily_batch2",
+                        "run_order": 100,
+                        "is_active": True,
+                        "save_mode": "overwrite",
+                        "params_json": {},
+                    }
+                },
+            )
+            fake_resp = httpx.Response(
+                200,
+                json={
+                    "output1": {"etf_cd": "069500", "next_tok": "fresh-tok"},
+                    "output2": [{"comp_cd": "005930"}, {"comp_cd": "000660"}],
+                },
+            )
+            published_targets: list[tuple[str, int]] = []
+
+            def _fake_pub(rows, *, target_name, target_date, layer, batch_name, **kw):
+                published_targets.append((target_name, len(rows)))
+                key = f"v3/{layer}/{target_name}/dt={target_date}/{batch_name}.parquet"
+                return ParquetWriteResult(object_key=key, row_count=len(rows), byte_size=10, uploaded_uris={"oci": f"s3://bkt/{key}"})
+
+            ledger = LocalRunLedger("20261127", base_dir=Path(td) / "ledger")
+            with mock.patch("app.v3.http_fetcher.fetch_once", return_value=fake_resp), \
+                 mock.patch("app.v3.executor.publish_parquet_batch", side_effect=_fake_pub), \
+                 mock.patch("app.v3.executor.save_session_tokens", side_effect=lambda u: save_session_tokens(u, path=store)):
+                res = execute_api_job(snap, "KIS_ETF_PDF_JOB", target_date="20261127", ledger=ledger)
+
+            self.assertEqual(published_targets, [("kis_etf", 1), ("kis_etf_pdf", 2)])
+            self.assertIn("kis_etf_pdf", res["extra_uris"])
+            self.assertEqual(res["persisted_tokens"], ["KIS_TEST_TOKEN"])
+            self.assertEqual(get_session_token("KIS_TEST_TOKEN", path=store), "fresh-tok")
+
+    def test_v2_converter_multi_selector_and_duckdb_axis_sql(self):
+        from scripts.migrate_v2_to_v3 import convert_api_mst_row, convert_axis_sql_to_duckdb
+
+        v2_chart = {
+            "api_id": "KIS_FUTOPT_CHART",
+            "api_name": "선물옵션 분봉",
+            "source_name": "KIS",
+            "domain": "DERIV",
+            "protocol": "HTTP",
+            "method": "GET",
+            "api_url": "https://example.com/chart",
+            "record_map_json": {"output1": "api_rst", "output2": "kis_futopt_chart"},
+            "job_key_params": ["SHORT_CODE", "DATE"],
+            "is_repeated": False,
+        }
+        v3_chart = convert_api_mst_row(v2_chart)
+        self.assertEqual(v3_chart["spec_json"]["engine"]["extract"]["selector"], "output2")
+        self.assertEqual(
+            v3_chart["spec_json"]["engine"]["extract"]["extra_selectors"],
+            {"output1": "kis_futopt_chart_meta"},
+        )
+        self.assertEqual(v3_chart["spec_json"]["engine"]["sink"]["target_name"], "kis_futopt_chart")
+
+        self.assertIn(
+            "VALUES ('KRDRVFUK2I'), ('KRDRVOPK2I')",
+            convert_axis_sql_to_duckdb("SELECT c, c FROM (SELECT 'KRDRVFUK2I' c FROM dual UNION ALL SELECT 'KRDRVOPK2I' c FROM dual)"),
+        )
+        self.assertIn(
+            "LIMIT 800",
+            convert_axis_sql_to_duckdb("SELECT isin FROM (SELECT m.isin FROM mst_bond m ORDER BY m.first_seen DESC) WHERE ROWNUM <= 800"),
+        )
+        self.assertIn(
+            "CAST(strptime('${TARGET_DATE}', '%Y%m%d') AS DATE)",
+            convert_axis_sql_to_duckdb("SELECT * FROM mst_fuopt WHERE mat_date >= TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE))"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

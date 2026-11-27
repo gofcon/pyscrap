@@ -75,6 +75,9 @@ class ExtractSpec(_StrictModel):
         "dom", "xhr", "session",
     ] = "auto"
     selector: str = "."
+    # Optional secondary selectors published alongside primary sink:
+    # {json_or_xml_selector: target_name}, e.g. {"output2": "kis_etf_pdf"}
+    extra_selectors: dict[str, str] = Field(default_factory=dict)
     parse: dict[str, Any] = Field(default_factory=dict)
     merge_fields: dict[str, str] = Field(default_factory=dict)
     persist_env: dict[str, str] = Field(default_factory=dict)

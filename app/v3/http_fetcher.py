@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from app.errors import ConfigError, MappingError, ParamError, SessionExpired, SourceRefused, classify
+from app.v3.session_store import get_session_token
 from app.v3.spec import ApiSpec, PagePagination
 
 _PLACEHOLDER_RE = re.compile(r"(?<!\w):(\w+)(?!\w)")
@@ -91,6 +92,9 @@ def resolve_secret_placeholders(text: str) -> str:
         upper = name.upper()
         if upper in _BLOCKED_ENV_NAMES or upper.startswith(_BLOCKED_ENV_PREFIXES):
             raise PermissionError(f"restricted env var {name!r} cannot be referenced in ApiSpec")
+        token = get_session_token(name)
+        if token is not None:
+            return token
         return os.environ.get(name, match.group(0))
 
     return _ENV_VAR_RE.sub(_rep, text)
@@ -399,18 +403,56 @@ def _effective_pagination(spec: ApiSpec):
     return None
 
 
-def collect_http_records(
+def parse_response_for_selector(
+    response: httpx.Response,
+    spec: ApiSpec,
+    selector: str,
+) -> list[dict[str, Any]]:
+    """Extract records for one explicit JSON/XML selector from ``response``."""
+    ext = spec.engine.extract
+    rtype = ext.response_type.lower()
+    content_type = response.headers.get("content-type", "")
+    is_xml = rtype == "xml" or (rtype == "auto" and ("xml" in content_type or response.text.lstrip().startswith("<")))
+    if is_xml:
+        root = ET.fromstring(response.text)
+        return _extract_xml_records(root, selector)
+    data = response.json()
+    records = _extract_json_records(data, selector)
+    if ext.merge_fields and records:
+        injected = {target: _extract_json_scalar(data, src) for src, target in ext.merge_fields.items()}
+        for rec in records:
+            rec.update(injected)
+    return records
+
+
+def collect_http_bundle(
     api_id: str,
     spec: ApiSpec,
     params: dict[str, Any],
     *,
     host_policies: dict[str, dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Fetch (with optional pagination) and parse raw records for one HTTP ``ApiSpec``."""
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Fetch (with optional pagination) primary records plus any ``extract.extra_selectors``.
+
+    Returns ``(primary_records, {extra_target_name: extra_records})``.
+    """
     work_params = dict(params)
+    extra_map = spec.engine.extract.extra_selectors or {}
+    extra_accum: dict[str, list[dict[str, Any]]] = {t: [] for t in extra_map.values()}
+    extra_seen: dict[str, dict[str, int]] = {t: {} for t in extra_map.values()}
+
+    def _capture_extras(resp: httpx.Response) -> None:
+        for sel, target in extra_map.items():
+            recs = parse_response_for_selector(resp, spec, sel)
+            if recs:
+                _merge_page_records(extra_accum[target], extra_seen[target], recs)
+
     pag = _effective_pagination(spec)
     if pag is None:
-        return parse_response(fetch_once(api_id, spec, work_params, host_policies=host_policies), spec)
+        resp = fetch_once(api_id, spec, work_params, host_policies=host_policies)
+        primary = parse_response(resp, spec)
+        _capture_extras(resp)
+        return primary, extra_accum
 
     page_delay = spec.engine.pacing.page_delay_sec
     if page_delay is None:
@@ -430,6 +472,7 @@ def collect_http_records(
         if not page_recs or page_recs == previous:
             break
         _merge_page_records(accumulated, seen, page_recs, cursor_field)
+        _capture_extras(resp)
         previous = page_recs
 
         # Advance continuation cursor/page/token
@@ -474,4 +517,16 @@ def collect_http_records(
         if page_delay > 0:
             time.sleep(page_delay)
 
-    return accumulated
+    return accumulated, extra_accum
+
+
+def collect_http_records(
+    api_id: str,
+    spec: ApiSpec,
+    params: dict[str, Any],
+    *,
+    host_policies: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch (with optional pagination) and parse primary raw records for one HTTP ``ApiSpec``."""
+    primary, _ = collect_http_bundle(api_id, spec, params, host_policies=host_policies)
+    return primary

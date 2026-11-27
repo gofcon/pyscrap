@@ -23,8 +23,9 @@ from app.object_storage import bucket_name
 from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
 from app.v3.cleanse import ContractResult, apply_cleanse, evaluate_contract
 from app.v3.duckdb_runner import build_duckdb_config, register_s3_secrets, run_duckdb_job
-from app.v3.http_fetcher import collect_http_records
+from app.v3.http_fetcher import collect_http_bundle, collect_http_records
 from app.v3.parquet_sink import publish_parquet_batch
+from app.v3.session_store import save_session_tokens
 from app.v3.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec
 
 KST = timezone(timedelta(hours=9))
@@ -44,6 +45,13 @@ _REF_PARQUET_TABLES = (
     "ksd_bond_no_detail",
     "src_code",
 )
+# Raw-clean tables referenced by axis queries (e.g. NOT EXISTS checks).
+# When no files exist yet in v3/raw_clean/<name>/, bind an empty typed fallback view.
+_RAW_CLEAN_AXIS_FALLBACKS: dict[str, str] = {
+    "ksd_bond_info": "SELECT CAST(NULL AS VARCHAR) AS isin WHERE FALSE",
+    "isin_bond_info": "SELECT CAST(NULL AS VARCHAR) AS isin WHERE FALSE",
+    "ksd_kacd_code": "SELECT CAST(NULL AS VARCHAR) AS codevalue, CAST(NULL AS INTEGER) AS code_depth WHERE FALSE",
+}
 
 
 def now_kst() -> datetime:
@@ -94,11 +102,22 @@ def resolve_snapshot_now(snapshot_unit: str | None = None, fmt: str = "%Y%m%d%H%
     return dt.strftime(fmt)
 
 
-def _run_duckdb_axis_query(query: str, oci_bucket: str) -> list[tuple[Any, ...]]:
-    """Run a parameter axis SQL query via DuckDB against ``v3/ref/*.parquet``."""
+def _run_duckdb_axis_query(
+    query: str,
+    oci_bucket: str,
+    *,
+    target_date: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Run a parameter axis SQL query via DuckDB against ``v3/snapshot/*.parquet``
+    (and optional ``v3/raw_clean/<tbl>/**/*.parquet`` with empty-table fallback)."""
     import duckdb
 
-    sql = query.replace("${OCI_BUCKET}", oci_bucket)
+    day = target_date or now_kst().strftime("%Y%m%d")
+    sql = (
+        query.replace("${OCI_BUCKET}", oci_bucket)
+        .replace("${TARGET_DATE}", day)
+        .replace("${TARGET_YM}", day[:6])
+    )
     con = duckdb.connect(":memory:", config=build_duckdb_config(memory_limit="256MB", threads=2))
     try:
         register_s3_secrets(con, targets=["oci"])
@@ -109,6 +128,16 @@ def _run_duckdb_axis_query(query: str, oci_bucket: str) -> list[tuple[Any, ...]]
                     f"CREATE OR REPLACE TEMP VIEW {name} AS "
                     f"SELECT * FROM read_parquet('s3://{oci_bucket}/v3/snapshot/{name}.parquet')"
                 )
+        for name, fallback_sql in _RAW_CLEAN_AXIS_FALLBACKS.items():
+            if name in sql_lower:
+                try:
+                    con.execute(
+                        f"CREATE OR REPLACE TEMP VIEW {name} AS "
+                        f"SELECT * FROM read_parquet("
+                        f"'s3://{oci_bucket}/v3/raw_clean/{name}/**/*.parquet', union_by_name=true)"
+                    )
+                except Exception:
+                    con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS {fallback_sql}")
         return con.execute(sql).fetchall()
     finally:
         con.close()
@@ -124,13 +153,14 @@ def expand_scrape_params(
     if not params_spec:
         return [{}]
 
+    day_str = (ref_date or now_kst().date()).strftime("%Y%m%d")
     axes: list[list[dict[str, Any]]] = []
     for raw_key, spec in params_spec.items():
         keys = [k.strip() for k in raw_key.split(",")]
         if isinstance(spec, dict) and ("parquet" in spec or "db" in spec):
             q = spec.get("parquet") or spec["db"]
             bkt = oci_bucket or bucket_name("oci")
-            rows = _run_duckdb_axis_query(q, bkt)
+            rows = _run_duckdb_axis_query(q, bkt, target_date=day_str)
             if not rows:
                 raise ConfigError(f"axis query for {raw_key!r} returned 0 rows")
             axes.append([dict(zip(keys, r)) for r in rows])
@@ -331,8 +361,12 @@ def execute_api_job(
 
     already_done = run_ledger.succeeded_partitions(job_id, job_type="API")
     bundled_rows: list[dict[str, Any]] = []
+    extra_bundled: dict[str, list[dict[str, Any]]] = {}
     pending_success: list[RunLedgerEntry] = []
+    persisted_tokens: list[str] = []
     succeeded = failed = skipped = 0
+    has_extras = bool(api_spec.engine.extract.extra_selectors)
+    persist_map = api_spec.engine.extract.persist_env or {}
 
     for params in param_sets:
         pkey = _partition_key(api_spec, params)
@@ -341,13 +375,29 @@ def execute_api_job(
             continue
         started = time.monotonic()
         try:
-            raw = collect_http_records(api_id, api_spec, params, host_policies=snapshot.host_policies)
+            if has_extras:
+                raw, extra_raw = collect_http_bundle(api_id, api_spec, params, host_policies=snapshot.host_policies)
+            else:
+                raw = collect_http_records(api_id, api_spec, params, host_policies=snapshot.host_policies)
+                extra_raw = {}
+
+            if persist_map and raw:
+                token_updates = {
+                    env_key: raw[0].get(field_name)
+                    for field_name, env_key in persist_map.items()
+                    if raw[0].get(field_name) is not None
+                }
+                if token_updates:
+                    written = save_session_tokens(token_updates)
+                    persisted_tokens.extend(sorted(written.keys()))
+
             key_params = _stamp_key_params(api_spec, params, job_row.get("snapshot_unit"))
+            meta = {"api_id": api_id, "job_id": job_id, "target_date": day}
             cleaned = apply_cleanse(
                 raw,
                 api_spec.engine.cleanse,
                 key_params=key_params,
-                meta={"api_id": api_id, "job_id": job_id, "target_date": day},
+                meta=meta,
             )
             contract = evaluate_contract(cleaned, api_spec.engine.contract)
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -368,6 +418,10 @@ def execute_api_job(
                 continue
 
             bundled_rows.extend(cleaned)
+            for extra_target, e_rows in extra_raw.items():
+                if e_rows:
+                    e_cleaned = apply_cleanse(e_rows, api_spec.engine.cleanse, key_params=key_params, meta=meta)
+                    extra_bundled.setdefault(extra_target, []).extend(e_cleaned)
             succeeded += 1
             pending_success.append(RunLedgerEntry(
                 job_type="API",
@@ -408,6 +462,7 @@ def execute_api_job(
             ))
 
     uploaded_uris: dict[str, str] = {}
+    extra_uris: dict[str, dict[str, str]] = {}
     if bundled_rows:
         sink = api_spec.engine.sink
         if not sink.is_repeated and scrape_spec.save_mode == "overwrite":
@@ -428,6 +483,20 @@ def execute_api_job(
                 skip_unconfigured_targets=skip_unconfigured_targets,
             )
             uploaded_uris = res.uploaded_uris
+            for extra_target, e_rows in extra_bundled.items():
+                if not e_rows:
+                    continue
+                e_res = publish_parquet_batch(
+                    e_rows,
+                    target_name=extra_target,
+                    target_date=day,
+                    layer=sink.layer,
+                    batch_name=batch_name,
+                    targets=sink.targets,
+                    prefix=sink.prefix,
+                    skip_unconfigured_targets=skip_unconfigured_targets,
+                )
+                extra_uris[extra_target] = e_res.uploaded_uris
         except Exception as exc:
             err = classify(exc)
             for entry in pending_success:
@@ -447,7 +516,7 @@ def execute_api_job(
         for entry in pending_success:
             run_ledger.append(replace(entry, output_uris=dict(uploaded_uris)))
 
-    return {
+    result: dict[str, Any] = {
         "job_id": job_id,
         "job_type": "API",
         "api_id": api_id,
@@ -457,6 +526,11 @@ def execute_api_job(
         "rows": len(bundled_rows),
         "uris": uploaded_uris,
     }
+    if extra_uris:
+        result["extra_uris"] = extra_uris
+    if persisted_tokens:
+        result["persisted_tokens"] = sorted(set(persisted_tokens))
+    return result
 
 
 def execute_job(
