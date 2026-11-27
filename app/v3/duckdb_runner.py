@@ -85,7 +85,11 @@ def register_s3_secrets(con, targets: Iterable[str] | None = None) -> list[str]:
     names = list(targets) if targets is not None else configured_targets()
     if not names:
         return []
-    con.execute("LOAD httpfs;")
+    try:
+        con.execute("LOAD httpfs;")
+    except Exception:
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
     registered: list[str] = []
     for name in names:
         cfg: S3TargetConfig = get_target_config(name)
