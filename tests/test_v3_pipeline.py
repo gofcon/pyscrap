@@ -1083,6 +1083,103 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                 self.assertEqual(bres["rows"], 1)
                 br_mock.assert_called_once()
 
+    def test_declarative_duckdb_views_dependency_fallback_and_literal_guard(self):
+        import duckdb
+        from app.core.spec import DuckDBViewSpec
+        from app.pipeline.duckdb_runner import register_duckdb_views, run_duckdb_job
+
+        # Spec validation rejects invalid view names
+        v_ok = DuckDBViewSpec(view_name="v_test_1", sql_text="SELECT 1 AS x")
+        self.assertEqual(v_ok.view_name, "v_test_1")
+        with self.assertRaises(ValidationError):
+            DuckDBViewSpec(view_name="1bad_name", sql_text="SELECT 1")
+        with self.assertRaises(ValidationError):
+            DuckDBViewSpec(view_name="drop;table", sql_text="SELECT 1")
+
+        # Snapshot roundtrip preserves duckdb_views
+        with tempfile.TemporaryDirectory() as td:
+            views = {
+                "base_v": {
+                    "view_name": "base_v",
+                    "sql_text": "SELECT 'KR1' AS isin, '${TARGET_DATE}' AS dt",
+                    "fallback_sql": None,
+                    "is_active": True,
+                },
+                "derived_v": {
+                    "view_name": "derived_v",
+                    "sql_text": "SELECT isin, dt FROM base_v",
+                    "fallback_sql": None,
+                    "is_active": True,
+                },
+                "missing_s3_v": {
+                    "view_name": "missing_s3_v",
+                    "sql_text": "SELECT * FROM read_parquet('/nonexistent/path/no_such_file.parquet')",
+                    "fallback_sql": "SELECT CAST(NULL AS VARCHAR) AS isin WHERE FALSE",
+                    "is_active": True,
+                },
+                "unused_broken_v": {
+                    "view_name": "unused_broken_v",
+                    "sql_text": "SELECT * FROM read_parquet('/nonexistent/never_touched.parquet')",
+                    "fallback_sql": None,
+                    "is_active": True,
+                },
+            }
+            snap = DailyConfigSnapshot(
+                generated_at="2026-11-28T00:00:00+09:00",
+                duckdb_views=views,
+            )
+            loaded = DailyConfigSnapshot.load(snap.save(Path(td) / "snap.json"))
+            self.assertEqual(set(loaded.duckdb_views), set(views))
+
+            con = duckdb.connect(":memory:")
+            try:
+                # 1) Transitive dependency (derived_v -> base_v), fallback_sql on missing_s3_v,
+                #    and literal mention of 'unused_broken_v' inside quotes must NOT trigger binding.
+                q = (
+                    "SELECT d.isin, d.dt, 'unused_broken_v' AS tag "
+                    "FROM derived_v d "
+                    "WHERE NOT EXISTS (SELECT 1 FROM missing_s3_v m WHERE m.isin = d.isin)"
+                )
+                bound = register_duckdb_views(
+                    con,
+                    q,
+                    loaded.duckdb_views,
+                    sql_params={"TARGET_DATE": "20261128"},
+                )
+                self.assertEqual(bound.index("base_v"), 0)
+                self.assertIn("derived_v", bound)
+                self.assertIn("missing_s3_v", bound)
+                self.assertNotIn("unused_broken_v", bound)
+                rows = con.execute(q).fetchall()
+                self.assertEqual(rows, [("KR1", "20261128", "unused_broken_v")])
+            finally:
+                con.close()
+
+            # 2) run_duckdb_job uses declarative views cleanly
+            spec = DuckDBJobSpec(
+                job_id="ETL_WITH_VIEW",
+                sql_text="SELECT isin, dt FROM derived_v",
+                output_layer="snapshot",
+                target_name="derived_out",
+                targets=["oci"],
+                memory_limit="256MB",
+                threads=1,
+                min_rows=1,
+            )
+            with mock.patch("app.pipeline.duckdb_runner.is_tmpfs_path", return_value=False), \
+                 mock.patch("app.pipeline.duckdb_runner.register_s3_secrets", return_value=[]), \
+                 mock.patch(
+                     "app.pipeline.duckdb_runner.upload_file_to_targets",
+                     side_effect=lambda p, key, **kw: {"oci": f"s3://bkt/{key}"},
+                 ):
+                res = run_duckdb_job(
+                    spec,
+                    sql_params={"TARGET_DATE": "20261128", "TARGET_YM": "202611"},
+                    duckdb_views=loaded.duckdb_views,
+                    temp_directory=Path(td) / "duckdb",
+                )
+            self.assertEqual(res.row_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

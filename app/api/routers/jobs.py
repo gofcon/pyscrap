@@ -25,6 +25,7 @@ def sync_config(mirror_user_parquet: bool = Query(default=False)) -> dict[str, A
         "api_job": len(snap.api_jobs),
         "etl_job": len(snap.etl_jobs),
         "host_policy": len(snap.host_policies),
+        "duckdb_view": len(snap.duckdb_views),
         "mirrored": mirrored,
     }
 

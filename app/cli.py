@@ -125,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"synced snapshot -> {path} "
             f"(api_mst={len(snap.apis)}, api_job={len(snap.api_jobs)}, "
-            f"etl_job={len(snap.etl_jobs)}, host_policy={len(snap.host_policies)})"
+            f"etl_job={len(snap.etl_jobs)}, host_policy={len(snap.host_policies)}, "
+            f"duckdb_view={len(snap.duckdb_views)})"
         )
         if args.mirror_user_parquet:
             uris = mirror_user_tables_to_parquet(snap)

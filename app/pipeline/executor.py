@@ -23,7 +23,12 @@ from app.storage.object_storage import bucket_name
 from app.core.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
 from app.storage.binary_sink import publish_binary_payload
 from app.ingest.cleanse import ContractResult, apply_cleanse, evaluate_contract
-from app.pipeline.duckdb_runner import build_duckdb_config, register_s3_secrets, run_duckdb_job
+from app.pipeline.duckdb_runner import (
+    build_duckdb_config,
+    register_duckdb_views,
+    register_s3_secrets,
+    run_duckdb_job,
+)
 from app.ingest.http_fetcher import (
     collect_http_bundle,
     collect_http_records,
@@ -37,28 +42,6 @@ from app.core.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec
 
 KST = timezone(timedelta(hours=9))
 _CYCLE_RE = re.compile(r"^(\d+)([mhdw])(?:_\w+)?$")
-_REF_PARQUET_TABLES = (
-    "mst_etf",
-    "mst_fuopt",
-    "mst_bond",
-    "mst_stock",
-    "meta_maturity",
-    "stock_index_his",
-    "v_k2i_atm",
-    "user_etf",
-    "krx_index_mst",
-    "mst_index",
-    "meta_fuopt_info",
-    "ksd_bond_no_detail",
-    "src_code",
-)
-# Raw-clean tables referenced by axis queries (e.g. NOT EXISTS checks).
-# When no files exist yet in v3/raw_clean/<name>/, bind an empty typed fallback view.
-_RAW_CLEAN_AXIS_FALLBACKS: dict[str, str] = {
-    "ksd_bond_info": "SELECT CAST(NULL AS VARCHAR) AS isin WHERE FALSE",
-    "isin_bond_info": "SELECT CAST(NULL AS VARCHAR) AS isin WHERE FALSE",
-    "ksd_kacd_code": "SELECT CAST(NULL AS VARCHAR) AS codevalue, CAST(NULL AS INTEGER) AS code_depth WHERE FALSE",
-}
 
 
 def now_kst() -> datetime:
@@ -114,12 +97,17 @@ def _run_duckdb_axis_query(
     oci_bucket: str,
     *,
     target_date: str | None = None,
+    duckdb_views: dict[str, dict[str, Any]] | None = None,
 ) -> list[tuple[Any, ...]]:
-    """Run a parameter axis SQL query via DuckDB against ``v3/snapshot/*.parquet``
-    (and optional ``v3/raw_clean/<tbl>/**/*.parquet`` with empty-table fallback)."""
+    """Run a parameter axis SQL query via DuckDB with declarative ``duckdb_view`` bindings."""
     import duckdb
 
     day = target_date or now_kst().strftime("%Y%m%d")
+    sql_params = {
+        "OCI_BUCKET": oci_bucket,
+        "TARGET_DATE": day,
+        "TARGET_YM": day[:6],
+    }
     sql = (
         query.replace("${OCI_BUCKET}", oci_bucket)
         .replace("${TARGET_DATE}", day)
@@ -128,23 +116,7 @@ def _run_duckdb_axis_query(
     con = duckdb.connect(":memory:", config=build_duckdb_config(memory_limit="256MB", threads=2))
     try:
         register_s3_secrets(con, targets=["oci"])
-        sql_lower = sql.lower()
-        for name in _REF_PARQUET_TABLES:
-            if name in sql_lower:
-                con.execute(
-                    f"CREATE OR REPLACE TEMP VIEW {name} AS "
-                    f"SELECT * FROM read_parquet('s3://{oci_bucket}/v3/snapshot/{name}.parquet')"
-                )
-        for name, fallback_sql in _RAW_CLEAN_AXIS_FALLBACKS.items():
-            if name in sql_lower:
-                try:
-                    con.execute(
-                        f"CREATE OR REPLACE TEMP VIEW {name} AS "
-                        f"SELECT * FROM read_parquet("
-                        f"'s3://{oci_bucket}/v3/raw_clean/{name}/**/*.parquet', union_by_name=true)"
-                    )
-                except Exception:
-                    con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS {fallback_sql}")
+        register_duckdb_views(con, sql, duckdb_views, sql_params=sql_params)
         return con.execute(sql).fetchall()
     finally:
         con.close()
@@ -155,6 +127,7 @@ def expand_scrape_params(
     *,
     ref_date: date | None = None,
     oci_bucket: str | None = None,
+    duckdb_views: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Expand ``ScrapeJobSpec.params`` into a list of concrete param dicts."""
     if not params_spec:
@@ -167,7 +140,9 @@ def expand_scrape_params(
         if isinstance(spec, dict) and ("parquet" in spec or "db" in spec):
             q = spec.get("parquet") or spec["db"]
             bkt = oci_bucket or bucket_name("oci")
-            rows = _run_duckdb_axis_query(q, bkt, target_date=day_str)
+            rows = _run_duckdb_axis_query(
+                q, bkt, target_date=day_str, duckdb_views=duckdb_views
+            )
             if not rows:
                 raise ConfigError(f"axis query for {raw_key!r} returned 0 rows")
             axes.append([dict(zip(keys, r)) for r in rows])
@@ -383,6 +358,7 @@ def execute_etl_job(
                     "TARGET_YM": day[:6],
                     "LEDGER_DIR": str(run_ledger.base_dir),
                 },
+                duckdb_views=snapshot.duckdb_views,
                 skip_unconfigured_targets=skip_unconfigured_targets,
             )
         run_ledger.append(RunLedgerEntry(
@@ -493,7 +469,11 @@ def execute_api_job(
         "save_mode": job_row.get("save_mode") or "overwrite",
     })
     ref_day = datetime.strptime(day, "%Y%m%d").date()
-    param_sets = expand_scrape_params(scrape_spec.params, ref_date=ref_day)
+    param_sets = expand_scrape_params(
+        scrape_spec.params,
+        ref_date=ref_day,
+        duckdb_views=snapshot.duckdb_views,
+    )
     if limit is not None:
         param_sets = param_sets[:limit]
 

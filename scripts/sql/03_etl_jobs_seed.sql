@@ -16,9 +16,11 @@
 --   [그룹 B-2] 월별 정렬 Compaction (4개, output_layer=monthly -> v3/monthly/<target>/ym=.../YYYYMM.parquet)
 --     22..25. sp_run_monthly_archive 대상 4개 전체
 --
---   [그룹 C] 선택 보조 작업 (2개, v3/snapshot/*.parquet)
+--   [그룹 C] 선택 보조 & 누적 스냅샷 작업 (4개, v3/snapshot/*.parquet)
 --     26. MARK_KSD_BOND_NO_DETAIL      (daily_batch2  70) <- sp_ksd_no_detail_mark
---     27. HARVEST_SRC_CODE             (daily_batch2 250) <- sp_src_code_sync (builtin runner)
+--     27. REFRESH_REF_KSD_BOND_INFO    (daily_batch2 200) <- ksd_bond_info 누적 스냅샷
+--     28. REFRESH_REF_ISIN_BOND_INFO   (daily_batch2 210) <- isin_bond_info 누적 스냅샷
+--     29. HARVEST_SRC_CODE             (daily_batch2 250) <- sp_src_code_sync (builtin runner)
 --
 -- 치환 변수: ${OCI_BUCKET}, ${TARGET_DATE} (YYYYMMDD), ${TARGET_YM} (YYYYMM), ${LEDGER_DIR}
 -- ============================================================================
@@ -1045,7 +1047,73 @@ INSERT INTO etl_job (
     threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
     sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
 
--- 27. HARVEST_SRC_CODE (sp_src_code_sync — 내장 DuckDB 동적 컬럼 수확기)
+-- 27. REFRESH_REF_KSD_BOND_INFO (daily_batch2 채권 수집 완료 후 누적 스냅샷 갱신)
+INSERT INTO etl_job (
+    job_id, schedule_tag, run_order, is_active,
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
+) VALUES (
+    'REFRESH_REF_KSD_BOND_INFO', 'daily_batch2', 200, TRUE,
+    'snapshot', 'ksd_bond_info', ARRAY['oci'], '512MB', 2, 0,
+    $$
+        WITH merged AS (
+            SELECT * FROM ksd_bond_info
+            UNION ALL BY NAME
+            SELECT * FROM read_parquet(
+                's3://${OCI_BUCKET}/v3/raw_clean/ksd_bond_info/**/*.parquet',
+                union_by_name = true
+            )
+        )
+        SELECT *
+        FROM merged
+        WHERE isin IS NOT NULL
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY isin
+            ORDER BY target_date DESC NULLS LAST
+        ) = 1
+        ORDER BY isin
+    $$,
+    '기존 v3/snapshot/ksd_bond_info 와 v3/raw_clean/ksd_bond_info 를 병합해 채권 기본정보 누적 스냅샷 갱신 (읽기/쓰기 분리)'
+) ON CONFLICT (job_id) DO UPDATE SET
+    schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
+    targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
+    threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
+    sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
+
+-- 28. REFRESH_REF_ISIN_BOND_INFO (daily_batch2 채권 수집 완료 후 누적 스냅샷 갱신)
+INSERT INTO etl_job (
+    job_id, schedule_tag, run_order, is_active,
+    output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note
+) VALUES (
+    'REFRESH_REF_ISIN_BOND_INFO', 'daily_batch2', 210, TRUE,
+    'snapshot', 'isin_bond_info', ARRAY['oci'], '512MB', 2, 0,
+    $$
+        WITH merged AS (
+            SELECT * FROM isin_bond_info
+            UNION ALL BY NAME
+            SELECT * FROM read_parquet(
+                's3://${OCI_BUCKET}/v3/raw_clean/isin_bond_info/**/*.parquet',
+                union_by_name = true
+            )
+        )
+        SELECT *
+        FROM merged
+        WHERE isin IS NOT NULL
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY isin
+            ORDER BY target_date DESC NULLS LAST
+        ) = 1
+        ORDER BY isin
+    $$,
+    '기존 v3/snapshot/isin_bond_info 와 v3/raw_clean/isin_bond_info 를 병합해 ISIN 채권 누적 스냅샷 갱신 (읽기/쓰기 분리)'
+) ON CONFLICT (job_id) DO UPDATE SET
+    schedule_tag = EXCLUDED.schedule_tag, run_order = EXCLUDED.run_order,
+    output_layer = EXCLUDED.output_layer, target_name = EXCLUDED.target_name,
+    targets = EXCLUDED.targets, memory_limit = EXCLUDED.memory_limit,
+    threads = EXCLUDED.threads, min_rows = EXCLUDED.min_rows,
+    sql_text = EXCLUDED.sql_text, note = EXCLUDED.note, updated_at = now();
+
+-- 29. HARVEST_SRC_CODE (sp_src_code_sync — 내장 DuckDB 동적 컬럼 수확기)
 INSERT INTO etl_job (
     job_id, schedule_tag, run_order, is_active,
     output_layer, target_name, targets, memory_limit, threads, min_rows, sql_text, note

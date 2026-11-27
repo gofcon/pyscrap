@@ -59,6 +59,7 @@ def pull_daily_snapshot(
     api_jobs: dict[str, dict[str, Any]] = {}
     etl_jobs: dict[str, dict[str, Any]] = {}
     host_policies: dict[str, dict[str, Any]] = {}
+    duckdb_views: dict[str, dict[str, Any]] = {}
     user_tables: dict[str, list[dict[str, Any]]] = {}
 
     with psycopg.connect(conn_dsn, connect_timeout=15) as conn:
@@ -95,6 +96,13 @@ def pull_daily_snapshot(
             ):
                 host_policies[row["host_suffix"]] = row
 
+            for row in _fetchall_dicts(
+                cur,
+                "SELECT view_name, sql_text, fallback_sql, is_active, note "
+                "FROM duckdb_view WHERE is_active = TRUE ORDER BY view_name",
+            ):
+                duckdb_views[row["view_name"]] = row
+
             for tbl in _MANUAL_USER_TABLES:
                 user_tables[tbl] = _fetchall_dicts(cur, f"SELECT * FROM {tbl}")
 
@@ -104,6 +112,7 @@ def pull_daily_snapshot(
         host_policies=host_policies,
         api_jobs=api_jobs,
         etl_jobs=etl_jobs,
+        duckdb_views=duckdb_views,
         user_tables=user_tables,
     )
     saved = snapshot.save(out_path)

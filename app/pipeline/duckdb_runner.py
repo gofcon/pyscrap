@@ -8,9 +8,10 @@ refresh with Neon ``user_*`` overrides, mart aggregation) lives in config
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from app.storage.object_storage import (
     S3TargetConfig,
@@ -80,6 +81,93 @@ def _sql_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+_VIEW_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_SINGLE_QUOTED_RE = re.compile(r"'(?:''|[^'])*'")
+_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+
+
+def _strip_sql_literals(sql: str) -> str:
+    """Remove single-quoted string literals and line comments before identifier scan."""
+    no_comments = _LINE_COMMENT_RE.sub(" ", sql)
+    return _SINGLE_QUOTED_RE.sub(" ", no_comments)
+
+
+def _substitute_sql_params(sql: str, params: dict[str, str]) -> str:
+    out = sql
+    for key, value in params.items():
+        out = out.replace(f"${{{key}}}", value)
+    return out
+
+
+def register_duckdb_views(
+    con,
+    query: str,
+    duckdb_views: dict[str, dict[str, Any]] | None,
+    *,
+    sql_params: dict[str, str] | None = None,
+) -> list[str]:
+    """Bind referenced declarative ``duckdb_view`` rows as TEMP VIEWs on ``con``.
+
+    - Scans ``query`` (excluding string literals & comments) for word-boundary
+      matches against active ``duckdb_views`` keys.
+    - Transitively resolves view-on-view dependencies in topological order.
+    - Falls back to ``fallback_sql`` when primary view binding fails (e.g. no
+      Parquet files exist yet on S3).
+    """
+    if not duckdb_views:
+        return []
+    params = sql_params or {}
+    active: dict[str, dict[str, Any]] = {
+        name: row
+        for name, row in duckdb_views.items()
+        if _VIEW_NAME_RE.match(name) and row.get("is_active", True) and row.get("sql_text")
+    }
+    if not active:
+        return []
+
+    patterns = {name: re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE) for name in active}
+
+    def _referenced_in(sql_text: str, exclude: str | None = None) -> list[str]:
+        cleaned = _strip_sql_literals(sql_text)
+        return [
+            name
+            for name, pat in patterns.items()
+            if name != exclude and pat.search(cleaned)
+        ]
+
+    ordered: list[str] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def _visit(name: str) -> None:
+        if name in visited or name in visiting:
+            return
+        visiting.add(name)
+        for dep in _referenced_in(active[name]["sql_text"], exclude=name):
+            _visit(dep)
+        visiting.remove(name)
+        visited.add(name)
+        ordered.append(name)
+
+    for root_name in _referenced_in(query):
+        _visit(root_name)
+
+    registered: list[str] = []
+    for name in ordered:
+        row = active[name]
+        view_sql = _substitute_sql_params(row["sql_text"], params)
+        fallback_sql = row.get("fallback_sql")
+        try:
+            con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS ({view_sql})")
+        except Exception:
+            if not fallback_sql:
+                raise
+            fb = _substitute_sql_params(fallback_sql, params)
+            con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS ({fb})")
+        registered.append(name)
+    return registered
+
+
 def register_s3_secrets(con, targets: Iterable[str] | None = None) -> list[str]:
     """Register S3 credentials for configured targets (e.g. ``oci``, ``r2``)."""
     names = list(targets) if targets is not None else configured_targets()
@@ -114,6 +202,7 @@ def run_duckdb_job(
     spec: DuckDBJobSpec,
     *,
     sql_params: dict[str, str] | None = None,
+    duckdb_views: dict[str, dict[str, Any]] | None = None,
     read_targets: Iterable[str] | None = None,
     temp_directory: Path | None = None,
     delete_local: bool = True,
@@ -130,9 +219,7 @@ def run_duckdb_job(
         target_ym=params.get("TARGET_YM", ""),
         prefix=spec.prefix,
     )
-    query = spec.sql_text
-    for key, value in params.items():
-        query = query.replace(f"${{{key}}}", value)
+    query = _substitute_sql_params(spec.sql_text, params)
 
     out_dir = (temp_directory or _DEFAULT_DUCKDB_TMP).parent / "duckdb_out"
     out_path = out_dir / object_key
@@ -147,6 +234,7 @@ def run_duckdb_job(
     con = duckdb.connect(":memory:", config=cfg)
     try:
         register_s3_secrets(con, targets=read_targets)
+        register_duckdb_views(con, query, duckdb_views, sql_params=params)
         dst = _sql_quote(str(out_path))
         con.execute(f"CREATE TEMP TABLE _job_out AS ({query})")
         row_count = int(con.execute("SELECT COUNT(*) FROM _job_out").fetchone()[0])

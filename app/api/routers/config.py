@@ -5,6 +5,7 @@ Covers:
 - ``/api-jobs``      (validates ``params_json`` / ``save_mode`` via ``ScrapeJobSpec``)
 - ``/etl-jobs``      (validates ``output_layer`` / ``target_name`` / ``sql_text`` via ``EtlJobSpec``)
 - ``/host-policies`` (per-host pacing & cooldown policies)
+- ``/duckdb-views``  (declarative DuckDB TEMP VIEW registry for axis & ETL SQL)
 - ``/schedule``      (read-only ``v_schedule_job`` merged timeline)
 """
 
@@ -17,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from app.api.deps import NeonConnDep
-from app.core.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec, export_spec_json_schema
+from app.core.spec import ApiSpec, DuckDBViewSpec, EtlJobSpec, ScrapeJobSpec, export_spec_json_schema
 
 router = APIRouter()
 
@@ -490,6 +491,72 @@ def delete_host_policy(host_suffix: str, conn: NeonConnDep) -> None:
         cur.execute("DELETE FROM host_policy WHERE host_suffix = %s", (host_suffix,))
         if cur.rowcount == 0:
             raise HTTPException(404, f"host_policy '{host_suffix}' not found")
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# /duckdb-views
+# ---------------------------------------------------------------------------
+
+@router.get("/duckdb-views", tags=["duckdb_view"])
+def list_duckdb_views(
+    conn: NeonConnDep,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    clause = "WHERE is_active = TRUE" if active_only else ""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM duckdb_view {clause} ORDER BY view_name")
+        return list(cur.fetchall())
+
+
+@router.get("/duckdb-views/{view_name}", tags=["duckdb_view"])
+def get_duckdb_view(view_name: str, conn: NeonConnDep) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM duckdb_view WHERE view_name = %s", (view_name,))
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(404, f"duckdb_view '{view_name}' not found")
+    return dict(row)
+
+
+@router.put("/duckdb-views/{view_name}", tags=["duckdb_view"])
+def upsert_duckdb_view(view_name: str, body: dict[str, Any], conn: NeonConnDep) -> dict[str, Any]:
+    spec = _validate_or_422(
+        DuckDBViewSpec.model_validate,
+        {
+            "view_name": view_name,
+            "sql_text": body.get("sql_text", ""),
+            "fallback_sql": body.get("fallback_sql"),
+            "is_active": body.get("is_active", True),
+            "note": body.get("note"),
+        },
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO duckdb_view (view_name, sql_text, fallback_sql, is_active, note)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (view_name) DO UPDATE SET
+                sql_text     = EXCLUDED.sql_text,
+                fallback_sql = EXCLUDED.fallback_sql,
+                is_active    = EXCLUDED.is_active,
+                note         = EXCLUDED.note,
+                updated_at   = now()
+            RETURNING *
+            """,
+            (spec.view_name, spec.sql_text, spec.fallback_sql, spec.is_active, spec.note),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return dict(row)
+
+
+@router.delete("/duckdb-views/{view_name}", status_code=204, tags=["duckdb_view"])
+def delete_duckdb_view(view_name: str, conn: NeonConnDep) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM duckdb_view WHERE view_name = %s", (view_name,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, f"duckdb_view '{view_name}' not found")
     conn.commit()
 
 

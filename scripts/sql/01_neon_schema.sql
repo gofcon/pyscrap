@@ -9,6 +9,7 @@
 --   - v_schedule_job : api_job + etl_job 통합 스케줄 순서 조회 뷰
 --   - job_log        : 통합 실행 이력 + 멱등성 원장 (야간 1회 벌크 적재)
 --   - host_policy    : 호스트별 호출 간격 / 차단 쿨다운 정책
+--   - duckdb_view    : 내장 DuckDB (params_json · etl_job) 공통 TEMP VIEW 선언 레지스트리
 --   - 수기 테이블    : user_etf, mst_code, user_code_map, krx_index_mst,
 --                      mst_index, meta_fuopt_info (필요 시 user_xxx 계속 추가)
 --   - 금융 데이터    : 결과 43표 + 파생 마스터(mst_etf/mst_fuopt/mst_bond/mst_stock/
@@ -194,6 +195,18 @@ CREATE TABLE IF NOT EXISTS host_policy (
     cooldown_sec      INTEGER      NOT NULL DEFAULT 600 CHECK (cooldown_sec >= 0),
     note              VARCHAR(300),
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- 내장 DuckDB (api_job.params_json 축 쿼리 · etl_job.sql_text) 공통 뷰 선언 레지스트리
+-- 코드 하드코딩 없이 버킷 Parquet 경로를 DB 선언만으로 뷰 등록한다.
+CREATE TABLE IF NOT EXISTS duckdb_view (
+    view_name       VARCHAR(100) PRIMARY KEY
+                    CHECK (view_name ~ '^[a-z][a-z0-9_]*$'),
+    sql_text        TEXT         NOT NULL,  -- 치환 변수: ${OCI_BUCKET}, ${TARGET_DATE}, ${TARGET_YM}
+    fallback_sql    TEXT,                   -- (선택) 초기 파일 미존재 시 빈 스키마 폴백 SQL
+    is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    note            VARCHAR(400),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 -- ----------------------------------------------------------------------------

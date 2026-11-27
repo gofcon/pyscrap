@@ -201,6 +201,16 @@ class EtlJobSpec(_StrictModel):
 DuckDBJobSpec = EtlJobSpec
 
 
+class DuckDBViewSpec(_StrictModel):
+    """Row schema for ``duckdb_view`` (declarative TEMP VIEW registry for DuckDB)."""
+
+    view_name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    sql_text: str = Field(min_length=1)
+    fallback_sql: str | None = None
+    is_active: bool = True
+    note: str | None = None
+
+
 def export_spec_json_schema() -> dict[str, Any]:
     """Generate JSON Schema for DB/API validation and admin form rendering."""
     return ApiSpec.model_json_schema()

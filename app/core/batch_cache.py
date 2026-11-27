@@ -31,6 +31,7 @@ class DailyConfigSnapshot:
     host_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
     api_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     etl_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    duckdb_views: dict[str, dict[str, Any]] = field(default_factory=dict)
     user_tables: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def save(self, path: Path | None = None) -> Path:
@@ -56,6 +57,7 @@ class DailyConfigSnapshot:
             host_policies=payload.get("host_policies", {}),
             api_jobs=payload.get("api_jobs", {}),
             etl_jobs=payload.get("etl_jobs", {}),
+            duckdb_views=payload.get("duckdb_views", {}),
             user_tables=payload.get("user_tables", {}),
         )
 

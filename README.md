@@ -2,7 +2,7 @@
 
 설정 기반 한국 금융시장 데이터 수집·가공 파이프라인 (**Neon Serverless PostgreSQL + OCI/R2 Object Storage Parquet + DuckDB**).
 
-- **컨트롤 플레인 (Neon DB · 단일 `public` 스키마)**: `api_mst` (`spec_json = engine + ext`) · `api_mst_hist` · `api_job` · `etl_job` · `job_log` · `host_policy` · 수기 테이블(`user_etf`, `mst_code`, `user_code_map`, `krx_index_mst`, `mst_index`, `meta_fuopt_info`)
+- **컨트롤 플레인 (Neon DB · 단일 `public` 스키마)**: `api_mst` (`spec_json = engine + ext`) · `api_mst_hist` · `api_job` · `etl_job` · `duckdb_view` · `job_log` · `host_policy` · 수기 테이블(`user_etf`, `mst_code`, `user_code_map`, `krx_index_mst`, `mst_index`, `meta_fuopt_info`)
 - **Scale-to-Zero 일일 배치**: 장전 `06:30` Neon 1회 Pull(`data/cache/config_snapshot.json`) → 하루 전체 배치 로컬 실행·로컬 NDJSON 원장 누적 → 야간 `23:45` Neon `job_log` 1회 벌크 Push
 - **버킷 데이터 레이크 (`v3/` 접두사 · OCI 정본 + 선택적 Cloudflare R2 서빙)**:
   ```text
@@ -47,7 +47,7 @@ pip install -e ".[migration]"
 ## 2. 초기 DB 스키마 & 시드 적재
 
 1. Neon PostgreSQL에 [scripts/sql/01_neon_schema.sql](scripts/sql/01_neon_schema.sql) 실행
-2. DuckDB ETL 27종 시드 [scripts/sql/03_etl_jobs_seed.sql](scripts/sql/03_etl_jobs_seed.sql) 실행
+2. DuckDB ETL 시드 [scripts/sql/03_etl_jobs_seed.sql](scripts/sql/03_etl_jobs_seed.sql) 및 DuckDB 뷰 레지스트리 시드 [scripts/sql/04_duckdb_views_seed.sql](scripts/sql/04_duckdb_views_seed.sql) 실행
 3. *(선택)* 로컬 DBeaver 분석용 DuckDB 뷰는 [scripts/sql/02_duckdb_views.sql](scripts/sql/02_duckdb_views.sql) 참고
 
 ---
@@ -109,7 +109,7 @@ uvicorn app.api.main:app --reload
 | `GET /health` | Neon DB 연결 및 설정된 S3 타깃 상태 |
 | `GET/POST/PATCH/DELETE /api-mst`, `/api-mst/schema`, `/api-mst/{id}/history` | `api_mst` CRUD (`ApiSpec` 엄격 검증 + JSON Schema + 감사 이력) |
 | `GET/POST/PATCH/DELETE /api-jobs`, `/etl-jobs` | 수집 잡(`api_job`) · DuckDB 잡(`etl_job`) CRUD |
-| `GET/PUT/DELETE /host-policies`, `GET /schedule` | 호스트별 호출 간격 정책 · `v_schedule_job` 통합 일정 조회 |
+| `GET/PUT/DELETE /host-policies`, `/duckdb-views`, `GET /schedule` | 호스트별 호출 간격 정책 · DuckDB 뷰 선언 레지스트리 · `v_schedule_job` 통합 일정 조회 |
 | `POST /jobs/sync-config`, `/dry-run/{api_id}`, `/run/{job_id}`, `/run-cycle/{tag}`, `/flush-log` | 배치 즉시 실행 액션 |
 | `GET /job-logs` | Neon `job_log` 실행 이력 조회 (`X-Total-Count`) |
 | `GET /results/targets`, `/results/{layer}/{target_name}` | DuckDB 기반 `v3/` Parquet 조회 (`DUCKDB_SEMAPHORE` 2개 제한) |
@@ -129,7 +129,7 @@ app/
   storage/                 # object_storage · parquet_sink · binary_sink
   pipeline/                # executor · duckdb_runner · code_harvester · cleanup
 scripts/
-  sql/                     # 01_neon_schema.sql · 02_duckdb_views.sql · 03_etl_jobs_seed.sql
+  sql/                     # 01_neon_schema.sql · 02_duckdb_views.sql · 03_etl_jobs_seed.sql · 04_duckdb_views_seed.sql
   systemd/                 # pyscrap-v3-* 서비스/타이머 · run_v3.sh · install.sh · README.md
   migrate_v2_to_v3.py      # Oracle v2 -> Neon v3 일회성 이관 도구
 docs/

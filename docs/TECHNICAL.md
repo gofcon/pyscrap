@@ -21,6 +21,7 @@ api_mst          API 수집 명세 (~57행)     어떻게 요청·파싱·정제
 api_mst_hist     변경 감사 이력            api_mst UPDATE/DELETE 시 트리거가 직전 행을 자동 백업
 api_job          API 수집 실행 정의 (~96행) 어느 주기에 어떤 파라미터 조합으로 돌릴 것인가 (params_json)
 etl_job          DuckDB 후처리 SQL 정의     원천 Parquet -> snapshot / daily / monthly 가공 SQL
+duckdb_view      DuckDB 공통 뷰 레지스트리  params_json · etl_job 에서 이름만으로 참조할 버킷 Parquet 뷰 선언
 v_schedule_job   통합 스케줄 뷰             api_job + etl_job 을 schedule_tag, run_order 순으로 합쳐 조회
 job_log          통합 실행 원장             API / ETL 성공·실패·EMPTY·BLOCKED 기록 (야간 1회 벌크 적재)
 host_policy      호스트별 속도·쿨다운 정책   도메인 접미사별 최소 요청 간격 및 차단 대기 시간
@@ -618,9 +619,7 @@ Playwright는 첫 `BROWSER` 잡 실행 시에만 지연 임포트된다. 기본 
   }
   ```
 - **SQL 치환 변수**: `${OCI_BUCKET}`, `${TARGET_DATE}`(`YYYYMMDD`), `${TARGET_YM}`(`YYYYMM`).
-- **자동 바인딩 TEMP VIEW**: 쿼리 문자열에 아래 테이블명이 등장하면 엔진이 자동으로 뷰를 등록한다.
-  - `v3/snapshot/<name>.parquet` (13종): `mst_etf`, `mst_fuopt`, `mst_bond`, `mst_stock`, `meta_maturity`, `stock_index_his`, `v_k2i_atm`, `user_etf`, `krx_index_mst`, `mst_index`, `meta_fuopt_info`, `ksd_bond_no_detail`, `src_code`
-  - `v3/raw_clean/<name>/**/*.parquet` (3종, 파일 없을 시 빈 타입 뷰 자동 폴백): `ksd_bond_info`, `isin_bond_info`, `ksd_kacd_code`
+- **선언형 DuckDB 뷰 자동 바인딩 (`duckdb_view`)**: Neon `duckdb_view` 테이블에 등록된 활성 `view_name`이 SQL에 등장하면(문자열 리터럴·주석 제외, 단어 경계 매칭) 엔진이 의존 뷰까지 순서대로 `CREATE OR REPLACE TEMP VIEW`로 자동 등록한다. 초기 파일이 아직 없는 뷰는 `fallback_sql`로 빈 스키마 뷰를 자동 바인딩한다. (Python 코드에 테이블 목록 하드코딩 없음 · 시드는 [04_duckdb_views_seed.sql](../scripts/sql/04_duckdb_views_seed.sql) 참고)
 - 쿼리 결과가 **0행이면 `ConfigError`**를 발생시켜 빈 축으로 조용히 지나가는 사고를 방지한다.
 
 ---
@@ -653,17 +652,28 @@ Playwright는 첫 `BROWSER` 잡 실행 시에만 지연 임포트된다. 기본 
 | `daily` | `v3/daily/<target_name>/ym=YYYYMM/dt=YYYYMMDD/YYYYMMDD.parquet` |
 | `monthly` | `v3/monthly/<target_name>/ym=YYYYMM/YYYYMM.parquet` |
 
-`sql_text`에서 쓸 수 있는 치환 변수 4종:
+`sql_text`에서 쓸 수 있는 치환 변수 4종 및 `duckdb_view` 바인딩:
 - `${OCI_BUCKET}`: `S3_OCI_BUCKET` 환경변수 값
 - `${TARGET_DATE}`: 대상 기준일 `YYYYMMDD`
 - `${TARGET_YM}`: 대상 연월 `YYYYMM` (`TARGET_DATE[:6]`)
 - `${LEDGER_DIR}`: 로컬 원장 디렉터리 경로 (`data/logs/ledger`)
+- **`duckdb_view` 공용 뷰**: `api_job.params_json`과 동일하게 `etl_job.sql_text`에서도 `duckdb_view`에 등록된 뷰 이름을 바로 `FROM <view_name>`으로 참조할 수 있다 (`fallback_sql` 포함).
 
-### 4.3 특수 내장 ETL (`-- builtin:harvest_src_code`)
+### 4.3 `duckdb_view` — 내장 DuckDB 뷰 선언 레지스트리
+
+| 컬럼 | 필수 | 타입 / 기본값 | 설명 |
+| --- | :---: | --- | --- |
+| `view_name` | ● | `VARCHAR(100)` PK (`^[a-z][a-z0-9_]*$`) | SQL에서 참조할 뷰 이름 (`mst_etf`, `ksd_bond_info`, `v_krx_etf_daily` 등) |
+| `sql_text` | ● | `TEXT` | 뷰 정의 SELECT 문 (`${OCI_BUCKET}`, `${TARGET_DATE}`, `${TARGET_YM}` 지원, 다른 `duckdb_view` 참조 가능) |
+| `fallback_sql` | | `TEXT` | 초기 실행 등으로 S3 Parquet 파일이 아직 없을 때 대신 바인딩할 빈 스키마 SQL |
+| `is_active` | ● | `BOOLEAN` (`TRUE`) | `FALSE`면 `sync-config` 스냅샷에서 제외 |
+| `note` | | `VARCHAR(400)` | 운영 메모 |
+
+### 4.4 특수 내장 ETL (`-- builtin:harvest_src_code`)
 
 `sql_text`가 `-- builtin:harvest_src_code`로 시작하면 일반 단일 SQL 대신 [code_harvester.py](../app/pipeline/code_harvester.py)가 실행되어, 모든 Parquet 소스에서 코드성 컬럼의 고유값을 자동 수확하고 `v3/snapshot/src_code.parquet`을 갱신한다.
 
-### 4.4 블록 디스크 스필 보호
+### 4.5 블록 디스크 스필 보호
 
 `build_duckdb_config()`는 `V3_DUCKDB_TMP_DIR`(기본 `data/tmp/duckdb`)이 Linux `tmpfs`(RAM 디스크) 마운트인지 `/proc/mounts`로 검사한다. `/tmp` 같은 `tmpfs`를 지정하면 OOM 위험 때문에 즉시 `ValueError`로 차단한다.
 
@@ -744,7 +754,7 @@ python3 -m app.cli run-cycle daily_close --from 20261116 --to 20261120
   - `GET /api-mst/schema` — `ApiSpec` 전체 JSON Schema (관리 UI 폼 자동 생성용)
   - `GET/POST/PATCH/DELETE /api-mst`, `GET /api-mst/{api_id}/history`
   - `GET/POST/PATCH/DELETE /api-jobs`, `/etl-jobs`
-  - `GET/PUT/DELETE /host-policies`, `GET /schedule` (`v_schedule_job`)
+  - `GET/PUT/DELETE /host-policies`, `GET/PUT/DELETE /duckdb-views`, `GET /schedule` (`v_schedule_job`)
   - `POST /jobs/sync-config`, `/jobs/dry-run/{api_id}`, `/jobs/run/{job_id}`, `/jobs/run-cycle/{schedule_tag}`, `/jobs/flush-log`
   - `GET /job-logs` (`job_type`, `job_id`, `api_id`, `target_date`, `status`, `X-Total-Count` 헤더)
   - `GET /results/targets?layer=snapshot|daily|monthly|raw_clean`, `GET /results/{layer}/{target_name}?ym=YYYYMM&dt=YYYYMMDD`
