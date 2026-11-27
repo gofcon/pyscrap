@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for pyscrap v3 Monthly Archive Compaction (1st of month 04:00 KST, previous month)
+
+[Timer]
+OnCalendar=*-*-01 04:00:00
+Persistent=true
+Unit=pyscrap-v3-heavy@monthly_archive.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for pyscrap v3 Daily Start (08:35 KST: KIS tokens + KRX login + open masters)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:35:00
+Persistent=true
+Unit=pyscrap-v3-cycle@daily_start.service
+
+[Install]
+WantedBy=timers.target

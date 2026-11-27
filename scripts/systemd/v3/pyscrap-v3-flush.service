@@ -1,0 +1,16 @@
+[Unit]
+Description=pyscrap v3 End-of-Day Bulk Ledger Flush to Neon job_log
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/systemd/v3/run_v3.sh flush
+MemoryHigh=400M
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

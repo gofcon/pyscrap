@@ -1,0 +1,9 @@
+[Unit]
+Description=Timer for pyscrap v3 End-of-Day Ledger Flush (23:45 KST)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 23:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

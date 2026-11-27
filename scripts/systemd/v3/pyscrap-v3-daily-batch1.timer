@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for pyscrap v3 Daily Batch 1 (18:00 KST: post-market KIS/KRX/DART)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 18:00:00
+Persistent=true
+Unit=pyscrap-v3-cycle@daily_batch1.service
+
+[Install]
+WantedBy=timers.target

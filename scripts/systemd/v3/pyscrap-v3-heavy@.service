@@ -1,0 +1,16 @@
+[Unit]
+Description=pyscrap v3 Heavy DuckDB/Browser Cycle (%i, flock-serialized)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/pyscrap
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/systemd/v3/run_v3.sh heavy %i
+MemoryHigh=1500M
+MemoryMax=1800M
+
+[Install]
+WantedBy=multi-user.target

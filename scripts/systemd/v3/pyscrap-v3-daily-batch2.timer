@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for pyscrap v3 Daily Batch 2 (21:00 KST: bond/ETF masters + PDFs + src_code)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 21:00:00
+Persistent=true
+Unit=pyscrap-v3-heavy@daily_batch2.service
+
+[Install]
+WantedBy=timers.target

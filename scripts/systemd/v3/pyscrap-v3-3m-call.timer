@@ -1,0 +1,13 @@
+[Unit]
+Description=Timer for pyscrap v3 3-Minute Shard (calls + futures, account #1)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:42..57/3:00
+OnCalendar=Mon..Fri *-*-* 09..15:0/3:00
+OnCalendar=Mon..Fri *-*-* 16:0..45/3:00
+AccuracySec=1s
+Persistent=true
+Unit=pyscrap-v3-cycle@3m_call.service
+
+[Install]
+WantedBy=timers.target

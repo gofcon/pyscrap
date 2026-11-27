@@ -1,0 +1,9 @@
+[Unit]
+Description=Timer for pyscrap v3 Weekly Retention Purge (Sun 03:30 KST)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
