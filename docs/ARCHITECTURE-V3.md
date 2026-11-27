@@ -38,8 +38,8 @@ flowchart TD
         direction LR
         REF_P["v3/snapshot/*.parquet\n(금융 마스터 · 수기 미러 · 집계 스냅샷)"]
         RAW_P["v3/raw_clean/target/dt=YYYYMMDD/*.parquet"]
-        DAY_P["v3/daily/target/ym=YYYYMM/dt=YYYYMMDD/data.parquet\n(일별 병합 · 중복제거)"]
-        MON_P["v3/monthly/target/ym=YYYYMM/monthly.parquet\n(월별 Compaction + 키 정렬)"]
+        DAY_P["v3/daily/target/ym=YYYYMM/dt=YYYYMMDD/YYYYMMDD.parquet\n(일별 병합 · 중복제거)"]
+        MON_P["v3/monthly/target/ym=YYYYMM/YYYYMM.parquet\n(월별 Compaction + 키 정렬)"]
     end
 
     subgraph ANAL["분석 환경 (DBeaver + DuckDB · SQL 문법 PG 통일)"]
@@ -155,8 +155,8 @@ flowchart TD
   ```text
   s3://<bucket>/v3/raw_clean/<target>/dt=YYYYMMDD/*.parquet              # api_job 수집 원본 (30일 보관 후 purge-raw)
   s3://<bucket>/v3/snapshot/<target>.parquet                             # etl_job(snapshot): 금융 마스터 · 수기 미러 · 집계 스냅샷
-  s3://<bucket>/v3/daily/<target>/ym=YYYYMM/dt=YYYYMMDD/data.parquet     # etl_job(daily): 일별 병합·중복제거 정제본
-  s3://<bucket>/v3/monthly/<target>/ym=YYYYMM/monthly.parquet            # etl_job(monthly): 월별 Compaction 아카이브 (키 정렬)
+  s3://<bucket>/v3/daily/<target>/ym=YYYYMM/dt=YYYYMMDD/YYYYMMDD.parquet # etl_job(daily): 일별 병합·중복제거 정제본
+  s3://<bucket>/v3/monthly/<target>/ym=YYYYMM/YYYYMM.parquet             # etl_job(monthly): 월별 Compaction 아카이브 (키 정렬)
   s3://<bucket>/v3/binary/<group>/<file_name>                            # 다운로드 문서(PDF/ZIP 등)
   ```
 

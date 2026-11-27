@@ -119,8 +119,8 @@ CREATE INDEX IF NOT EXISTS ix_api_job_api_id
 -- DuckDB 후처리 · 일별 정제 · 월별 Compaction · 금융 마스터/스냅샷 갱신 실행 정의
 -- 경로 규약은 엔진이 output_layer + target_name 으로 자동 생성한다:
 --   - snapshot : v3/snapshot/<target_name>.parquet
---   - daily    : v3/daily/<target_name>/ym=YYYYMM/dt=YYYYMMDD/data.parquet
---   - monthly  : v3/monthly/<target_name>/ym=YYYYMM/monthly.parquet
+--   - daily    : v3/daily/<target_name>/ym=YYYYMM/dt=YYYYMMDD/YYYYMMDD.parquet
+--   - monthly  : v3/monthly/<target_name>/ym=YYYYMM/YYYYMM.parquet
 DROP TABLE IF EXISTS etl_job;
 CREATE TABLE etl_job (
     job_id          VARCHAR(100) PRIMARY KEY,

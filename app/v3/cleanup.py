@@ -135,7 +135,7 @@ def verify_monthly_matches_daily(
     prefix: str | None = None,
     memory_limit: str = "512MB",
 ) -> tuple[bool, dict[str, Any]]:
-    """Verify ``v3/monthly/<target>/ym=<ym>/monthly.parquet`` matches ``DISTINCT`` rows
+    """Verify ``v3/monthly/<target>/ym=<ym>/<ym>.parquet`` matches ``DISTINCT`` rows
     of ``v3/daily/<target>/ym=<ym>/**/*.parquet`` using ``COUNT(*)`` + ``BIT_XOR(HASH(*))``."""
     import duckdb
     from app.object_storage import bucket_name
@@ -144,7 +144,7 @@ def verify_monthly_matches_daily(
     bkt = oci_bucket or bucket_name("oci")
     pfx = prefix or v3_prefix()
     daily_uri = f"s3://{bkt}/{pfx}/daily/{target_name}/ym={ym}/**/*.parquet"
-    monthly_uri = f"s3://{bkt}/{pfx}/monthly/{target_name}/ym={ym}/monthly.parquet"
+    monthly_uri = f"s3://{bkt}/{pfx}/monthly/{target_name}/ym={ym}/{ym}.parquet"
 
     con = duckdb.connect(":memory:", config=build_duckdb_config(memory_limit=memory_limit, threads=2))
     try:

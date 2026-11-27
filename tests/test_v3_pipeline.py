@@ -583,11 +583,11 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         self.assertEqual(
             resolve_etl_object_key("daily", "test_tbl", target_date="20261127"),
-            "v3/daily/test_tbl/ym=202611/dt=20261127/data.parquet",
+            "v3/daily/test_tbl/ym=202611/dt=20261127/20261127.parquet",
         )
         self.assertEqual(
             resolve_etl_object_key("monthly", "test_tbl", target_ym="202611"),
-            "v3/monthly/test_tbl/ym=202611/monthly.parquet",
+            "v3/monthly/test_tbl/ym=202611/202611.parquet",
         )
 
         spec = DuckDBJobSpec(
@@ -612,7 +612,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                     sql_params={"TARGET_DATE": "20261127", "TARGET_YM": "202611"},
                     temp_directory=Path(td) / "duckdb",
                 )
-            self.assertEqual(res.object_key, "v3/daily/test_tbl/ym=202611/dt=20261127/data.parquet")
+            self.assertEqual(res.object_key, "v3/daily/test_tbl/ym=202611/dt=20261127/20261127.parquet")
             self.assertEqual(res.row_count, 1)
 
     def test_code_harvester_column_filters_and_builtin_dispatch(self):

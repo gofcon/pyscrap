@@ -10,10 +10,10 @@
 --     6. REFRESH_REF_STOCK_INDEX_HIS   (daily_close  180) <- sp_stock_index_his_sync + dedup
 --     7. REFRESH_REF_V_K2I_ATM         (daily_close  190) <- v_k2i_atm (MV)
 --
---   [그룹 B-1] 일별 Curated 병합 & 중복제거 (14개, output_layer=daily -> v3/daily/<target>/ym=.../dt=.../data.parquet)
+--   [그룹 B-1] 일별 Curated 병합 & 중복제거 (14개, output_layer=daily -> v3/daily/<target>/ym=.../dt=.../YYYYMMDD.parquet)
 --     8..21. sp_run_daily_export 대상 14개 전체 (kis_futopt_price1 체결필터 포함)
 --
---   [그룹 B-2] 월별 정렬 Compaction (4개, output_layer=monthly -> v3/monthly/<target>/ym=.../monthly.parquet)
+--   [그룹 B-2] 월별 정렬 Compaction (4개, output_layer=monthly -> v3/monthly/<target>/ym=.../YYYYMM.parquet)
 --     22..25. sp_run_monthly_archive 대상 4개 전체
 --
 --   [그룹 C] 선택 보조 작업 (2개, v3/snapshot/*.parquet)
