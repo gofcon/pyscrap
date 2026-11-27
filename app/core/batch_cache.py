@@ -112,14 +112,26 @@ class LocalRunLedger:
             and (job_type is None or e.job_type == job_type)
         }
 
-    def flush_to_neon(self, dsn: str | None = None) -> int:
-        """Bulk-insert the full day's ledger entries into Neon ``job_log``.
+    def _flushed_line_count(self) -> int:
+        if not self.flushed_marker.exists():
+            return 0
+        try:
+            meta = json.loads(self.flushed_marker.read_text(encoding="utf-8"))
+            return max(0, int(meta.get("flushed_lines", meta.get("count", 0))))
+        except Exception:
+            return 0
 
-        Uses a single Neon connection with ``psycopg`` ``executemany`` so Neon
-        wakes once at end of day and immediately returns to Scale-to-Zero.
+    def flush_to_neon(self, dsn: str | None = None) -> int:
+        """Bulk-insert only not-yet-flushed ledger entries into Neon ``job_log``.
+
+        Idempotent and incremental: calling ``flush-log`` multiple times on the
+        same day never duplicates rows in Neon, and exits without opening a
+        Neon connection when no new entries exist.
         """
         entries = self.read_all()
-        if not entries:
+        already = self._flushed_line_count()
+        pending = entries[already:]
+        if not pending:
             return 0
         import psycopg
 
@@ -137,14 +149,18 @@ class LocalRunLedger:
         """
         rows = [
             {**asdict(e), "output_uris": json.dumps(e.output_uris, ensure_ascii=False)}
-            for e in entries
+            for e in pending
         ]
         with psycopg.connect(conn_dsn, connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 cur.executemany(sql, rows)
             conn.commit()
         self.flushed_marker.write_text(
-            json.dumps({"flushed_at": datetime.now(timezone.utc).isoformat(), "count": len(rows)}),
+            json.dumps({
+                "flushed_at": datetime.now(timezone.utc).isoformat(),
+                "flushed_lines": len(entries),
+                "count": len(entries),
+            }),
             encoding="utf-8",
         )
         return len(rows)

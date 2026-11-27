@@ -1,161 +1,138 @@
-# pyscrap
+# pyscrap v3
 
-Oracle DB + SQLModel 기반 스크래퍼 프로젝트.
+설정 기반 한국 금융시장 데이터 수집·가공 파이프라인 (**Neon Serverless PostgreSQL + OCI/R2 Object Storage Parquet + DuckDB**).
 
-## Setup
+- **컨트롤 플레인 (Neon DB · 단일 `public` 스키마)**: `api_mst` (`spec_json = engine + ext`) · `api_mst_hist` · `api_job` · `etl_job` · `job_log` · `host_policy` · 수기 테이블(`user_etf`, `mst_code`, `user_code_map`, `krx_index_mst`, `mst_index`, `meta_fuopt_info`)
+- **Scale-to-Zero 일일 배치**: 장전 `06:30` Neon 1회 Pull(`data/cache/config_snapshot.json`) → 하루 전체 배치 로컬 실행·로컬 NDJSON 원장 누적 → 야간 `23:45` Neon `job_log` 1회 벌크 Push
+- **버킷 데이터 레이크 (`v3/` 접두사 · OCI 정본 + 선택적 Cloudflare R2 서빙)**:
+  ```text
+  v3/raw_clean/<target>/dt=YYYYMMDD/*.parquet                    # api_job 수집 원본 (30일 보관 후 purge-raw)
+  v3/snapshot/<target>.parquet                                   # etl_job(snapshot): 마스터 · 기준 · 집계 스냅샷
+  v3/daily/<target>/ym=YYYYMM/dt=YYYYMMDD/YYYYMMDD.parquet       # etl_job(daily): 일별 병합 · 중복제거
+  v3/monthly/<target>/ym=YYYYMM/YYYYMM.parquet                   # etl_job(monthly): 월별 정렬 아카이브
+  v3/binary/<group>/<filename>                                   # 다운로드 문서 (PDF/ZIP)
+  ```
+
+상세 설계는 [docs/ARCHITECTURE-V3.md](docs/ARCHITECTURE-V3.md)를 참고하세요.
+
+---
+
+## 1. 설치
 
 ```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .
-cp .env.example .env  # 값 채우기
+
+cp .env.example .env
+chmod 600 .env
 ```
 
-Sources scraped by driving a browser (`api_mst.request_type = 'BROWSER'`, see
-`docs/TECHNICAL.md` 2.11) need one more step, on the instance that runs the
-batch -- the API deployment never runs them:
-
+선택 패키지:
 ```bash
+# FastAPI 관리/조회 API 서버
+pip install -e ".[api]"
+
+# Playwright 브라우저 수집 (protocol='BROWSER')
 pip install -e ".[browser]"
-```
-
-```bash
 playwright install --with-deps chromium
+
+# Oracle v2 -> Neon v3 일회성 이관 스크립트 실행 시에만
+pip install -e ".[migration]"
 ```
 
-## Run -- batch (systemd timers)
+---
 
-Independently-schedulable steps; see `scripts/` for the matching
-`.service`/`.timer` units.
+## 2. 초기 DB 스키마 & 시드 적재
+
+1. Neon PostgreSQL에 [scripts/sql/01_neon_schema.sql](scripts/sql/01_neon_schema.sql) 실행
+2. DuckDB ETL 27종 시드 [scripts/sql/03_etl_jobs_seed.sql](scripts/sql/03_etl_jobs_seed.sql) 실행
+3. *(선택)* 로컬 DBeaver 분석용 DuckDB 뷰는 [scripts/sql/02_duckdb_views.sql](scripts/sql/02_duckdb_views.sql) 참고
+
+---
+
+## 3. CLI 사용법 (`python3 -m app.cli`)
 
 ```bash
-python -m app.cli generate-jobs 5m     # create pending ApiJob rows for this execution_cycle
-python -m app.cli run-cycle 5m         # execute whatever's currently pending
-python -m app.cli call-proc sp_run_daily_early    # a cycle's DB-side steps, in order (what the batch calls)
-python -m app.cli sync-index-his       # index bars -> stock_index_his, refreshes v_k2i_atm
-python -m app.cli run-export           # the day's rows -> Parquet in object storage
-python -m app.cli finalize-exports     # upload staged documents, purge old CSV buffers
-python -m app.cli archive-exported     # last month's rows -> Parquet, then delete
-python -m app.cli dedup-stock-base     # krx_stock_base -> one row per share
-python -m app.cli sync-mst-stock       # that, folded into the mst_stock master
-python -m app.cli check-sql            # scripts/sql vs the compiled procedures
+# 1) 장전 설정 스냅샷 동기화 + 수기 테이블 v3/snapshot/ 미러링
+python3 -m app.cli sync-config --mirror-user-parquet
+
+# 2) 단일 API 드라이런 (업로드·로그 없이 파싱/정제/계약 검증)
+python3 -m app.cli dry-run ACE_ETF_LIST --sample 3
+
+# 3) 단일 api_job 또는 etl_job 실행 (단일일 또는 평일 기간 백필)
+python3 -m app.cli run-job ACE_ETF_LIST_DAILY
+python3 -m app.cli run-job ACE_ETF_PDF_DAILY --date 20261127 --limit 2
+python3 -m app.cli run-job ACE_ETF_PDF_DAILY --from 20261116 --to 20261120
+python3 -m app.cli run-job REFRESH_REF_V_K2I_ATM
+
+# 4) 스케줄 태그 전체 실행 (api_job + etl_job 을 run_order 순으로 통합 실행)
+python3 -m app.cli run-cycle daily_batch2
+python3 -m app.cli run-cycle daily_close --from 20261116 --to 20261120
+
+# 5) 야간 로컬 원장 -> Neon job_log 1회 벌크 적재
+python3 -m app.cli flush-log
+
+# 6) 보관 주기 정리 (기본 드라이런, --apply 전달 시 실제 삭제)
+python3 -m app.cli purge-raw --keep-days 30 [--target ace_etf_pdf] [--apply]
+python3 -m app.cli purge-daily kis_futopt_chart --keep-months 3 [--apply]   # COUNT+HASH 일치 검증 후 삭제
+python3 -m app.cli purge-log --keep-days 90 [--apply]
 ```
 
-Rows reach object storage from the database itself (`scripts/sql/`), not
-through this process: `run-export` calls `sp_run_daily_export`, which exports each
-target for a given day. `finalize-exports` is left with what the database
-cannot hold -- a scrape whose result is a file. `archive-exported` runs the
-other way on the 1st of each month: the minute-bar tables are already readable as Parquet
-through the `xt_*` external tables, so the copy in the database is what costs,
-and it is dropped once the external table proves it can read the range back.
+---
 
-### Deploying the units
+## 4. `systemd` 배치 배포 (OCI VM)
 
-Units are plain files in `scripts/`; deployment is copying them and enabling
-the timers. Run on the instance, from the checkout:
+자세한 타임라인과 컷오버 절차는 [scripts/systemd/README.md](scripts/systemd/README.md)를 참고하세요.
 
 ```bash
-chmod +x scripts/*.sh
+./scripts/systemd/install.sh --dry-run
+sudo ./scripts/systemd/install.sh --user opc --dir /home/opc/pyscrap
+sudo systemctl start pyscrap-v3-sync.service
+
+# 전체 타이머 활성화 (기존 v2 와 병행 시 daily-start / 3m 타이머 중복 주의)
+sudo ./scripts/systemd/install.sh --user opc --dir /home/opc/pyscrap --enable
+systemctl list-timers 'pyscrap-v3-*'
 ```
 
-```bash
-sudo cp scripts/pyscrap-*.service scripts/pyscrap-*.timer /etc/systemd/system/
-```
+---
 
-```bash
-sudo systemctl daemon-reload
-```
-
-```bash
-sudo systemctl enable --now pyscrap-daily-start.timer pyscrap-daily-early.timer pyscrap-3m-call.timer pyscrap-3m-put.timer pyscrap-5m.timer pyscrap-1h.timer pyscrap-daily-close.timer pyscrap-daily-batch1.timer pyscrap-daily-batch2.timer pyscrap-export.timer pyscrap-finalize-exports.timer pyscrap-check-sql.timer pyscrap-archive.timer
-```
-
-Only the timers are enabled -- each starts its own `.service`, so enabling
-the services as well would run them at boot too.
-
-```bash
-systemctl list-timers 'pyscrap-*'
-```
-
-A changed unit needs the copy and `daemon-reload` again; already-enabled
-timers pick the new file up without re-enabling.
-
-Check a step by hand before trusting it to the timer:
-
-```bash
-sudo systemctl start pyscrap-export.service && journalctl -u pyscrap-export.service -n 40 --no-pager
-```
-
-`check-sql` exits non-zero when a file and its procedure disagree, so drift
-shows up as a failed unit:
-
-```bash
-systemctl --failed
-```
-
-### Sharded cycles (rate-limited high-frequency polling)
-
-A KIS rate limit is per-account, so the 3-minute futures/options snapshot
-poll (1,753 instruments: front-month index calls/puts, both weekly series,
-index futures) is split across two accounts. Each half is its own
-`execution_cycle` -- `3m_call` (account #1, calls and futures) and `3m_put`
-(account #2) -- with its own timer, firing on the same instants.
-`_floor_datetime` ignores the `_<shard>` suffix, so both halves stamp the
-same `trade_at`.
-
-```bash
-python -m app.cli generate-jobs 3m_call   # once a day, after fo_idx_code_mst refreshes
-python -m app.cli run-cycle 3m_call       # every tick (scripts/run_cycle.sh 3m_call run-only)
-```
-
-Measured on this workload: ~155ms per job, ~136s per 876-job shard, against
-a 180s tick. The pacing floor (`REQUEST_MIN_INTERVAL_SEC`, 150ms) is the
-binding constraint -- adding concurrency does not help, since the API itself
-answers in ~24ms. Adding *accounts* is what raises throughput.
-
-## Run -- API
+## 5. FastAPI 관리/조회 서버
 
 ```bash
 uvicorn app.api.main:app --reload
 ```
 
 | Endpoint | 설명 |
-|---|---|
-| `GET/POST/PATCH/DELETE /api-mst`, `/job-builders`, `/jobs` | 설정 테이블(ApiMst/ApiJobBuilder/ApiJob) CRUD -- `app/api/routers/crud.py`의 팩토리로 생성 |
-| `GET /results`, `/results/{table_name}` | 스크래핑 결과 테이블(성장하는 집합, `TABLE_REGISTRY` 기준) 조회 전용 |
-| `POST /jobs/generate/cycle/{execution_cycle}` | 해당 cycle의 미생성 ApiJob 생성 (`app.cli generate-jobs`와 동일) |
-| `POST /jobs/generate/all` | 활성 builder 전체, cycle 무관하게 미생성 ApiJob 생성 |
-| `POST /jobs/generate/builder/{build_id}` | 특정 builder 하나만 지정해서 생성 (is_active/execution_cycle 무시) |
-| `POST /jobs/run/{job_id}` | 개별 ApiJob 즉시 실행 (`app.services.execution.run_job`) |
-| `GET /health` | Oracle 연결 확인 |
+| --- | --- |
+| `GET /health` | Neon DB 연결 및 설정된 S3 타깃 상태 |
+| `GET/POST/PATCH/DELETE /api-mst`, `/api-mst/schema`, `/api-mst/{id}/history` | `api_mst` CRUD (`ApiSpec` 엄격 검증 + JSON Schema + 감사 이력) |
+| `GET/POST/PATCH/DELETE /api-jobs`, `/etl-jobs` | 수집 잡(`api_job`) · DuckDB 잡(`etl_job`) CRUD |
+| `GET/PUT/DELETE /host-policies`, `GET /schedule` | 호스트별 호출 간격 정책 · `v_schedule_job` 통합 일정 조회 |
+| `POST /jobs/sync-config`, `/dry-run/{api_id}`, `/run/{job_id}`, `/run-cycle/{tag}`, `/flush-log` | 배치 즉시 실행 액션 |
+| `GET /job-logs` | Neon `job_log` 실행 이력 조회 (`X-Total-Count`) |
+| `GET /results/targets`, `/results/{layer}/{target_name}` | DuckDB 기반 `v3/` Parquet 조회 (`DUCKDB_SEMAPHORE` 2개 제한) |
 
-Swagger UI: `http://localhost:8000/docs`
+---
 
-## Migration (Alembic)
+## 6. 프로젝트 구조
 
-```bash
-alembic revision --autogenerate -m "message"
-alembic upgrade head
-```
-
-## Docs
-
-`docs/TECHNICAL.md` -- what each configuration field means and how to fill it
-in: registering an API, expanding it into jobs, the export path, and the
-mistakes the shape of this system invites.
-
-## Layout
-
-```
+```text
 app/
-  api/            FastAPI app -- routers/*, deps.py (SessionDep), main.py (uvicorn app.api.main:app)
-  cli.py          batch entrypoint (systemd timers) -- see scripts/
-  services/       business logic shared by both app/api and app/cli
-  scrapers/       config-driven scraping engine (DynamicApiScraper)
-  db/             SQLModel table models, engine/session factory
-  db_config.py    Settings (.env)
-  auth_config.py  per-site secret resolution (${VAR} placeholders)
-  object_storage.py
-  logging_config.py
-scripts/          systemd units + standalone helper scripts
-alembic/          migrations
-tests/
+  cli.py                   # 단일 CLI 진입점 (python3 -m app.cli)
+  errors.py                # 예외 분류 & URL 시크릿 마스킹
+  certs/                   # 추가 CA 인증서 (.pem)
+  api/                     # FastAPI (main.py, deps.py, routers/*)
+  core/                    # spec · batch_cache · neon_sync · session_store
+  ingest/                  # http_fetcher · browser_runner · cleanse
+  storage/                 # object_storage · parquet_sink · binary_sink
+  pipeline/                # executor · duckdb_runner · code_harvester · cleanup
+scripts/
+  sql/                     # 01_neon_schema.sql · 02_duckdb_views.sql · 03_etl_jobs_seed.sql
+  systemd/                 # pyscrap-v3-* 서비스/타이머 · run_v3.sh · install.sh · README.md
+  migrate_v2_to_v3.py      # Oracle v2 -> Neon v3 일회성 이관 도구
+docs/
+  ARCHITECTURE-V3.md       # v3 설계 문서
+tests/                     # 단위 테스트 (python3 -m unittest discover -s tests -t . -v)
 ```

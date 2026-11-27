@@ -276,6 +276,46 @@ class TestDuckDBConfigAndBatchCache(unittest.TestCase):
                 {("A01612", "20261127")},
             )
 
+            # Incremental/idempotent flush_to_neon must never duplicate rows
+            inserted_batches: list[int] = []
+
+            class _FakeCursor:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def executemany(self, sql, rows):
+                    inserted_batches.append(len(rows))
+
+            class _FakeConn:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def cursor(self):
+                    return _FakeCursor()
+
+                def commit(self):
+                    pass
+
+            with mock.patch("psycopg.connect", return_value=_FakeConn()):
+                self.assertEqual(ledger.flush_to_neon(dsn="postgresql://test"), 2)
+                self.assertEqual(ledger.flush_to_neon(dsn="postgresql://test"), 0)
+                ledger.append(RunLedgerEntry(
+                    job_id="KIS_FUTOPT_PRICE_3M_CALL",
+                    api_id="KIS_FUTOPT_PRICE",
+                    partition_key="A01614",
+                    target_date="20261127",
+                    status="SUCCESS",
+                    record_count=50,
+                ))
+                self.assertEqual(ledger.flush_to_neon(dsn="postgresql://test"), 1)
+            self.assertEqual(inserted_batches, [2, 1])
+
 
 class TestV2ToV3MigrationConverters(unittest.TestCase):
     def test_convert_api_mst_and_builder_rows(self):

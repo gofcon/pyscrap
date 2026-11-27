@@ -237,7 +237,7 @@ def _validate_v3_cleanup_prefix(key_prefix: str, *, prefix: str | None = None) -
     """Ensure cleanup prefixes are strictly scoped beneath ``v3/<layer>/<subpath>``.
 
     Prevents accidental wipes of the bucket root, v1/v2 prefixes, or an entire
-    v3 layer (e.g. ``v3/curated/``).
+    v3 layer (e.g. ``v3/daily/``).
     """
     norm = key_prefix.replace("\\", "/").lstrip("/")
     if not norm or ".." in norm.split("/"):

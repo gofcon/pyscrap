@@ -3,8 +3,8 @@
 Scans ``v3/raw_clean/<target>/**/*.parquet`` in OCI S3 (within the 2GB OCI A1 RAM
 budget), discovers low-cardinality VARCHAR code columns (``2 <= distinct <= max_distinct``),
 excludes date-like and engine-bookkeeping columns using the exact v2 rules from
-``scripts/sql/sp_src_code_sync.sql``, merges with any existing ``v3/ref/src_code.parquet``
-to preserve ``first_seen``, and publishes updated ``v3/ref/src_code.parquet``.
+``scripts/sql/sp_src_code_sync.sql``, merges with any existing ``v3/snapshot/src_code.parquet``
+to preserve ``first_seen``, and publishes updated ``v3/snapshot/src_code.parquet``.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ def harvest_src_codes(
     temp_directory: Path | None = None,
     skip_unconfigured_targets: bool = True,
 ) -> DuckDBJobResult:
-    """Harvest low-cardinality string code vocabularies into ``v3/ref/src_code.parquet``."""
+    """Harvest low-cardinality string code vocabularies into ``v3/snapshot/src_code.parquet``."""
     import duckdb
 
     oci_bkt = bucket_name("oci")

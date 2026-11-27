@@ -3,7 +3,7 @@ from ``DailyConfigSnapshot``.
 
 Zero Neon DB connection during collection — reads config from the daily local
 snapshot, expands ``api_job`` parameter axes (dates, literals, or DuckDB queries
-over ``v3/ref/*.parquet``), cleanses + validates records, uploads ONE bundled
+over ``v3/snapshot/*.parquet``), cleanses + validates records, uploads ONE bundled
 ZSTD Parquet per job under ``v3/raw_clean/``, executes ``etl_job`` SQL
 post-processing, and logs all outcomes to ``LocalRunLedger`` (``job_log``).
 """

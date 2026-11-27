@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_sync = sub.add_parser("sync-config", help="Pull daily snapshot from Neon DB (1 connection/day)")
     p_sync.add_argument("--mirror-user-parquet", action="store_true",
-                        help="Also upload manual user_* tables to v3/ref/*.parquet")
+                        help="Also upload manual user_* tables to v3/snapshot/*.parquet")
 
     p_dry = sub.add_parser("dry-run", help="Test 1 API fetch + cleanse + contract without uploading")
     p_dry.add_argument("api_id")
