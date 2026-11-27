@@ -57,11 +57,14 @@ def write_records_to_parquet(
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
+    except ImportError:
+        return _write_via_duckdb_ndjson(records, out_path, compression=compression, memory_limit=memory_limit)
 
+    try:
         table = pa.Table.from_pylist(records)
         pq.write_table(table, out_path, compression=compression)
         return out_path.stat().st_size
-    except ImportError:
+    except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError, TypeError, ValueError):
         return _write_via_duckdb_ndjson(records, out_path, compression=compression, memory_limit=memory_limit)
 
 

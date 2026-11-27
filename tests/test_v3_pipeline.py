@@ -330,5 +330,150 @@ class TestV2ToV3MigrationConverters(unittest.TestCase):
         self.assertEqual(v3_job["job_spec_json"]["save_mode"], "overwrite")
 
 
+class TestHttpFetcherAndExecutor(unittest.TestCase):
+    def test_host_interval_longest_suffix_and_floor(self):
+        from app.v3.http_fetcher import interval_for_host
+
+        policies = {
+            "krx.co.kr": {"min_interval_sec": 0.3},
+            "data.krx.co.kr": {"min_interval_sec": 1.0},
+        }
+        self.assertEqual(interval_for_host("data.krx.co.kr", policies), 1.0)
+        self.assertEqual(interval_for_host("sub.krx.co.kr", policies), 0.3)
+        self.assertEqual(interval_for_host("data.krx.co.kr", policies, api_min=0.2), 1.0)
+        self.assertEqual(interval_for_host("data.krx.co.kr", policies, api_min=1.5), 1.5)
+
+    def test_secret_placeholder_guard_and_response_parsers(self):
+        import httpx
+        from app.v3.http_fetcher import parse_response, resolve_secret_placeholders
+
+        with self.assertRaises(PermissionError):
+            resolve_secret_placeholders("Bearer ${NEON_DATABASE_URL}")
+        with self.assertRaises(PermissionError):
+            resolve_secret_placeholders("${S3_R2_SECRET_KEY}")
+
+        spec = ApiSpec.model_validate({
+            "engine": {
+                "request": {"url": "https://example.com"},
+                "extract": {
+                    "response_type": "json",
+                    "selector": "data.items",
+                    "merge_fields": {"meta.dt": "std_dt"},
+                },
+            }
+        })
+        resp = httpx.Response(200, json={"meta": {"dt": "20261127"}, "data": {"items": [{"code": "A"}]}})
+        self.assertEqual(parse_response(resp, spec), [{"code": "A", "std_dt": "20261127"}])
+
+        # Scalar string must never split into characters
+        bad = httpx.Response(200, json={"data": {"items": "ERROR"}})
+        self.assertEqual(parse_response(bad, spec), [])
+
+    def test_expand_scrape_params_dates_and_literals(self):
+        from datetime import date
+        from app.v3.executor import expand_scrape_params
+
+        combos = expand_scrape_params(
+            {"DT": {"date": "last_bday"}, "MKT": "STK"},
+            ref_date=date(2026, 11, 29),  # Sunday -> Friday 20261127
+        )
+        self.assertEqual(combos, [{"DT": "20261127", "MKT": "STK"}])
+
+    def test_effective_pagination_detects_implicit_page_marker(self):
+        from app.v3.http_fetcher import _effective_pagination
+
+        url_spec = ApiSpec.model_validate({
+            "engine": {"request": {"url": "https://example.com/list?page=:PAGE&size=20"}}
+        })
+        pag = _effective_pagination(url_spec)
+        self.assertIsNotNone(pag)
+        self.assertEqual(pag.mode, "page")
+        self.assertEqual(pag.param, "PAGE")
+        self.assertEqual(pag.start, 1)
+
+        no_pag_spec = ApiSpec.model_validate({
+            "engine": {"request": {"url": "https://example.com/list?dt=:STD_DT"}}
+        })
+        self.assertIsNone(_effective_pagination(no_pag_spec))
+
+    def test_parquet_writer_falls_back_to_duckdb_on_mixed_types(self):
+        import duckdb
+        from app.v3.parquet_sink import write_records_to_parquet
+
+        rows = [
+            {"code": "A", "val": 100, "meta": {"tag": None}},
+            {"code": "B", "val": "N/A", "meta": {"tag": "x"}},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "mixed.parquet"
+            size = write_records_to_parquet(rows, out)
+            self.assertGreater(size, 0)
+            con = duckdb.connect(":memory:")
+            try:
+                cnt = con.execute(f"SELECT count(*) FROM read_parquet('{out}')").fetchone()[0]
+                self.assertEqual(cnt, 2)
+            finally:
+                con.close()
+
+    def test_execute_api_job_records_output_uris_and_uses_target_date(self):
+        from app.v3.executor import execute_api_job
+        from app.v3.parquet_sink import ParquetWriteResult
+
+        snap = DailyConfigSnapshot(
+            generated_at="2026-11-27T06:30:00+09:00",
+            apis={
+                "SAMPLE_API": {
+                    "api_id": "SAMPLE_API",
+                    "protocol": "HTTP",
+                    "spec_json": {
+                        "engine": {
+                            "request": {"url": "https://example.com?dt=:STD_DT"},
+                            "sink": {
+                                "target_name": "sample_tbl",
+                                "job_key_params": ["STD_DT"],
+                                "row_stamp": {"STD_DT": "std_dt"},
+                            },
+                        }
+                    },
+                }
+            },
+            api_jobs={
+                "SAMPLE_JOB": {
+                    "job_id": "SAMPLE_JOB",
+                    "job_type": "SCRAPE",
+                    "api_id": "SAMPLE_API",
+                    "is_active": True,
+                    "job_spec_json": {"params": {"STD_DT": {"date": "today"}}},
+                }
+            },
+        )
+        seen_params: list[dict] = []
+
+        def _fake_collect(api_id, spec, params, **kw):
+            seen_params.append(dict(params))
+            return [{"isin": "KR1"}]
+
+        fake_pub = ParquetWriteResult(
+            object_key="v3/raw_clean/sample_tbl/dt=20261125/batch.parquet",
+            row_count=1,
+            byte_size=123,
+            uploaded_uris={"oci": "s3://bkt/v3/raw_clean/sample_tbl/dt=20261125/batch.parquet"},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LocalRunLedger("20261125", base_dir=Path(td))
+            with mock.patch("app.v3.executor.collect_http_records", side_effect=_fake_collect), \
+                 mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
+                res = execute_api_job(snap, "SAMPLE_JOB", target_date="20261125", ledger=ledger)
+            self.assertEqual(seen_params, [{"STD_DT": "20261125"}])
+            self.assertEqual(res["rows"], 1)
+            entries = ledger.read_all()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].status, "SUCCESS")
+            self.assertEqual(
+                entries[0].output_uris,
+                {"oci": "s3://bkt/v3/raw_clean/sample_tbl/dt=20261125/batch.parquet"},
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
