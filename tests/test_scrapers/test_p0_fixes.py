@@ -1,14 +1,13 @@
-"""Regression tests for P0 bug fixes and security boundaries."""
+"""Regression tests for error classification, URL masking, and secret placeholder guards."""
 
 from __future__ import annotations
 
 import json
-import os
 import unittest
 import xml.etree.ElementTree as ET
-from unittest import mock
 
 from app.errors import ConfigError, SourceUnavailable, _mask_url, classify
+from app.v3.http_fetcher import resolve_secret_placeholders, substitute_placeholders
 
 
 class TestErrorClassificationAndMasking(unittest.TestCase):
@@ -41,40 +40,26 @@ class TestErrorClassificationAndMasking(unittest.TestCase):
         self.assertIn("crtfc_key=%2A%2A%2A", masked)
 
 
-class TestPureScraperHelpers(unittest.TestCase):
-    def test_auth_config_blocks_infrastructure_secrets(self):
-        # Test _is_blocked_env_var directly without requiring dotenv/loguru
-        import ast
-        from pathlib import Path
-
-        src = Path("app/auth_config.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        ns: dict = {}
-        for node in tree.body:
-            if isinstance(node, (ast.Assign, ast.FunctionDef)):
-                name = node.name if isinstance(node, ast.FunctionDef) else None
-                targets = (
-                    [t.id for t in node.targets if isinstance(t, ast.Name)]
-                    if isinstance(node, ast.Assign)
-                    else []
-                )
-                if name == "_is_blocked_env_var" or any(t.startswith("_BLOCKED_") for t in targets):
-                    exec(compile(ast.Module(body=[node], type_ignores=[]), "auth_config", "exec"), ns)
-
-        is_blocked = ns["_is_blocked_env_var"]
-        for forbidden in ("ORACLE_PASSWORD", "OCI_SECRET_KEY", "S3_R2_SECRET_KEY", "NEON_DATABASE_URL", "DATABASE_URL", "ADMIN_API_KEY"):
-            self.assertTrue(is_blocked(forbidden), f"{forbidden} must be blocked")
-        for allowed in ("KRX_AUTH_KEY", "KIS_ACCESS_TOKEN", "DART_KEY"):
-            self.assertFalse(is_blocked(allowed), f"{allowed} must be allowed")
+class TestSecurityAndPlaceholders(unittest.TestCase):
+    def test_secret_placeholders_block_infrastructure_env_vars(self):
+        for forbidden in (
+            "ORACLE_PASSWORD",
+            "OCI_SECRET_KEY",
+            "S3_R2_SECRET_KEY",
+            "NEON_DATABASE_URL",
+            "DATABASE_URL",
+            "ADMIN_API_KEY",
+        ):
+            with self.assertRaises(PermissionError, msg=f"{forbidden} must be blocked"):
+                resolve_secret_placeholders(f"${{{forbidden}}}")
 
     def test_substitute_placeholders_single_pass_and_backslash_safe(self):
-        import re
-
-        pattern = re.compile(r"(?<!\w):(\w+)(?!\w)")
         params = {"A": r":B\1", "B": "SHOULD_NOT_REPLACE"}
         text = "first=:A&second=:B&third=:A2"
-        result = pattern.sub(lambda m: str(params[m.group(1)]) if m.group(1) in params else m.group(0), text)
-        self.assertEqual(result, r"first=:B\1&second=SHOULD_NOT_REPLACE&third=:A2")
+        self.assertEqual(
+            substitute_placeholders(text, params),
+            r"first=:B\1&second=SHOULD_NOT_REPLACE&third=:A2",
+        )
 
 
 if __name__ == "__main__":

@@ -1,27 +1,23 @@
-"""Liveness/readiness check -- confirms the process is up *and* can reach
-Oracle, independent of any future business router. Same DB the batch side
-(app.cli) uses, just queried over HTTP instead of a systemd timer."""
+"""Health check endpoint (Neon DB connectivity + configured S3 targets)."""
 
-from typing import Any, cast
-
+from __future__ import annotations
 
 from fastapi import APIRouter
-from requests import get
-from sqlalchemy import text
 
-from app.api.deps import SessionDep
+from app.api.deps import NeonConnDep
+from app.object_storage import configured_targets
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-def health_check(session: SessionDep) -> dict[str, str]:
-    # cast: see app.services.job_builder._run_query_rows -- Session.exec()'s
-    # stub doesn't accept a bare TextClause even though it works at runtime.
-    session.exec(cast(Any, text("SELECT 1 FROM DUAL")))
-    return {"status": "ok"}
-
-
-@router.get("/ip")
-def get_ip():
-    return get('https://api.ipify.org').text
+def health_check(conn: NeonConnDep) -> dict[str, object]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 AS ok")
+        cur.fetchone()
+    return {
+        "status": "ok",
+        "version": "v3",
+        "neon": "ok",
+        "s3_targets": configured_targets(),
+    }

@@ -1,49 +1,26 @@
 [project]
 name = "pyscrap"
-version = "0.1.0"
-description = "Oracle DB scraper using SQLModel"
-# 3.13 은 개발 기계의 버전을 적어둔 것이었고, 코드가 요구하는 수준이 아니다.
-# 3.12 나 3.13 에만 있는 문법을 쓰는 곳이 없다 -- 실제 하한은 애노테이션의
-# "X | None" 이라 3.10 이다. 배포 대상인 Oracle Linux 가 3.12 까지만 주고
-# 3.13 패키지가 없어서 설치가 막혔다. 돌려본 것이 3.12 와 3.13 이라 그 둘만
-# 적는다.
+version = "3.0.0"
+description = "Config-driven Korean financial market data pipeline (Neon PostgreSQL + OCI/R2 Parquet + DuckDB)"
 requires-python = ">=3.12"
 dependencies = [
-    "sqlmodel>=0.0.22",
-    "oracledb>=2.4.1",
-    "alembic>=1.14.0",
-    "pydantic-settings>=2.6.1",
+    "pydantic>=2.9.0",
     "httpx>=0.28.0",
-    # httpx 가 이미 끌어오지만 직접 import 한다 (app/certs 의 추가 인증서를
-    # certifi 번들 위에 얹는다 -- dynamic._ssl_context 참고).
     "certifi>=2024.8.30",
     "beautifulsoup4>=4.12.3",
-    # 운용사 ETF 구성종목이 스프레드시트로만 나오는 곳이 있다 -- NH/타임은
-    # OOXML(xlsx), 키움은 아직 OLE2(xls) 라 리더가 둘 다 필요하다.
     "openpyxl>=3.1.5",
     "xlrd>=2.0.1",
-    "tenacity>=9.0.0",
-    "loguru>=0.7.2",
-    "typer>=0.15.1",
     "boto3>=1.34.0",
-    "fastapi[standard]>=0.115.0",
-    "requests>=2.32.0",
-]
-
-[project.optional-dependencies]
-# request_type='BROWSER' 행만 쓴다. 브라우저를 실제로 띄우는 배포(Oracle
-# 인스턴스)에서만 설치하고, API 배포는 빼둔다 -- 잡을 만들고 검증하는 쪽은
-# 브라우저 잡을 실행하지 않으므로 chromium 150MB 를 이미지에 넣을 이유가
-# 없다. 설치 후 브라우저 바이너리도 받아야 한다:
-#   pip install -e ".[browser]"
-#   playwright install --with-deps chromium
-browser = ["playwright>=1.48"]
-# v3: Neon DB(PostgreSQL) + DuckDB + Parquet 직적재 파이프라인
-v3 = [
     "duckdb>=1.1.0",
     "pyarrow>=17.0.0",
     "psycopg[binary]>=3.2.0",
 ]
+
+[project.optional-dependencies]
+api = ["fastapi[standard]>=0.115.0"]
+browser = ["playwright>=1.48"]
+# Only needed if running the one-off scripts/migrate_v2_to_v3.py against Oracle v2
+migration = ["oracledb>=2.4.1"]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.7.0",
@@ -52,17 +29,8 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
-# app/certs 는 코드가 아니라 데이터라 packages.find 만으로는 설치본에
-# 들어가지 않는다. 개발/배포 모두 editable 설치라 지금은 소스 트리에서
-# 읽히지만, 일반 설치로 바뀌어도 인증서가 빠지지 않도록 명시한다.
 [tool.setuptools.package-data]
 app = ["certs/*.pem"]
 
 [tool.fastapi]
-# `fastapi run`'s auto-detection only looks at a fixed set of root-level
-# paths (main.py, app.py, api.py, app/main.py, ...) -- our actual app lives
-# one level deeper, at app/api/main.py, which none of those match. Pinning
-# the dotted import path here (verified working: `fastapi run` accepts it
-# directly, no root-level shim file needed) is what FastAPI Cloud's deploy
-# actually uses to start the app.
 entrypoint = "app.api.main:app"

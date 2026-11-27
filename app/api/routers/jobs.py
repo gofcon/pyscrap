@@ -1,89 +1,93 @@
-"""Action endpoints over ApiJob/ApiJobBuilder that aren't plain CRUD --
-mounted at the same "/jobs" prefix as the ApiJob CRUD router (see
-make_crud_router(ApiJob, ...) in app.api.main), since these act on that same
-resource. Thin wrappers only: all the actual logic lives in
-app.services.execution, the same module app.cli's systemd-timer commands
-call.
+"""v3 job action endpoints (sync-config, dry-run, run-job, run-cycle, flush-log)."""
 
-Three generate endpoints, one per granularity (see
-app.services.execution's module docstring for why all three exist):
-individual builder, one schedule_tag, everything. All nested under
-"/generate/..." with a distinguishing literal segment (cycle/builder/all) --
-NOT e.g. "/generate/{schedule_tag}" next to "/generate/{build_id}": those
-are the exact same path *shape* to the router (a parameter's name doesn't
-factor into route matching at all), so the one registered first would
-silently swallow every request meant for the other -- no startup error, just
-a route that never fires. A literal segment before the param is what
-actually disambiguates them."""
+from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Any
 
-from app.api.deps import SessionDep
-from app.db.models import ApiJob
+from fastapi import APIRouter, HTTPException, Query
+
 from app.errors import ConfigError, SourceRefused
-from app.services.execution import generate_all_jobs, generate_jobs, generate_jobs_for_builder, run_job
+from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger
+from app.v3.executor import dry_run_api, execute_job, execute_schedule_cycle, now_kst
+from app.v3.neon_sync import mirror_user_tables_to_parquet, pull_daily_snapshot
 
-router = APIRouter(prefix="/jobs", tags=["api_job"])
-
-
-def _raise_config_http(exc: ConfigError) -> None:
-    msg = str(exc)
-    status = 404 if msg.startswith("No ApiJobBuilder row") else 400
-    raise HTTPException(status, msg) from exc
+router = APIRouter(prefix="/jobs", tags=["actions"])
 
 
-@router.post("/generate/cycle/{schedule_tag}")
-def generate_by_cycle(schedule_tag: str, session: SessionDep) -> list[str]:
-    """Create any still-missing ApiJob rows for this schedule_tag -- same
-    as `python -m app.cli generate-jobs <schedule_tag>` (see app.cli).
-    Returns the newly-created job_ids (empty if everything already existed)."""
+@router.post("/sync-config")
+def sync_config(mirror_user_parquet: bool = Query(default=False)) -> dict[str, Any]:
+    """Pull daily config snapshot from Neon DB (and optionally mirror manual tables to v3/snapshot/)."""
+    snap, path = pull_daily_snapshot()
+    mirrored = mirror_user_tables_to_parquet(snap) if mirror_user_parquet else {}
+    return {
+        "snapshot_path": str(path),
+        "api_mst": len(snap.apis),
+        "api_job": len(snap.api_jobs),
+        "etl_job": len(snap.etl_jobs),
+        "host_policy": len(snap.host_policies),
+        "mirrored": mirrored,
+    }
+
+
+@router.post("/dry-run/{api_id}")
+def dry_run(api_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fetch 1 request, cleanse, and evaluate contract without uploading or logging."""
+    payload = body or {}
+    snap = DailyConfigSnapshot.load()
     try:
-        created = generate_jobs(session, schedule_tag)
+        res = dry_run_api(
+            snap,
+            api_id,
+            payload.get("params") or {},
+            sample_limit=int(payload.get("sample_limit", 5)),
+        )
     except ConfigError as exc:
-        _raise_config_http(exc)
-    return [job.job_id for job in created]
-
-
-@router.post("/generate/all")
-def generate_all(session: SessionDep) -> list[str]:
-    """Create any still-missing ApiJob rows for every active builder,
-    regardless of schedule_tag -- a manual "generate everything now",
-    e.g. for a one-off full refresh outside the normal per-cycle schedule."""
-    try:
-        created = generate_all_jobs(session)
-    except ConfigError as exc:
-        _raise_config_http(exc)
-    return [job.job_id for job in created]
-
-
-@router.post("/generate/builder/{build_id}")
-def generate_for_builder(build_id: str, session: SessionDep) -> list[str]:
-    """Create job(s) for one specific ApiJobBuilder by id, regardless of its
-    schedule_tag/is_active -- e.g. to try out a builder you just created
-    (or edited) without waiting for its scheduled cycle or flipping it
-    active first."""
-    try:
-        created = generate_jobs_for_builder(session, build_id)
-    except (ConfigError, ValueError) as exc:
-        if isinstance(exc, ConfigError):
-            _raise_config_http(exc)
-        raise HTTPException(404, str(exc)) from exc
-    return [job.job_id for job in created]
+        raise HTTPException(404 if "No api_mst row" in str(exc) else 400, str(exc)) from exc
+    return {
+        "api_id": res.api_id,
+        "raw_count": res.raw_count,
+        "cleaned_count": res.cleaned_count,
+        "contract_ok": res.contract.ok,
+        "contract_action": res.contract.action,
+        "violations": res.contract.violations,
+        "columns": res.columns,
+        "sample_rows": res.sample_rows,
+    }
 
 
 @router.post("/run/{job_id}")
-def run(job_id: str, session: SessionDep) -> dict[str, str | None]:
-    """Execute one already-existing ApiJob by id, regardless of its
-    schedule_tag/is_active -- the same app.services.execution.run_job a
-    scheduled run-cycle tick would call, just triggered by id instead of
-    scanned for. Logs SUCCESS/FAILED to ApiJobLog same as any other run."""
-    job = session.get(ApiJob, job_id)
-    if job is None:
-        raise HTTPException(404, f"ApiJob '{job_id}' not found")
+def run_one_job(
+    job_id: str,
+    job_type: str | None = Query(default=None, pattern="^(?i)(api|etl)$"),
+    target_date: str | None = Query(default=None, pattern=r"^\d{8}$"),
+    limit: int | None = Query(default=None, ge=1),
+) -> dict[str, Any]:
+    """Execute one ``api_job`` or ``etl_job`` from the local snapshot."""
+    snap = DailyConfigSnapshot.load()
     try:
-        run_job(session, job)
+        return execute_job(snap, job_id, job_type=job_type, target_date=target_date, limit=limit)
+    except ConfigError as exc:
+        raise HTTPException(404 if "No " in str(exc) else 400, str(exc)) from exc
     except SourceRefused as exc:
-        # 이미 로그에 남아 있다 -- status=BLOCKED, error_code=SourceRefused.
-        # 거절은 사이트의 상태이고 우리 쪽 오류가 아니라서 503 이다.
         raise HTTPException(503, str(exc)) from exc
-    return {"job_id": job.job_id, "engine_note": job.engine_note}
+
+
+@router.post("/run-cycle/{schedule_tag}")
+def run_cycle(
+    schedule_tag: str,
+    target_date: str | None = Query(default=None, pattern=r"^\d{8}$"),
+) -> list[dict[str, Any]]:
+    """Run every active ``api_job`` + ``etl_job`` for ``schedule_tag`` ordered by ``run_order``."""
+    snap = DailyConfigSnapshot.load()
+    try:
+        return execute_schedule_cycle(snap, schedule_tag, target_date=target_date)
+    except SourceRefused as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/flush-log")
+def flush_log(target_date: str | None = Query(default=None, pattern=r"^\d{8}$")) -> dict[str, Any]:
+    """Bulk-push the local daily ledger into Neon ``job_log``."""
+    day = target_date or now_kst().strftime("%Y%m%d")
+    count = LocalRunLedger(day).flush_to_neon()
+    return {"target_date": day, "flushed_rows": count}
