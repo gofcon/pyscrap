@@ -1,6 +1,6 @@
 """Single-connection Neon DB snapshot puller (Scale-to-Zero friendly).
 
-Called once pre-market (``python3 -m app.v3.cli sync-config``) to pull all
+Called once pre-market (``python3 -m app.cli sync-config``) to pull all
 active ``api_mst``, ``api_job``, ``etl_job``, ``host_policy``, and manual
 ``user_*`` tables from Neon into ``data/cache/config_snapshot.json`` so the
 entire day's batches run without waking Neon again until the end-of-day
@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.v3.batch_cache import DailyConfigSnapshot
+from app.core.batch_cache import DailyConfigSnapshot
 
 _MANUAL_USER_TABLES = (
     "user_etf",
@@ -117,7 +117,7 @@ def mirror_user_tables_to_parquet(
     skip_unconfigured_targets: bool = True,
 ) -> dict[str, dict[str, str]]:
     """Publish manual ``user_*`` tables from snapshot to ``v3/snapshot/<table_name>.parquet``."""
-    from app.v3.parquet_sink import publish_parquet_batch
+    from app.storage.parquet_sink import publish_parquet_batch
 
     published: dict[str, dict[str, str]] = {}
     for table, rows in snapshot.user_tables.items():

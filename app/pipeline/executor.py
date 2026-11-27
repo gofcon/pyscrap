@@ -19,21 +19,21 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.errors import ConfigError, SessionExpired, SourceRefused, classify
-from app.object_storage import bucket_name
-from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
-from app.v3.binary_sink import publish_binary_payload
-from app.v3.cleanse import ContractResult, apply_cleanse, evaluate_contract
-from app.v3.duckdb_runner import build_duckdb_config, register_s3_secrets, run_duckdb_job
-from app.v3.http_fetcher import (
+from app.storage.object_storage import bucket_name
+from app.core.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
+from app.storage.binary_sink import publish_binary_payload
+from app.ingest.cleanse import ContractResult, apply_cleanse, evaluate_contract
+from app.pipeline.duckdb_runner import build_duckdb_config, register_s3_secrets, run_duckdb_job
+from app.ingest.http_fetcher import (
     collect_http_bundle,
     collect_http_records,
     fetch_http_binary,
     http_state_key,
     run_http_session_login,
 )
-from app.v3.parquet_sink import publish_parquet_batch
-from app.v3.session_store import clear_session_state, save_session_tokens
-from app.v3.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec
+from app.storage.parquet_sink import publish_parquet_batch
+from app.core.session_store import clear_session_state, save_session_tokens
+from app.core.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec
 
 KST = timezone(timedelta(hours=9))
 _CYCLE_RE = re.compile(r"^(\d+)([mhdw])(?:_\w+)?$")
@@ -232,7 +232,7 @@ def _run_session_login(
     proto = (login_row.get("protocol") or "HTTP").upper()
     clear_session_state(http_state_key(login_api_id, login_spec))
     if proto == "BROWSER":
-        from app.v3.browser_runner import collect_browser_bundle
+        from app.ingest.browser_runner import collect_browser_bundle
 
         collect_browser_bundle(
             login_api_id, login_spec, params or {}, host_policies=snapshot.host_policies
@@ -254,7 +254,7 @@ def _fetch_partition_data(
     """Fetch one partition (HTTP or BROWSER, PARQUET or BINARY) with 1 auto re-login retry."""
     def _once():
         if protocol == "BROWSER":
-            from app.v3.browser_runner import collect_browser_bundle
+            from app.ingest.browser_runner import collect_browser_bundle
 
             return collect_browser_bundle(
                 api_id, api_spec, params, host_policies=snapshot.host_policies
@@ -366,7 +366,7 @@ def execute_etl_job(
     started = time.monotonic()
     try:
         if spec.sql_text.strip().lower().startswith("-- builtin:harvest_src_code"):
-            from app.v3.code_harvester import harvest_src_codes
+            from app.pipeline.code_harvester import harvest_src_codes
 
             res = harvest_src_codes(
                 targets=spec.targets,

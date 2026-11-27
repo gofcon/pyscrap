@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.object_storage import build_v3_key, upload_file_to_targets
+from app.storage.object_storage import build_v3_key, upload_file_to_targets
 
 _DEFAULT_TMP_DIR = Path(os.environ.get("V3_TMP_DIR", "data/tmp"))
 _STREAM_THRESHOLD_ROWS = 20_000

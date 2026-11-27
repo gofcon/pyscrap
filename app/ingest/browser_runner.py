@@ -25,15 +25,15 @@ from typing import Any, Iterator
 import httpx
 
 from app.errors import ConfigError, SessionExpired
-from app.v3.http_fetcher import (
+from app.ingest.http_fetcher import (
     _extract_json_records,
     _merge_page_records,
     _resolve_text,
     _rows_to_records,
     pace_host,
 )
-from app.v3.session_store import session_state_path
-from app.v3.spec import ApiSpec
+from app.core.session_store import session_state_path
+from app.core.spec import ApiSpec
 
 _HEADLESS = os.environ.get("BROWSER_HEADLESS", "1").lower() not in ("0", "false", "no")
 _TIMEOUT_MS = int(os.environ.get("BROWSER_TIMEOUT_MS", "15000"))

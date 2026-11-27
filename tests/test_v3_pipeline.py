@@ -10,17 +10,17 @@ from unittest import mock
 
 from pydantic import ValidationError
 
-from app.object_storage import (
+from app.storage.object_storage import (
     build_v3_key,
     configured_targets,
     get_target_config,
     upload_bytes_to_targets,
     v3_prefix,
 )
-from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
-from app.v3.cleanse import apply_cleanse, evaluate_contract
-from app.v3.duckdb_runner import build_duckdb_config
-from app.v3.spec import ApiSpec, CleanseSpec, ContractSpec, DuckDBJobSpec, export_spec_json_schema
+from app.core.batch_cache import DailyConfigSnapshot, LocalRunLedger, RunLedgerEntry
+from app.ingest.cleanse import apply_cleanse, evaluate_contract
+from app.pipeline.duckdb_runner import build_duckdb_config
+from app.core.spec import ApiSpec, CleanseSpec, ContractSpec, DuckDBJobSpec, export_spec_json_schema
 
 
 class TestObjectStorageV3(unittest.TestCase):
@@ -69,7 +69,7 @@ class TestObjectStorageV3(unittest.TestCase):
                 fake_clients[target] = mock.MagicMock()
                 return fake_clients[target]
 
-            with mock.patch("app.object_storage.get_client", side_effect=_fake_client):
+            with mock.patch("app.storage.object_storage.get_client", side_effect=_fake_client):
                 uris = upload_bytes_to_targets(
                     b"PAR1...",
                     "v3/mart/etf_summary/data.parquet",
@@ -95,7 +95,7 @@ class TestObjectStorageV3(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(configured_targets(), ["oci"])
-            with mock.patch("app.object_storage.get_client", return_value=mock.MagicMock()):
+            with mock.patch("app.storage.object_storage.get_client", return_value=mock.MagicMock()):
                 uris = upload_bytes_to_targets(
                     b"data",
                     "v3/ref/mst_etf.parquet",
@@ -229,10 +229,10 @@ class TestDuckDBConfigAndBatchCache(unittest.TestCase):
     def test_duckdb_config_rejects_tmpfs(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "duckdb"
-            with mock.patch("app.v3.duckdb_runner.is_tmpfs_path", return_value=True):
+            with mock.patch("app.pipeline.duckdb_runner.is_tmpfs_path", return_value=True):
                 with self.assertRaises(ValueError):
                     build_duckdb_config(temp_directory=p)
-            with mock.patch("app.v3.duckdb_runner.is_tmpfs_path", return_value=False):
+            with mock.patch("app.pipeline.duckdb_runner.is_tmpfs_path", return_value=False):
                 cfg = build_duckdb_config(memory_limit="1GB", threads=2, temp_directory=p)
                 self.assertEqual(cfg["memory_limit"], "1GB")
                 self.assertEqual(cfg["threads"], 2)
@@ -339,7 +339,7 @@ class TestV2ToV3MigrationConverters(unittest.TestCase):
 
 class TestHttpFetcherAndExecutor(unittest.TestCase):
     def test_host_interval_longest_suffix_and_floor(self):
-        from app.v3.http_fetcher import interval_for_host
+        from app.ingest.http_fetcher import interval_for_host
 
         policies = {
             "krx.co.kr": {"min_interval_sec": 0.3},
@@ -352,7 +352,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_secret_placeholder_guard_and_response_parsers(self):
         import httpx
-        from app.v3.http_fetcher import parse_response, resolve_secret_placeholders
+        from app.ingest.http_fetcher import parse_response, resolve_secret_placeholders
 
         with self.assertRaises(PermissionError):
             resolve_secret_placeholders("Bearer ${NEON_DATABASE_URL}")
@@ -378,7 +378,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_expand_scrape_params_dates_and_literals(self):
         from datetime import date
-        from app.v3.executor import expand_scrape_params
+        from app.pipeline.executor import expand_scrape_params
 
         combos = expand_scrape_params(
             {"DT": {"date": "last_bday"}, "MKT": "STK"},
@@ -387,7 +387,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         self.assertEqual(combos, [{"DT": "20261127", "MKT": "STK"}])
 
     def test_effective_pagination_detects_implicit_page_marker(self):
-        from app.v3.http_fetcher import _effective_pagination
+        from app.ingest.http_fetcher import _effective_pagination
 
         url_spec = ApiSpec.model_validate({
             "engine": {"request": {"url": "https://example.com/list?page=:PAGE&size=20"}}
@@ -405,7 +405,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_parquet_writer_falls_back_to_duckdb_on_mixed_types(self):
         import duckdb
-        from app.v3.parquet_sink import write_records_to_parquet
+        from app.storage.parquet_sink import write_records_to_parquet
 
         rows = [
             {"code": "A", "val": 100, "meta": {"tag": None}},
@@ -423,8 +423,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                 con.close()
 
     def test_execute_api_job_records_output_uris_and_uses_target_date(self):
-        from app.v3.executor import execute_api_job
-        from app.v3.parquet_sink import ParquetWriteResult
+        from app.pipeline.executor import execute_api_job
+        from app.storage.parquet_sink import ParquetWriteResult
 
         snap = DailyConfigSnapshot(
             generated_at="2026-11-27T06:30:00+09:00",
@@ -485,8 +485,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261125", base_dir=Path(td))
-            with mock.patch("app.v3.executor.collect_http_records", side_effect=_fake_collect), \
-                 mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
+            with mock.patch("app.pipeline.executor.collect_http_records", side_effect=_fake_collect), \
+                 mock.patch("app.pipeline.executor.publish_parquet_batch", return_value=fake_pub):
                 res = execute_api_job(snap, "SAMPLE_JOB", target_date="20261125", ledger=ledger)
             self.assertEqual(seen_params, [{"STD_DT": "20261125"}])
             self.assertEqual(res["job_type"], "API")
@@ -501,9 +501,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             )
 
     def test_execute_schedule_cycle_orders_api_job_before_etl_job(self):
-        from app.v3.duckdb_runner import DuckDBJobResult
-        from app.v3.executor import execute_schedule_cycle
-        from app.v3.parquet_sink import ParquetWriteResult
+        from app.pipeline.duckdb_runner import DuckDBJobResult
+        from app.pipeline.executor import execute_schedule_cycle
+        from app.storage.parquet_sink import ParquetWriteResult
 
         snap = DailyConfigSnapshot(
             generated_at="2026-11-27T06:30:00+09:00",
@@ -561,10 +561,10 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261127", base_dir=Path(td))
-            with mock.patch("app.v3.executor.collect_http_records", return_value=[{"x": 1}]), \
-                 mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub), \
-                 mock.patch("app.v3.executor.bucket_name", return_value="bkt"), \
-                 mock.patch("app.v3.executor.run_duckdb_job", return_value=fake_etl):
+            with mock.patch("app.pipeline.executor.collect_http_records", return_value=[{"x": 1}]), \
+                 mock.patch("app.pipeline.executor.publish_parquet_batch", return_value=fake_pub), \
+                 mock.patch("app.pipeline.executor.bucket_name", return_value="bkt"), \
+                 mock.patch("app.pipeline.executor.run_duckdb_job", return_value=fake_etl):
                 results = execute_schedule_cycle(snap, "daily_batch2", target_date="20261127", ledger=ledger)
             self.assertEqual([(r["job_type"], r["job_id"]) for r in results], [("API", "JOB_API"), ("ETL", "JOB_ETL")])
             entries = ledger.read_all()
@@ -574,8 +574,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             ])
 
     def test_duckdb_runner_resolves_canonical_snapshot_daily_monthly_paths(self):
-        from app.object_storage import resolve_etl_object_key
-        from app.v3.duckdb_runner import run_duckdb_job
+        from app.storage.object_storage import resolve_etl_object_key
+        from app.pipeline.duckdb_runner import run_duckdb_job
 
         self.assertEqual(
             resolve_etl_object_key("snapshot", "mst_etf"),
@@ -601,10 +601,10 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             min_rows=1,
         )
         with tempfile.TemporaryDirectory() as td:
-            with mock.patch("app.v3.duckdb_runner.is_tmpfs_path", return_value=False), \
-                 mock.patch("app.v3.duckdb_runner.register_s3_secrets", return_value=[]), \
+            with mock.patch("app.pipeline.duckdb_runner.is_tmpfs_path", return_value=False), \
+                 mock.patch("app.pipeline.duckdb_runner.register_s3_secrets", return_value=[]), \
                  mock.patch(
-                     "app.v3.duckdb_runner.upload_file_to_targets",
+                     "app.pipeline.duckdb_runner.upload_file_to_targets",
                      side_effect=lambda p, key, **kw: {"oci": f"s3://bkt/{key}"},
                  ):
                 res = run_duckdb_job(
@@ -616,9 +616,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             self.assertEqual(res.row_count, 1)
 
     def test_code_harvester_column_filters_and_builtin_dispatch(self):
-        from app.v3.code_harvester import infer_source_name, is_candidate_code_column
-        from app.v3.duckdb_runner import DuckDBJobResult
-        from app.v3.executor import execute_etl_job
+        from app.pipeline.code_harvester import infer_source_name, is_candidate_code_column
+        from app.pipeline.duckdb_runner import DuckDBJobResult
+        from app.pipeline.executor import execute_etl_job
 
         self.assertTrue(is_candidate_code_column("mkt_div", "VARCHAR"))
         self.assertFalse(is_candidate_code_column("bas_dd", "VARCHAR"))
@@ -659,7 +659,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261127", base_dir=Path(td))
-            with mock.patch("app.v3.code_harvester.harvest_src_codes", return_value=fake_res):
+            with mock.patch("app.pipeline.code_harvester.harvest_src_codes", return_value=fake_res):
                 out = execute_etl_job(snap, "HARVEST_SRC_CODE", target_date="20261127", ledger=ledger)
             self.assertEqual(out["rows"], 42)
             entries = ledger.read_all()
@@ -669,8 +669,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_cleanup_prefix_safety_and_purge_verified_daily(self):
         from datetime import date
-        from app.object_storage import _validate_v3_cleanup_prefix
-        from app.v3.cleanup import purge_verified_daily
+        from app.storage.object_storage import _validate_v3_cleanup_prefix
+        from app.pipeline.cleanup import purge_verified_daily
 
         self.assertEqual(
             _validate_v3_cleanup_prefix("v3/daily/kis_futopt_chart/ym=202607/"),
@@ -691,9 +691,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                 return True, {"ym": ym, "monthly_rows": 100, "daily_distinct_rows": 100, "hash_match": True}
             return False, {"ym": ym, "monthly_rows": 99, "daily_distinct_rows": 100, "hash_match": False}
 
-        with mock.patch("app.v3.cleanup.list_keys_with_prefix", return_value=daily_keys), \
-             mock.patch("app.v3.cleanup.verify_monthly_matches_daily", side_effect=_fake_verify), \
-             mock.patch("app.v3.cleanup.delete_keys_from_targets", return_value={"oci": 1}) as del_mock:
+        with mock.patch("app.pipeline.cleanup.list_keys_with_prefix", return_value=daily_keys), \
+             mock.patch("app.pipeline.cleanup.verify_monthly_matches_daily", side_effect=_fake_verify), \
+             mock.patch("app.pipeline.cleanup.delete_keys_from_targets", return_value={"oci": 1}) as del_mock:
             dry = purge_verified_daily("kis_futopt_chart", keep_months=3, ref_date=date(2026, 11, 27), dry_run=True)
             self.assertEqual([m["ym"] for m in dry["verified_months"]], ["202607"])
             self.assertEqual([m["ym"] for m in dry["skipped_months"]], ["202606"])
@@ -710,8 +710,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_purge_raw_clean_and_iter_target_dates(self):
         from datetime import date
-        from app.v3.cleanup import extract_dt_from_key, purge_raw_clean
-        from app.v3.cli import iter_target_dates
+        from app.pipeline.cleanup import extract_dt_from_key, purge_raw_clean
+        from app.cli import iter_target_dates
 
         self.assertEqual(extract_dt_from_key("v3/raw_clean/ace_etf_pdf/dt=20261015/a.parquet"), "20261015")
         self.assertIsNone(extract_dt_from_key("v3/ref/mst_etf.parquet"))
@@ -720,8 +720,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             "v3/raw_clean/ace_etf_pdf/dt=20261001/old.parquet",
             "v3/raw_clean/ace_etf_pdf/dt=20261120/recent.parquet",
         ]
-        with mock.patch("app.v3.cleanup.list_keys_with_prefix", return_value=keys), \
-             mock.patch("app.v3.cleanup.delete_keys_from_targets", return_value={"oci": 1}) as del_mock:
+        with mock.patch("app.pipeline.cleanup.list_keys_with_prefix", return_value=keys), \
+             mock.patch("app.pipeline.cleanup.delete_keys_from_targets", return_value={"oci": 1}) as del_mock:
             dry = purge_raw_clean(keep_days=30, ref_date=date(2026, 11, 27), dry_run=True)
             self.assertEqual(dry["matched"], {"oci": 1})
             self.assertEqual(dry["deleted"], {"oci": 0})
@@ -747,10 +747,10 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_session_store_and_persist_env_and_multi_selector(self):
         import httpx
-        from app.v3.executor import execute_api_job
-        from app.v3.http_fetcher import resolve_secret_placeholders
-        from app.v3.parquet_sink import ParquetWriteResult
-        from app.v3.session_store import get_session_token, save_session_tokens
+        from app.pipeline.executor import execute_api_job
+        from app.ingest.http_fetcher import resolve_secret_placeholders
+        from app.storage.parquet_sink import ParquetWriteResult
+        from app.core.session_store import get_session_token, save_session_tokens
 
         with tempfile.TemporaryDirectory() as td:
             store = Path(td) / "session_store.json"
@@ -761,7 +761,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
             save_session_tokens({"KIS_ACCESS_TOKEN": "tok-123"}, path=store)
             self.assertEqual(get_session_token("KIS_ACCESS_TOKEN", path=store), "tok-123")
-            with mock.patch("app.v3.http_fetcher.get_session_token", side_effect=lambda k: get_session_token(k, path=store)):
+            with mock.patch("app.ingest.http_fetcher.get_session_token", side_effect=lambda k: get_session_token(k, path=store)):
                 self.assertEqual(resolve_secret_placeholders("Bearer ${KIS_ACCESS_TOKEN}"), "Bearer tok-123")
 
             # Multi-selector + persist_env end-to-end via execute_api_job
@@ -812,9 +812,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                 return ParquetWriteResult(object_key=key, row_count=len(rows), byte_size=10, uploaded_uris={"oci": f"s3://bkt/{key}"})
 
             ledger = LocalRunLedger("20261127", base_dir=Path(td) / "ledger")
-            with mock.patch("app.v3.http_fetcher.fetch_once", return_value=fake_resp), \
-                 mock.patch("app.v3.executor.publish_parquet_batch", side_effect=_fake_pub), \
-                 mock.patch("app.v3.executor.save_session_tokens", side_effect=lambda u: save_session_tokens(u, path=store)):
+            with mock.patch("app.ingest.http_fetcher.fetch_once", return_value=fake_resp), \
+                 mock.patch("app.pipeline.executor.publish_parquet_batch", side_effect=_fake_pub), \
+                 mock.patch("app.pipeline.executor.save_session_tokens", side_effect=lambda u: save_session_tokens(u, path=store)):
                 res = execute_api_job(snap, "KIS_ETF_PDF_JOB", target_date="20261127", ledger=ledger)
 
             self.assertEqual(published_targets, [("kis_etf", 1), ("kis_etf_pdf", 2)])
@@ -861,8 +861,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
     def test_binary_sink_unzip_and_zip_slip_guard(self):
         import io
         import zipfile
-        from app.v3.binary_sink import publish_binary_payload
-        from app.v3.executor import execute_api_job
+        from app.storage.binary_sink import publish_binary_payload
+        from app.pipeline.executor import execute_api_job
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -876,7 +876,7 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
             uploaded.append((key, len(data)))
             return {"oci": f"s3://bkt/{key}"}
 
-        with mock.patch("app.v3.binary_sink.upload_bytes_to_targets", side_effect=_fake_upload):
+        with mock.patch("app.storage.binary_sink.upload_bytes_to_targets", side_effect=_fake_upload):
             recs, last_uris = publish_binary_payload(
                 zip_bytes,
                 staging={"group": "dart_docs", "name": ":RCEPT_NO.zip", "unzip": True},
@@ -921,8 +921,8 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261127", base_dir=Path(td))
-            with mock.patch("app.v3.executor.fetch_http_binary", return_value=("2026112700001.zip", zip_bytes)), \
-                 mock.patch("app.v3.binary_sink.upload_bytes_to_targets", side_effect=_fake_upload):
+            with mock.patch("app.pipeline.executor.fetch_http_binary", return_value=("2026112700001.zip", zip_bytes)), \
+                 mock.patch("app.storage.binary_sink.upload_bytes_to_targets", side_effect=_fake_upload):
                 res = execute_api_job(snap, "DART_DOC_JOB", target_date="20261127", ledger=ledger)
             self.assertEqual(res["rows"], 2)
             entries = ledger.read_all()
@@ -932,9 +932,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
     def test_session_login_auto_retry_and_browser_dispatch(self):
         from app.errors import SessionExpired
-        from app.v3.executor import execute_api_job
-        from app.v3.parquet_sink import ParquetWriteResult
-        from app.v3.session_store import clear_session_state, load_http_cookies, save_http_cookies
+        from app.pipeline.executor import execute_api_job
+        from app.storage.parquet_sink import ParquetWriteResult
+        from app.core.session_store import clear_session_state, load_http_cookies, save_http_cookies
 
         # 1. Cookie store roundtrip
         with tempfile.TemporaryDirectory() as td:
@@ -1023,9 +1023,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             ledger = LocalRunLedger("20261127", base_dir=Path(td))
-            with mock.patch("app.v3.executor.run_http_session_login") as login_mock, \
-                 mock.patch("app.v3.executor.collect_http_records", side_effect=_flaky_collect), \
-                 mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
+            with mock.patch("app.pipeline.executor.run_http_session_login") as login_mock, \
+                 mock.patch("app.pipeline.executor.collect_http_records", side_effect=_flaky_collect), \
+                 mock.patch("app.pipeline.executor.publish_parquet_batch", return_value=fake_pub):
                 # Explicit SESSION job succeeds
                 sres = execute_api_job(snap, "KRX_LOGIN_JOB", target_date="20261127", ledger=ledger)
                 self.assertEqual(sres["sink_type"], "SESSION")
@@ -1036,9 +1036,9 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
 
             # 3. BROWSER job dispatches to browser_runner.collect_browser_bundle
             with mock.patch(
-                "app.v3.browser_runner.collect_browser_bundle",
+                "app.ingest.browser_runner.collect_browser_bundle",
                 return_value=([{"isin": "KR7069500007"}], {}, []),
-            ) as br_mock, mock.patch("app.v3.executor.publish_parquet_batch", return_value=fake_pub):
+            ) as br_mock, mock.patch("app.pipeline.executor.publish_parquet_batch", return_value=fake_pub):
                 bres = execute_api_job(snap, "KRX_BROWSER_JOB", target_date="20261127", ledger=ledger)
                 self.assertEqual(bres["rows"], 1)
                 br_mock.assert_called_once()

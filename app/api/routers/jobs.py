@@ -7,9 +7,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.errors import ConfigError, SourceRefused
-from app.v3.batch_cache import DailyConfigSnapshot, LocalRunLedger
-from app.v3.executor import dry_run_api, execute_job, execute_schedule_cycle, now_kst
-from app.v3.neon_sync import mirror_user_tables_to_parquet, pull_daily_snapshot
+from app.core.batch_cache import DailyConfigSnapshot, LocalRunLedger
+from app.pipeline.executor import dry_run_api, execute_job, execute_schedule_cycle, now_kst
+from app.core.neon_sync import mirror_user_tables_to_parquet, pull_daily_snapshot
 
 router = APIRouter(prefix="/jobs", tags=["actions"])
 

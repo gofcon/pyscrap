@@ -9,7 +9,7 @@ from typing import Annotated, Any, Iterator
 
 from fastapi import Depends, Header, HTTPException
 
-from app.v3.neon_sync import load_dotenv_into_env
+from app.core.neon_sync import load_dotenv_into_env
 
 load_dotenv_into_env()
 

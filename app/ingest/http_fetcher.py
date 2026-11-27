@@ -30,8 +30,8 @@ from typing import Any
 import httpx
 
 from app.errors import ConfigError, MappingError, ParamError, SessionExpired, SourceRefused, classify
-from app.v3.session_store import get_session_token, load_http_cookies, save_http_cookies
-from app.v3.spec import ApiSpec, PagePagination
+from app.core.session_store import get_session_token, load_http_cookies, save_http_cookies
+from app.core.spec import ApiSpec, PagePagination
 
 _PLACEHOLDER_RE = re.compile(r"(?<!\w):(\w+)(?!\w)")
 _PAGE_MARKER_RE = re.compile(r"(?<!\w):PAGE(?!\w)")

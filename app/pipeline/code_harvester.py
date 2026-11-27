@@ -13,9 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.object_storage import bucket_name, get_client, v3_prefix
-from app.v3.duckdb_runner import DuckDBJobResult, build_duckdb_config, register_s3_secrets
-from app.v3.parquet_sink import publish_parquet_batch
+from app.storage.object_storage import bucket_name, get_client, v3_prefix
+from app.pipeline.duckdb_runner import DuckDBJobResult, build_duckdb_config, register_s3_secrets
+from app.storage.parquet_sink import publish_parquet_batch
 
 _EXCLUDED_COLUMNS = frozenset({
     "api_id",

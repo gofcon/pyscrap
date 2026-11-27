@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from app.api.deps import NeonConnDep
-from app.v3.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec, export_spec_json_schema
+from app.core.spec import ApiSpec, EtlJobSpec, ScrapeJobSpec, export_spec_json_schema
 
 router = APIRouter()
 

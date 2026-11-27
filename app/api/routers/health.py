@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.deps import NeonConnDep
-from app.object_storage import configured_targets
+from app.storage.object_storage import configured_targets
 
 router = APIRouter(tags=["health"])
 

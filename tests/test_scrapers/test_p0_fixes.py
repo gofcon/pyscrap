@@ -7,7 +7,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from app.errors import ConfigError, SourceUnavailable, _mask_url, classify
-from app.v3.http_fetcher import resolve_secret_placeholders, substitute_placeholders
+from app.ingest.http_fetcher import resolve_secret_placeholders, substitute_placeholders
 
 
 class TestErrorClassificationAndMasking(unittest.TestCase):

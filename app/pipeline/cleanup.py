@@ -11,7 +11,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from app.object_storage import (
+from app.storage.object_storage import (
     delete_keys_from_targets,
     list_keys_with_prefix,
     v3_prefix,
@@ -138,8 +138,8 @@ def verify_monthly_matches_daily(
     """Verify ``v3/monthly/<target>/ym=<ym>/<ym>.parquet`` matches ``DISTINCT`` rows
     of ``v3/daily/<target>/ym=<ym>/**/*.parquet`` using ``COUNT(*)`` + ``BIT_XOR(HASH(*))``."""
     import duckdb
-    from app.object_storage import bucket_name
-    from app.v3.duckdb_runner import build_duckdb_config, register_s3_secrets
+    from app.storage.object_storage import bucket_name
+    from app.pipeline.duckdb_runner import build_duckdb_config, register_s3_secrets
 
     bkt = oci_bucket or bucket_name("oci")
     pfx = prefix or v3_prefix()

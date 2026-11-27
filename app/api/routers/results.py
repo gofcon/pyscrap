@@ -12,8 +12,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.api.deps import DUCKDB_SEMAPHORE
-from app.object_storage import bucket_name, get_client, v3_prefix
-from app.v3.duckdb_runner import build_duckdb_config, register_s3_secrets
+from app.storage.object_storage import bucket_name, get_client, v3_prefix
+from app.pipeline.duckdb_runner import build_duckdb_config, register_s3_secrets
 
 router = APIRouter(prefix="/results", tags=["results"])
 _TARGET_RE = re.compile(r"^[a-z0-9_]+$")

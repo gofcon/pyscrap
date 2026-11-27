@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from app.v3.spec import CleanseSpec, ContractSpec
+from app.core.spec import CleanseSpec, ContractSpec
 
 _NUMERIC_COMMA_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
 _NON_DIGIT_RE = re.compile(r"\D")

@@ -2,7 +2,7 @@
 (and optionally export derived financial masters to OCI bucket ``v3/ref/*.parquet``).
 
 Read-only against Oracle v2 (never mutates Oracle). Default mode is dry-run:
-validates every transformed ``api_mst`` row through ``app.v3.spec.ApiSpec`` and
+validates every transformed ``api_mst`` row through ``app.core.spec.ApiSpec`` and
 prints exact counts before touching Neon or S3.
 
 Usage::
@@ -24,7 +24,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.v3.spec import ApiSpec, ScrapeJobSpec
+from app.core.spec import ApiSpec, ScrapeJobSpec
 
 # Migrated from app.scrapers.dynamic._HOST_INTERVALS into Neon host_policy
 DEFAULT_HOST_POLICIES: list[tuple[str, float, int, str]] = [
@@ -493,7 +493,7 @@ def _upsert_neon(neon_dsn: str, apis: list[dict], jobs: list[dict], manual_data:
 
 
 def _export_ref_parquets(ora_conn, targets: tuple[str, ...] = ("oci",)) -> None:
-    from app.v3.parquet_sink import publish_parquet_batch
+    from app.storage.parquet_sink import publish_parquet_batch
 
     for table in DERIVED_REF_TABLES:
         try:

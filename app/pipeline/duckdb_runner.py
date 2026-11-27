@@ -12,14 +12,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from app.object_storage import (
+from app.storage.object_storage import (
     S3TargetConfig,
     configured_targets,
     get_target_config,
     resolve_etl_object_key,
     upload_file_to_targets,
 )
-from app.v3.spec import DuckDBJobSpec
+from app.core.spec import DuckDBJobSpec
 
 _DEFAULT_DUCKDB_TMP = Path(os.environ.get("V3_DUCKDB_TMP_DIR", "data/tmp/duckdb"))
 

@@ -41,14 +41,14 @@ echo "=== pyscrap-v3 started: $(date '+%Y-%m-%d %H:%M:%S %Z') mode=$MODE arg=${A
 
 case "$MODE" in
     sync)
-        python3 -m app.v3.cli sync-config --mirror-user-parquet
+        python3 -m app.cli sync-config --mirror-user-parquet
         ;;
     cycle)
         if [[ -z "$ARG" ]]; then
             echo "Error: schedule_tag required for 'cycle'" >&2
             exit 2
         fi
-        python3 -m app.v3.cli run-cycle "$ARG"
+        python3 -m app.cli run-cycle "$ARG"
         ;;
     heavy)
         if [[ -z "$ARG" ]]; then
@@ -62,14 +62,14 @@ case "$MODE" in
             EXTRA_ARGS=(--date "$PREV_DAY")
         fi
         # Serialize all heavy DuckDB/Browser units so peak RAM stays well below 2GB.
-        flock -w 1800 "$LOCK_FILE" python3 -m app.v3.cli run-cycle "$ARG" "${EXTRA_ARGS[@]}"
+        flock -w 1800 "$LOCK_FILE" python3 -m app.cli run-cycle "$ARG" "${EXTRA_ARGS[@]}"
         ;;
     flush)
-        python3 -m app.v3.cli flush-log
+        python3 -m app.cli flush-log
         ;;
     purge)
-        flock -w 1800 "$LOCK_FILE" python3 -m app.v3.cli purge-raw --keep-days 30 --apply
-        python3 -m app.v3.cli purge-log --keep-days 90 --apply
+        flock -w 1800 "$LOCK_FILE" python3 -m app.cli purge-raw --keep-days 30 --apply
+        python3 -m app.cli purge-log --keep-days 90 --apply
         ;;
     *)
         echo "Error: unknown mode '$MODE'" >&2

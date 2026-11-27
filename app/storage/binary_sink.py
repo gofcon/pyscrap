@@ -13,8 +13,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.object_storage import build_v3_key, upload_bytes_to_targets
-from app.v3.http_fetcher import substitute_placeholders
+from app.storage.object_storage import build_v3_key, upload_bytes_to_targets
+from app.ingest.http_fetcher import substitute_placeholders
 
 
 def _safe_filename(name: str, fallback: str = "download.bin") -> str:
