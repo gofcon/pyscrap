@@ -6,7 +6,7 @@
 # enabling timers, so v3 can be staged safely alongside running v2 timers.
 #
 # Usage:
-#   sudo ./scripts/systemd/v3/install.sh [--user opc] [--dir /home/opc/pyscrap] [--enable] [--dry-run]
+#   sudo ./scripts/systemd/install.sh [--user opc] [--dir /home/opc/pyscrap] [--enable] [--dry-run]
 # ============================================================================
 set -euo pipefail
 

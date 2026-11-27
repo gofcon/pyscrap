@@ -22,10 +22,10 @@ v2의 `pyscrap-*.service/timer`와 이름이 겹치지 않도록 모든 유닛�
 
 ```bash
 # 1) 드라이런 확인
-./scripts/systemd/v3/install.sh --dry-run
+./scripts/systemd/install.sh --dry-run
 
 # 2) 유닛 설치 (타이머는 아직 미활성 — v2 와 안전 병행)
-sudo ./scripts/systemd/v3/install.sh --user opc --dir /home/opc/pyscrap
+sudo ./scripts/systemd/install.sh --user opc --dir /home/opc/pyscrap
 
 # 3) 수동 스모크 테스트 (장전 sync 1회 실행 확인)
 sudo systemctl start pyscrap-v3-sync.service
@@ -33,7 +33,7 @@ journalctl -u pyscrap-v3-sync.service -n 30 --no-pager
 
 # 4) v2 타이머 중지 후 v3 타이머 활성화 (실제 컷오버 시점)
 # sudo systemctl disable --now pyscrap-*.timer
-# sudo ./scripts/systemd/v3/install.sh --user opc --dir /home/opc/pyscrap --enable
+# sudo ./scripts/systemd/install.sh --user opc --dir /home/opc/pyscrap --enable
 ```
 
 > **주의 (`KIS_TOKEN_REFRESH`)**: v2와 v3가 같은 KIS 계정으로 동시에 `daily_start`를 돌리면 토큰이 서로 무효화되므로, **v3 타이머 활성화(`--enable`) 직전에 v2 타이머를 먼저 중지**하세요.

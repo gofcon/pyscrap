@@ -1,5 +1,5 @@
 [Unit]
-Description=pyscrap v3 Weekly Retention Purge (raw_clean 30d + job_log 90d)
+Description=pyscrap v3 Regular HTTP Cycle (%i)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,8 +8,8 @@ Type=oneshot
 User=opc
 Group=opc
 WorkingDirectory=/home/opc/pyscrap
-ExecStart=/bin/bash /home/opc/pyscrap/scripts/systemd/v3/run_v3.sh purge
-MemoryHigh=600M
+ExecStart=/bin/bash /home/opc/pyscrap/scripts/systemd/run_v3.sh cycle %i
+MemoryHigh=700M
 MemoryMax=900M
 
 [Install]
