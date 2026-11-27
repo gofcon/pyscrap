@@ -122,10 +122,14 @@ def run_duckdb_job(
     """Execute one configured DuckDB SQL job, write ZSTD Parquet locally, and upload."""
     import duckdb
 
-    object_key = build_v3_key(spec.output_layer, spec.output_rel_path, prefix=spec.prefix)
+    rel_path = spec.output_rel_path
     query = spec.sql_text
     for key, value in (sql_params or {}).items():
-        query = query.replace(f"${{{key}}}", value)
+        token = f"${{{key}}}"
+        rel_path = rel_path.replace(token, value)
+        query = query.replace(token, value)
+
+    object_key = build_v3_key(spec.output_layer, rel_path, prefix=spec.prefix)
 
     out_dir = (temp_directory or _DEFAULT_DUCKDB_TMP).parent / "duckdb_out"
     out_path = out_dir / object_key

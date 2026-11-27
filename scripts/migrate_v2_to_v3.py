@@ -92,7 +92,7 @@ MANUAL_TABLES: dict[str, tuple[list[str], list[str]]] = {
     ),
 }
 
-# Derived financial masters exported from Oracle v2 -> OCI bucket v3/ref/*.parquet
+# Derived financial masters & auxiliary state exported from Oracle v2 -> OCI bucket v3/ref/*.parquet
 DERIVED_REF_TABLES: list[str] = [
     "mst_etf",
     "mst_fuopt",
@@ -101,6 +101,11 @@ DERIVED_REF_TABLES: list[str] = [
     "meta_maturity",
     "stock_index_his",
     "user_etf",
+    "krx_index_mst",
+    "mst_index",
+    "meta_fuopt_info",
+    "ksd_bond_no_detail",
+    "src_code",
 ]
 
 

@@ -566,6 +566,86 @@ class TestHttpFetcherAndExecutor(unittest.TestCase):
                 ("ETL", "JOB_ETL", "SUCCESS"),
             ])
 
+    def test_duckdb_runner_substitutes_output_rel_path_placeholders(self):
+        from app.v3.duckdb_runner import run_duckdb_job
+
+        spec = DuckDBJobSpec(
+            job_id="CURATE_TEST",
+            sql_text="SELECT '${TARGET_DATE}' AS dt, 1 AS v",
+            output_layer="curated",
+            output_rel_path="test_tbl/ym=${TARGET_YM}/dt=${TARGET_DATE}/data.parquet",
+            targets=["oci"],
+            memory_limit="256MB",
+            threads=1,
+            min_rows=1,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch("app.v3.duckdb_runner.is_tmpfs_path", return_value=False), \
+                 mock.patch("app.v3.duckdb_runner.register_s3_secrets", return_value=[]), \
+                 mock.patch(
+                     "app.v3.duckdb_runner.upload_file_to_targets",
+                     side_effect=lambda p, key, **kw: {"oci": f"s3://bkt/{key}"},
+                 ):
+                res = run_duckdb_job(
+                    spec,
+                    sql_params={"TARGET_DATE": "20261127", "TARGET_YM": "202611"},
+                    temp_directory=Path(td) / "duckdb",
+                )
+            self.assertEqual(res.object_key, "v3/curated/test_tbl/ym=202611/dt=20261127/data.parquet")
+            self.assertEqual(res.row_count, 1)
+
+    def test_code_harvester_column_filters_and_builtin_dispatch(self):
+        from app.v3.code_harvester import infer_source_name, is_candidate_code_column
+        from app.v3.duckdb_runner import DuckDBJobResult
+        from app.v3.executor import execute_etl_job
+
+        self.assertTrue(is_candidate_code_column("mkt_div", "VARCHAR"))
+        self.assertFalse(is_candidate_code_column("bas_dd", "VARCHAR"))
+        self.assertFalse(is_candidate_code_column("std_dt", "VARCHAR"))
+        self.assertFalse(is_candidate_code_column("trade_at", "VARCHAR"))
+        self.assertFalse(is_candidate_code_column("target_date", "VARCHAR"))
+        self.assertFalse(is_candidate_code_column("api_id", "VARCHAR"))
+        self.assertFalse(is_candidate_code_column("val_am", "DOUBLE"))
+        self.assertEqual(infer_source_name("krx_etf_list"), "KRX")
+        self.assertEqual(infer_source_name("ksd_bond_info"), "KSD")
+        self.assertEqual(infer_source_name("fo_idx_code_mst"), "KIS")
+        self.assertEqual(infer_source_name("ace_etf_list"), "AMC")
+
+        snap = DailyConfigSnapshot(
+            generated_at="2026-11-27T06:30:00+09:00",
+            etl_jobs={
+                "HARVEST_SRC_CODE": {
+                    "job_id": "HARVEST_SRC_CODE",
+                    "schedule_tag": "daily_batch2",
+                    "run_order": 250,
+                    "is_active": True,
+                    "output_layer": "ref",
+                    "output_rel_path": "src_code.parquet",
+                    "targets": ["oci"],
+                    "memory_limit": "512MB",
+                    "threads": 2,
+                    "min_rows": 0,
+                    "sql_text": "-- builtin:harvest_src_code",
+                }
+            },
+        )
+        fake_res = DuckDBJobResult(
+            job_id="HARVEST_SRC_CODE",
+            object_key="v3/ref/src_code.parquet",
+            row_count=42,
+            byte_size=1024,
+            uploaded_uris={"oci": "s3://bkt/v3/ref/src_code.parquet"},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LocalRunLedger("20261127", base_dir=Path(td))
+            with mock.patch("app.v3.code_harvester.harvest_src_codes", return_value=fake_res):
+                out = execute_etl_job(snap, "HARVEST_SRC_CODE", target_date="20261127", ledger=ledger)
+            self.assertEqual(out["rows"], 42)
+            entries = ledger.read_all()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].job_type, "ETL")
+            self.assertEqual(entries[0].job_id, "HARVEST_SRC_CODE")
+
 
 if __name__ == "__main__":
     unittest.main()

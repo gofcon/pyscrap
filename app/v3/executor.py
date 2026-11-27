@@ -36,7 +36,13 @@ _REF_PARQUET_TABLES = (
     "mst_stock",
     "meta_maturity",
     "stock_index_his",
+    "v_k2i_atm",
     "user_etf",
+    "krx_index_mst",
+    "mst_index",
+    "meta_fuopt_info",
+    "ksd_bond_no_detail",
+    "src_code",
 )
 
 
@@ -96,11 +102,13 @@ def _run_duckdb_axis_query(query: str, oci_bucket: str) -> list[tuple[Any, ...]]
     con = duckdb.connect(":memory:", config=build_duckdb_config(memory_limit="256MB", threads=2))
     try:
         register_s3_secrets(con, targets=["oci"])
+        sql_lower = sql.lower()
         for name in _REF_PARQUET_TABLES:
-            con.execute(
-                f"CREATE OR REPLACE TEMP VIEW {name} AS "
-                f"SELECT * FROM read_parquet('s3://{oci_bucket}/v3/ref/{name}.parquet')"
-            )
+            if name in sql_lower:
+                con.execute(
+                    f"CREATE OR REPLACE TEMP VIEW {name} AS "
+                    f"SELECT * FROM read_parquet('s3://{oci_bucket}/v3/ref/{name}.parquet')"
+                )
         return con.execute(sql).fetchall()
     finally:
         con.close()
@@ -231,15 +239,26 @@ def execute_etl_job(
     })
     started = time.monotonic()
     try:
-        res = run_duckdb_job(
-            spec,
-            sql_params={
-                "OCI_BUCKET": bucket_name("oci"),
-                "TARGET_DATE": day,
-                "TARGET_YM": day[:6],
-            },
-            skip_unconfigured_targets=skip_unconfigured_targets,
-        )
+        if spec.sql_text.strip().lower().startswith("-- builtin:harvest_src_code"):
+            from app.v3.code_harvester import harvest_src_codes
+
+            res = harvest_src_codes(
+                targets=spec.targets,
+                memory_limit=spec.memory_limit,
+                threads=spec.threads,
+                skip_unconfigured_targets=skip_unconfigured_targets,
+            )
+        else:
+            res = run_duckdb_job(
+                spec,
+                sql_params={
+                    "OCI_BUCKET": bucket_name("oci"),
+                    "TARGET_DATE": day,
+                    "TARGET_YM": day[:6],
+                    "LEDGER_DIR": str(run_ledger.base_dir),
+                },
+                skip_unconfigured_targets=skip_unconfigured_targets,
+            )
         run_ledger.append(RunLedgerEntry(
             job_type="ETL",
             job_id=job_id,
