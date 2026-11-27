@@ -13,7 +13,7 @@
   v3/binary/<group>/<filename>                                   # 다운로드 문서 (PDF/ZIP)
   ```
 
-상세 설계는 [docs/ARCHITECTURE-V3.md](docs/ARCHITECTURE-V3.md)를 참고하세요.
+상세 설계는 [docs/ARCHITECTURE-V3.md](docs/ARCHITECTURE-V3.md), `spec_json`·`params_json`·`etl_job` 필드별 명세는 [docs/TECHNICAL.md](docs/TECHNICAL.md)를 참고하세요.
 
 ---
 
@@ -134,5 +134,6 @@ scripts/
   migrate_v2_to_v3.py      # Oracle v2 -> Neon v3 일회성 이관 도구
 docs/
   ARCHITECTURE-V3.md       # v3 설계 문서
+  TECHNICAL.md             # v3 기술 문서 (spec_json / api_job / etl_job 필드 명세)
 tests/                     # 단위 테스트 (python3 -m unittest discover -s tests -t . -v)
 ```
